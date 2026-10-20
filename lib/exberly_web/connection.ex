@@ -17,7 +17,7 @@ defmodule ExberlyWeb.Connection do
   import Phoenix.Component, only: [assign: 3]
   import Phoenix.LiveView, only: [attach_hook: 4, connected?: 1]
 
-  alias Exberly.{Format, LastConnection, Target}
+  alias Exberly.{Format, Kubectl, LastConnection, Target}
 
   @refresh_ms 2_000
   @last_node {__MODULE__, :last_node}
@@ -34,7 +34,15 @@ defmodule ExberlyWeb.Connection do
         info: nil,
         node_input: if(node, do: Atom.to_string(node), else: last_node(saved.node)),
         cookie_input: saved.cookie,
-        error: nil
+        error: nil,
+        method: :direct,
+        kube_namespace: "",
+        kube_pod: "",
+        kube_containers: nil,
+        kube_container: nil,
+        kube_binaries: nil,
+        kube_binary: nil,
+        kube_listing: false
       })
       |> attach_hook(:conn_event, :handle_event, &handle_event/3)
       |> attach_hook(:conn_info, :handle_info, &handle_info/2)
@@ -80,6 +88,87 @@ defmodule ExberlyWeb.Connection do
     {:halt, update(socket, status: :disconnected, node: nil, info: nil)}
   end
 
+  def handle_event("set_conn_method", %{"method" => method}, socket) do
+    {:halt, update(socket, method: String.to_existing_atom(method), error: nil)}
+  end
+
+  def handle_event("list_kube_binaries", %{"namespace" => namespace, "pod" => pod}, socket) do
+    namespace = String.trim(namespace)
+    pod = String.trim(pod)
+
+    socket =
+      update(socket,
+        kube_namespace: namespace,
+        kube_pod: pod,
+        kube_listing: true,
+        kube_containers: nil,
+        kube_container: nil,
+        kube_binaries: nil,
+        kube_binary: nil,
+        error: nil
+      )
+
+    case Kubectl.list_containers(namespace, pod) do
+      {:ok, containers} ->
+        {:halt, list_binaries(socket, namespace, pod, List.first(containers), containers)}
+
+      {:error, reason} ->
+        {:halt, update(socket, error: Format.error(reason), kube_listing: false)}
+    end
+  end
+
+  # the container dropdown only shows for a pod with more than one
+  # container (see `Exberly.Kubectl.list_containers/3`'s doc); picking a
+  # different one re-lists `/app/bin` there.
+  def handle_event(
+        "select_kube_container",
+        %{"namespace" => namespace, "pod" => pod, "container" => container},
+        socket
+      ) do
+    namespace = String.trim(namespace)
+    pod = String.trim(pod)
+
+    socket = update(socket, kube_listing: true, kube_binaries: nil, kube_binary: nil, error: nil)
+
+    {:halt, list_binaries(socket, namespace, pod, container, socket.assigns.conn.kube_containers)}
+  end
+
+  def handle_event(
+        "connect_kubectl",
+        %{"namespace" => namespace, "pod" => pod, "container" => container, "binary" => binary},
+        socket
+      ) do
+    namespace = String.trim(namespace)
+    pod = String.trim(pod)
+    container = String.trim(container)
+
+    case Target.connect_via_kubectl(namespace, pod, container, binary) do
+      {:ok, info} ->
+        # the page hears {:connected, node} from Target as well
+        {:halt,
+         update(socket,
+           status: :connected,
+           node: info.node,
+           info: info,
+           error: nil,
+           kube_namespace: namespace,
+           kube_pod: pod,
+           kube_container: container,
+           kube_binary: binary
+         )}
+
+      {:error, reason} ->
+        {:halt,
+         update(socket,
+           error: Format.error(reason),
+           kube_namespace: namespace,
+           kube_pod: pod,
+           kube_container: container,
+           kube_binary: binary
+         )}
+    end
+  end
+
   def handle_event(_event, _params, socket), do: {:cont, socket}
 
   @doc false
@@ -110,6 +199,21 @@ defmodule ExberlyWeb.Connection do
   end
 
   defp refresh(socket), do: socket
+
+  # Lists `/app/bin` in `container` and fills `kube_binaries`/`kube_binary`,
+  # also storing the full container list and the one picked (shared by the
+  # initial "list_kube_binaries" submit and "select_kube_container").
+  defp list_binaries(socket, namespace, pod, container, containers) do
+    socket = update(socket, kube_containers: containers, kube_container: container)
+
+    case Kubectl.list_binaries(namespace, pod, container) do
+      {:ok, binaries} ->
+        update(socket, kube_binaries: binaries, kube_binary: List.first(binaries), kube_listing: false)
+
+      {:error, reason} ->
+        update(socket, error: Format.error(reason), kube_listing: false)
+    end
+  end
 
   defp update(socket, changes),
     do: assign(socket, :conn, Map.merge(socket.assigns.conn, Map.new(changes)))

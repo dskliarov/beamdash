@@ -225,6 +225,12 @@ exberly starts Erlang distribution itself on first connect, picking short or
 long names to match the target. You can also start it as a named node:
 `iex --sname exberly -S mix phx.server`.
 
+To connect to a node running in a Kubernetes pod instead, switch the
+connection bar to **kubectl**, enter the namespace and pod, and List
+`/app/bin` to pick the release binary. exberly reads the node name and
+cookie off the pod itself, then opens the `kubectl port-forward` tunnels
+distribution needs to reach it; no `node@host` or cookie to type.
+
 ## Jev: suggested next step (optional)
 
 Both process panels (Processes and GC tabs) end with **Jev: next step**:

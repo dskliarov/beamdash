@@ -209,5 +209,25 @@ defmodule Exberly.Format do
 
   def error({:error, {:erpc, :timeout}}), do: "The target did not answer in time."
   def error({:error, {:erpc, :noconnection}}), do: "Lost connection to the target."
+
+  def error(:kubectl_not_found),
+    do: "kubectl is not on PATH."
+
+  def error({:container_list_failed, reason}),
+    do: "Could not list the pod's containers: #{inspect(reason)}"
+
+  def error({:binary_list_failed, reason}),
+    do: "Could not list /app/bin in the pod: #{inspect(reason)}"
+
+  def error({:discovery_failed, reason}),
+    do:
+      "Could not read the node name and cookie from the pod (does this binary support `rpc`?): #{inspect(reason)}"
+
+  def error({:port_forward_failed, reason}),
+    do: "Could not open the kubectl port-forward: #{inspect(reason)}"
+
+  def error({:epmd_discovery_failed, reason}),
+    do: "Could not discover the node's distribution port via epmd: #{inspect(reason)}"
+
   def error(other), do: inspect(other)
 end
