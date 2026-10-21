@@ -189,6 +189,10 @@ defmodule Exberly.Format do
     do:
       "Could not start distribution here (is epmd running? try `epmd -daemon`): #{inspect(reason)}"
 
+  def error({:distribution_mode_locked, _reason}),
+    do:
+      "This target needs the other short/long name mode, but exberly itself was started as a named node (-sname/-name), so it can't switch automatically. Restart exberly without -sname/-name, or with the mode this target needs."
+
   def error({:agent_load_failed, reason}),
     do: "Connected, but could not load the agent into the target: #{inspect(reason)}"
 
@@ -209,5 +213,31 @@ defmodule Exberly.Format do
 
   def error({:error, {:erpc, :timeout}}), do: "The target did not answer in time."
   def error({:error, {:erpc, :noconnection}}), do: "Lost connection to the target."
+
+  def error(:kubectl_not_found),
+    do: "kubectl is not on PATH."
+
+  def error({:kubeconfig_list_failed, reason}),
+    do: "Could not list kubeconfig files under ~/.kube: #{inspect(reason)}"
+
+  def error({:pod_list_failed, reason}),
+    do: "Could not list pods in that namespace: #{inspect(reason)}"
+
+  def error({:container_list_failed, reason}),
+    do: "Could not list the pod's containers: #{inspect(reason)}"
+
+  def error({:binary_list_failed, reason}),
+    do: "Could not list /app/bin in the pod: #{inspect(reason)}"
+
+  def error({:discovery_failed, reason}),
+    do:
+      "Could not read the node name and cookie from the pod (does this binary support `rpc`?): #{inspect(reason)}"
+
+  def error({:port_forward_failed, reason}),
+    do: "Could not open the kubectl port-forward: #{inspect(reason)}"
+
+  def error({:epmd_discovery_failed, reason}),
+    do: "Could not discover the node's distribution port via epmd: #{inspect(reason)}"
+
   def error(other), do: inspect(other)
 end

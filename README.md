@@ -222,8 +222,21 @@ Then connect to `foo` (or `foo@yourhost`) with cookie `abc`, from the bar at the
 top of any tab.
 
 exberly starts Erlang distribution itself on first connect, picking short or
-long names to match the target. You can also start it as a named node:
-`iex --sname exberly -S mix phx.server`.
+long names to match the target, and restarts it automatically if a later
+target needs the other mode (e.g. switching from a dotted direct target to
+a kubectl pod's short, undotted name, or back) — no user action needed. You
+can also start it as a named node: `iex --sname exberly -S mix phx.server`,
+but then exberly can't switch modes for you, since Erlang won't let a
+statically-started node's distribution be stopped and restarted; a target
+needing the other mode fails with a clear error instead.
+
+To connect to a node running in a Kubernetes pod instead, switch the
+connection bar to **kubectl**, pick the **Cluster** (one entry per
+kubeconfig file under `~/.kube` — exberly passes it to `kubectl` directly,
+no shell-level context switch needed), enter the namespace, pick the pod,
+and List `/app/bin` to pick the release binary. exberly reads the node
+name and cookie off the pod itself, then opens the `kubectl port-forward`
+tunnels distribution needs to reach it; no `node@host` or cookie to type.
 
 ## Jev: suggested next step (optional)
 

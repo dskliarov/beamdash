@@ -45,30 +45,169 @@ defmodule ExberlyWeb.Layouts do
       <.nav active={@active} syntax={@syntax} />
 
       <div :if={@conn} class="conn-line">
-        <form
-          :if={@conn && @conn.status != :connected}
-          id="connect-form"
-          phx-submit="connect"
-          class="connect"
-        >
-          <input
-            name="node"
-            value={@conn.node_input}
-            placeholder="node@host"
-            required
-            autocomplete="off"
-            aria-label="Node"
-          />
-          <input
-            name="cookie"
-            type="password"
-            value={Map.get(@conn, :cookie_input, "")}
-            placeholder="cookie (optional)"
-            autocomplete="off"
-            aria-label="Cookie"
-          />
-          <button type="submit" phx-disable-with="Connecting…">Connect</button>
-        </form>
+        <div :if={@conn && @conn.status != :connected} class="connect-methods">
+          <div class="method-switch" role="group" aria-label="Connection method">
+            <button
+              type="button"
+              class={Map.get(@conn, :method, :direct) == :direct && "active"}
+              phx-click="set_conn_method"
+              phx-value-method="direct"
+            >
+              Direct
+            </button>
+            <button
+              type="button"
+              class={Map.get(@conn, :method, :direct) == :kubectl && "active"}
+              phx-click="set_conn_method"
+              phx-value-method="kubectl"
+            >
+              kubectl
+            </button>
+          </div>
+
+          <form
+            :if={Map.get(@conn, :method, :direct) == :direct}
+            id="connect-form"
+            phx-submit="connect"
+            class="connect"
+          >
+            <input
+              name="node"
+              value={@conn.node_input}
+              placeholder="node@host"
+              required
+              autocomplete="off"
+              aria-label="Node"
+            />
+            <input
+              name="cookie"
+              type="password"
+              value={Map.get(@conn, :cookie_input, "")}
+              placeholder="cookie (optional)"
+              autocomplete="off"
+              aria-label="Cookie"
+            />
+            <button type="submit" phx-disable-with="Connecting…">Connect</button>
+          </form>
+
+          <div :if={Map.get(@conn, :method, :direct) == :kubectl} class="connect-kubectl">
+            <form
+              :if={Map.get(@conn, :kube_clusters, []) != []}
+              id="select-kube-cluster-form"
+              phx-change="select_kube_cluster"
+              class="connect"
+            >
+              <span class="field-label small muted">Cluster</span>
+              <select name="cluster" aria-label="Cluster">
+                <option
+                  :for={c <- @conn.kube_clusters}
+                  value={c.path}
+                  selected={c.path == @conn.kube_cluster}
+                >
+                  {c.name}
+                </option>
+              </select>
+            </form>
+            <p :if={Map.get(@conn, :kube_clusters, []) == []} class="muted small">
+              No kubeconfig files found under ~/.kube{if @conn[:kube_cluster_error],
+                do: " (#{@conn.kube_cluster_error})"}.
+            </p>
+
+            <form
+              :if={Map.get(@conn, :kube_clusters, []) != []}
+              id="list-kube-pods-form"
+              phx-submit="list_kube_pods"
+              class="connect"
+            >
+              <input
+                name="namespace"
+                value={Map.get(@conn, :kube_namespace, "")}
+                placeholder="namespace"
+                required
+                autocomplete="off"
+                aria-label="Namespace"
+              />
+              <button
+                type="submit"
+                class="secondary"
+                phx-disable-with="Listing…"
+                disabled={Map.get(@conn, :kube_pods_listing, false)}
+              >
+                List pods
+              </button>
+            </form>
+
+            <form
+              :if={Map.get(@conn, :kube_pods)}
+              id="select-kube-pod-form"
+              phx-change="select_kube_pod"
+              class="connect"
+            >
+              <input type="hidden" name="namespace" value={Map.get(@conn, :kube_namespace, "")} />
+              <span class="field-label small muted">Pod</span>
+              <select name="pod" class="pod-select" aria-label="Pod" disabled={@conn.kube_pods == []}>
+                <option :for={p <- @conn.kube_pods} value={p} selected={p == @conn.kube_pod}>
+                  {p}
+                </option>
+              </select>
+            </form>
+            <p :if={@conn[:kube_pods] == []} class="muted small">
+              No pods found in this namespace.
+            </p>
+
+            <form
+              :if={Map.get(@conn, :kube_containers) && length(@conn.kube_containers) > 1}
+              id="select-kube-container-form"
+              phx-change="select_kube_container"
+              class="connect"
+            >
+              <input type="hidden" name="namespace" value={Map.get(@conn, :kube_namespace, "")} />
+              <input type="hidden" name="pod" value={Map.get(@conn, :kube_pod, "")} />
+              <span class="field-label small muted">Container</span>
+              <select name="container" aria-label="Container">
+                <option
+                  :for={c <- @conn.kube_containers}
+                  value={c}
+                  selected={c == @conn.kube_container}
+                >
+                  {c}
+                </option>
+              </select>
+            </form>
+
+            <form
+              :if={Map.get(@conn, :kube_binaries)}
+              id="connect-kubectl-form"
+              phx-submit="connect_kubectl"
+              class="connect"
+            >
+              <input type="hidden" name="namespace" value={Map.get(@conn, :kube_namespace, "")} />
+              <input type="hidden" name="pod" value={Map.get(@conn, :kube_pod, "")} />
+              <input type="hidden" name="container" value={Map.get(@conn, :kube_container, "")} />
+              <span class="field-label small muted">Binary</span>
+              <select name="binary" aria-label="Release binary" disabled={@conn.kube_binaries == []}>
+                <option
+                  :for={bin <- @conn.kube_binaries}
+                  value={bin}
+                  selected={bin == @conn.kube_binary}
+                >
+                  {bin}
+                </option>
+              </select>
+              <button
+                type="submit"
+                phx-disable-with="Connecting…"
+                disabled={@conn.kube_binaries == []}
+              >
+                Connect
+              </button>
+            </form>
+            <p :if={@conn[:kube_binaries] == []} class="muted small">
+              No binaries found under /app/bin in this pod{if @conn[:kube_container],
+                do: " (container #{@conn.kube_container})"}.
+            </p>
+          </div>
+        </div>
 
         <div :if={@conn && @conn.status == :connected} class="connected">
           <span class="dot" aria-hidden="true"></span>

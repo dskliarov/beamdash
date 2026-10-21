@@ -791,6 +791,9 @@ table.gc-events td, table.gc-events th { padding: 3px 8px; }
 .bar .connect input { min-width: 0; width: 150px; padding: 5px 8px; }
 .bar .connect input[name=cookie] { width: 130px; }
 .bar .connect button { padding: 5px 14px; }
+.bar .connect .field-label { white-space: nowrap; }
+.bar .connect select.pod-select { min-width: 0; width: 420px; padding: 5px 8px; }
+.bar .connect select { padding: 5px 8px; }
 .node-info { display: flex; flex-wrap: wrap; gap: 4px 16px; justify-content: flex-end; margin-left: auto; }
 .node-info span + span::before { content: "·"; margin-right: 16px; opacity: .6; }
 .node-info span + span { margin-left: -12px; }

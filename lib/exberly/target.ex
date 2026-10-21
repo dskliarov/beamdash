@@ -12,6 +12,13 @@ defmodule Exberly.Target do
     4. loads the helper modules (`:exberly_agent` for process info,
        `:erlyberly` for tracing) and reads basic node info.
 
+  `connect_via_kubectl/5` reaches a node in a Kubernetes pod the same way,
+  but first opens a `kubectl port-forward` tunnel to it (see
+  `Exberly.Kubectl`) and discovers its node name and cookie from the pod
+  itself, since the pod's advertised address is not otherwise reachable
+  through the forwarded port. The tunnel is closed whenever the connection
+  it was opened for ends, same as a direct connection's distribution link.
+
   Subscribers receive `{:exberly_target, {:connected, node}}` and
   `{:exberly_target, {:disconnected, reason}}`.
   """
@@ -19,12 +26,13 @@ defmodule Exberly.Target do
   use GenServer
   require Logger
 
-  alias Exberly.AgentLoader
+  alias Exberly.{AgentLoader, Kubectl}
 
   @rpc_timeout 5_000
   @connect_timeout 15_000
+  @kubectl_connect_timeout 60_000
 
-  defstruct node: nil, subscribers: %{}
+  defstruct node: nil, subscribers: %{}, tunnel: nil
 
   ## API
 
@@ -36,6 +44,23 @@ defmodule Exberly.Target do
   @doc "Connects to `node` (a string like `\"foo@host\"` or just `\"foo\"`)."
   def connect(node, cookie \\ nil, server \\ __MODULE__) do
     GenServer.call(server, {:connect, node, cookie}, @connect_timeout)
+  end
+
+  @doc """
+  Connects to a node running as `binary` (under `/app/bin`, see
+  `Exberly.Kubectl.list_binaries/5`) in `container` (see
+  `Exberly.Kubectl.list_containers/4`; `nil` or `""` for a single-container
+  pod) in `pod`, in `namespace`, in the cluster `kubeconfig` points at (see
+  `Exberly.Kubectl.list_kubeconfigs/1`; `nil` or `""` uses `kubectl`'s own
+  ambient config), by opening a `kubectl port-forward` tunnel to it and
+  discovering its node name and cookie from the pod itself.
+  """
+  def connect_via_kubectl(kubeconfig, namespace, pod, container, binary, server \\ __MODULE__) do
+    GenServer.call(
+      server,
+      {:connect_kubectl, kubeconfig, namespace, pod, container, binary},
+      @kubectl_connect_timeout
+    )
   end
 
   def disconnect(server \\ __MODULE__), do: GenServer.call(server, :disconnect)
@@ -113,6 +138,37 @@ defmodule Exberly.Target do
     end
   end
 
+  def handle_call({:connect_kubectl, kubeconfig, namespace, pod, container, binary}, _from, state) do
+    state = drop_current(state, :reconnect)
+
+    case Kubectl.connect(kubeconfig, namespace, pod, container, binary) do
+      {:ok, %{node: node, cookie: cookie, tunnel: tunnel}} ->
+        result =
+          with :ok <- ensure_distributed(node),
+               :ok <- put_cookie(node, cookie),
+               :ok <- hidden_connect(node),
+               :ok <- load_agent(node),
+               {:ok, info} <- rpc(node, :exberly_agent, :node_info, []) do
+            {:ok, node, info}
+          end
+
+        case result do
+          {:ok, node, info} ->
+            true = Node.monitor(node, true)
+            remember_pid_index(node)
+            notify(state, {:connected, node})
+            {:reply, {:ok, info}, %{state | node: node, tunnel: tunnel}}
+
+          {:error, _} = error ->
+            Kubectl.close(tunnel)
+            {:reply, error, state}
+        end
+
+      {:error, _} = error ->
+        {:reply, error, state}
+    end
+  end
+
   def handle_call(:disconnect, _from, state) do
     {:reply, :ok, drop_current(state, :user)}
   end
@@ -139,14 +195,31 @@ defmodule Exberly.Target do
   @impl true
   def handle_info({:nodedown, node}, %{node: node} = state) do
     Logger.info("exberly: lost connection to #{node}")
+    Kubectl.close(state.tunnel)
     notify(state, {:disconnected, :nodedown})
-    {:noreply, %{state | node: nil}}
+    {:noreply, %{state | node: nil, tunnel: nil}}
   end
 
   def handle_info({:nodedown, _other}, state), do: {:noreply, state}
 
   def handle_info({:DOWN, ref, :process, _pid, _reason}, state) do
     {:noreply, %{state | subscribers: Map.delete(state.subscribers, ref)}}
+  end
+
+  # a kubectl port-forward died (cluster hiccup, pod restart): treat it the
+  # same as the distribution link itself going down, instead of waiting for
+  # net_kernel's own, much slower, tick timeout to notice.
+  def handle_info({port, {:exit_status, _status}}, %{tunnel: tunnel} = state)
+      when tunnel != nil and (port == tunnel.epmd_port or port == tunnel.dist_port) do
+    Logger.warning("exberly: lost the kubectl port-forward to #{inspect(state.node)}")
+    {:noreply, drop_current(state, :tunnel_failed)}
+  end
+
+  # kubectl prints more than the one "Forwarding from" line `Kubectl`
+  # already waited for (one per address family); nothing else we read a
+  # port-forward's stdout for, so any further output from it is ignored.
+  def handle_info({port, {:data, _data}}, state) when is_port(port) do
+    {:noreply, state}
   end
 
   ## Helpers
@@ -165,8 +238,9 @@ defmodule Exberly.Target do
     rpc(node, :exberly_agent, :tprof_stop, [])
     Node.monitor(node, false)
     Node.disconnect(node)
+    Kubectl.close(state.tunnel)
     notify(state, {:disconnected, reason})
-    %{state | node: nil}
+    %{state | node: nil, tunnel: nil}
   end
 
   defp notify(state, event) do
@@ -215,26 +289,71 @@ defmodule Exberly.Target do
 
   def parse_node(node) when is_atom(node), do: {:ok, node}
 
-  # Long names when the target's host part is a dotted name or IP.
+  # Long names when the target's host part is a dotted name or IP, short
+  # names otherwise (a kubectl-discovered node's host is the pod name,
+  # never dotted). Distribution stays up across connects to avoid
+  # restarting it on every one, but a *mode* mismatch (e.g. switching from
+  # a dotted direct target to a short-named pod, or back) makes Erlang
+  # itself refuse the connection ("System running to use fully qualified
+  # hostnames"), so that case restarts distribution with the right mode —
+  # transparently, no user involvement needed.
   defp ensure_distributed(target) do
-    if Node.alive?() do
-      :ok
-    else
-      [_, host] = target |> Atom.to_string() |> String.split("@", parts: 2)
-      mode = if String.contains?(host, "."), do: :longnames, else: :shortnames
-      name = :"exberly_#{System.unique_integer([:positive])}"
+    [_, host] = target |> Atom.to_string() |> String.split("@", parts: 2)
+    mode = if String.contains?(host, "."), do: :longnames, else: :shortnames
 
-      case Node.start(name, mode) do
-        {:ok, _} -> :ok
-        {:error, {:already_started, _}} -> :ok
-        {:error, reason} -> {:error, {:distribution_failed, reason}}
+    cond do
+      not Node.alive?() -> start_distributed(mode)
+      current_name_domain() == mode -> :ok
+      true -> restart_distributed(mode)
+    end
+  end
+
+  defp current_name_domain do
+    case :net_kernel.get_state() do
+      %{name_domain: name_domain} -> name_domain
+      _ -> nil
+    end
+  end
+
+  # `:net_kernel.stop/0` only works on distribution started dynamically
+  # (`Node.start/2`, what `start_distributed/1` below does); started
+  # statically (`-sname`/`-name`, e.g. `iex --sname exberly -S mix
+  # phx.server`) it refuses with `{:error, :not_allowed}` — nothing to do
+  # but report it, since restarting the whole VM is out of our hands.
+  defp restart_distributed(mode) do
+    case :net_kernel.stop() do
+      :ok -> start_distributed(mode)
+      {:error, reason} -> {:error, {:distribution_mode_locked, reason}}
+    end
+  end
+
+  defp start_distributed(mode) do
+    # Long names: use 127.0.0.1 as our own host rather than this
+    # machine's hostname, which `:longnames` otherwise appends and
+    # requires to resolve (it rarely does, e.g. over a kubectl tunnel to
+    # a pod whose address is unrelated to this machine's actual name).
+    # Same workaround as hot_load_via_portforward.exs's `run/4`.
+    name =
+      case mode do
+        :longnames -> :"exberly_#{System.unique_integer([:positive])}@127.0.0.1"
+        :shortnames -> :"exberly_#{System.unique_integer([:positive])}"
       end
+
+    case Node.start(name, mode) do
+      {:ok, _} -> :ok
+      {:error, {:already_started, _}} -> :ok
+      {:error, reason} -> {:error, {:distribution_failed, reason}}
     end
   end
 
   defp put_cookie(_node, cookie) when cookie in [nil, ""], do: :ok
 
-  defp put_cookie(node, cookie) do
+  defp put_cookie(node, cookie) when is_atom(cookie) do
+    true = Node.set_cookie(node, cookie)
+    :ok
+  end
+
+  defp put_cookie(node, cookie) when is_binary(cookie) do
     true = Node.set_cookie(node, cookie |> String.trim() |> String.to_atom())
     :ok
   end
