@@ -91,7 +91,7 @@ defmodule ExberlyWeb.Layouts do
           </form>
 
           <div :if={Map.get(@conn, :method, :direct) == :kubectl} class="connect-kubectl">
-            <form id="list-kube-binaries-form" phx-submit="list_kube_binaries" class="connect">
+            <form id="list-kube-pods-form" phx-submit="list_kube_pods" class="connect">
               <input
                 name="namespace"
                 value={Map.get(@conn, :kube_namespace, "")}
@@ -100,23 +100,33 @@ defmodule ExberlyWeb.Layouts do
                 autocomplete="off"
                 aria-label="Namespace"
               />
-              <input
-                name="pod"
-                value={Map.get(@conn, :kube_pod, "")}
-                placeholder="pod"
-                required
-                autocomplete="off"
-                aria-label="Pod"
-              />
               <button
                 type="submit"
                 class="secondary"
                 phx-disable-with="Listing…"
-                disabled={Map.get(@conn, :kube_listing, false)}
+                disabled={Map.get(@conn, :kube_pods_listing, false)}
               >
-                List /app/bin
+                List pods
               </button>
             </form>
+
+            <form
+              :if={Map.get(@conn, :kube_pods)}
+              id="select-kube-pod-form"
+              phx-change="select_kube_pod"
+              class="connect"
+            >
+              <input type="hidden" name="namespace" value={Map.get(@conn, :kube_namespace, "")} />
+              <span class="field-label small muted">Pod</span>
+              <select name="pod" class="pod-select" aria-label="Pod" disabled={@conn.kube_pods == []}>
+                <option :for={p <- @conn.kube_pods} value={p} selected={p == @conn.kube_pod}>
+                  {p}
+                </option>
+              </select>
+            </form>
+            <p :if={@conn[:kube_pods] == []} class="muted small">
+              No pods found in this namespace.
+            </p>
 
             <form
               :if={Map.get(@conn, :kube_containers) && length(@conn.kube_containers) > 1}
@@ -126,6 +136,7 @@ defmodule ExberlyWeb.Layouts do
             >
               <input type="hidden" name="namespace" value={Map.get(@conn, :kube_namespace, "")} />
               <input type="hidden" name="pod" value={Map.get(@conn, :kube_pod, "")} />
+              <span class="field-label small muted">Container</span>
               <select name="container" aria-label="Container">
                 <option
                   :for={c <- @conn.kube_containers}
@@ -146,18 +157,27 @@ defmodule ExberlyWeb.Layouts do
               <input type="hidden" name="namespace" value={Map.get(@conn, :kube_namespace, "")} />
               <input type="hidden" name="pod" value={Map.get(@conn, :kube_pod, "")} />
               <input type="hidden" name="container" value={Map.get(@conn, :kube_container, "")} />
+              <span class="field-label small muted">Binary</span>
               <select name="binary" aria-label="Release binary" disabled={@conn.kube_binaries == []}>
-                <option :for={bin <- @conn.kube_binaries} value={bin} selected={bin == @conn.kube_binary}>
+                <option
+                  :for={bin <- @conn.kube_binaries}
+                  value={bin}
+                  selected={bin == @conn.kube_binary}
+                >
                   {bin}
                 </option>
               </select>
-              <button type="submit" phx-disable-with="Connecting…" disabled={@conn.kube_binaries == []}>
+              <button
+                type="submit"
+                phx-disable-with="Connecting…"
+                disabled={@conn.kube_binaries == []}
+              >
                 Connect
               </button>
             </form>
             <p :if={@conn[:kube_binaries] == []} class="muted small">
-              No binaries found under /app/bin in this pod<%= if @conn[:kube_container],
-                do: " (container #{@conn.kube_container})" %>.
+              No binaries found under /app/bin in this pod{if @conn[:kube_container],
+                do: " (container #{@conn.kube_container})"}.
             </p>
           </div>
         </div>

@@ -4,6 +4,31 @@ defmodule Exberly.KubectlTest do
   alias Exberly.Kubectl
   alias Exberly.Kubectl.Tunnel
 
+  describe "list_pods/2" do
+    test "parses a jsonpath pod list" do
+      exec = fn args ->
+        assert args == ["get", "pods", "-n", "prod", "-o", "jsonpath={.items[*].metadata.name}"]
+        {"my-pod-1 my-pod-2\n", 0}
+      end
+
+      assert {:ok, ["my-pod-1", "my-pod-2"]} = Kubectl.list_pods("prod", exec)
+    end
+
+    test "a non-zero exit is reported" do
+      exec = fn _args -> {"namespace not found", 1} end
+
+      assert {:error, {:pod_list_failed, {1, "namespace not found"}}} =
+               Kubectl.list_pods("prod", exec)
+    end
+
+    test "an exception from exec is caught and reported" do
+      exec = fn _args -> raise "boom" end
+
+      assert {:error, {:pod_list_failed, {:error, %RuntimeError{}}}} =
+               Kubectl.list_pods("prod", exec)
+    end
+  end
+
   describe "list_containers/3" do
     test "parses a jsonpath container list" do
       exec = fn args ->
@@ -50,7 +75,19 @@ defmodule Exberly.KubectlTest do
 
     test "passes -c container when one is given" do
       exec = fn args ->
-        assert args == ["exec", "-n", "prod", "my-pod", "-c", "gateway", "--", "ls", "-1", "/app/bin"]
+        assert args == [
+                 "exec",
+                 "-n",
+                 "prod",
+                 "my-pod",
+                 "-c",
+                 "gateway",
+                 "--",
+                 "ls",
+                 "-1",
+                 "/app/bin"
+               ]
+
         {"my_app\n", 0}
       end
 
@@ -71,6 +108,7 @@ defmodule Exberly.KubectlTest do
 
     test "an exception from exec is caught and reported" do
       exec = fn _args -> raise "boom" end
+
       assert {:error, {:binary_list_failed, {:error, %RuntimeError{}}}} =
                Kubectl.list_binaries("prod", "my-pod", "", exec)
     end
@@ -173,7 +211,10 @@ defmodule Exberly.KubectlTest do
 
     test "reports an error when the discovered node's name is not in the epmd reply" do
       exec = fn _args -> {"app@10.0.0.5\nsecret_cookie\n", 0} end
-      open_forward = fn _ns, _pod, {local, _remote} -> {:ok, fake_epmd(local, "other_app", 9999)} end
+
+      open_forward = fn _ns, _pod, {local, _remote} ->
+        {:ok, fake_epmd(local, "other_app", 9999)}
+      end
 
       assert {:error, {:epmd_discovery_failed, {:not_found, "app"}}} =
                Kubectl.connect("prod", "my-pod", "", "my_app",

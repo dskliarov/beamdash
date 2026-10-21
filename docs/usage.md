@@ -43,7 +43,7 @@ erl -sname foo -setcookie demo_cookie
 
 The connection bar is shared by every tab. exberly starts distribution on first connect, matching short or long names to the target, and connects as a hidden node. Switching between a short-named and a long-named target (including across Direct and kubectl) restarts distribution with the matching mode automatically; this only fails if exberly itself was started as a named node (`-sname`/`-name`), since Erlang cannot change that from under a running one. Disconnect ends the shared connection for all browser tabs.
 
-To connect to a node running in a Kubernetes pod, switch the bar to **kubectl** instead of **Direct**. Enter the namespace and pod, click **List /app/bin** to pick the release binary, then **Connect**. exberly reads the node name and cookie off the pod itself (via `kubectl exec ... rpc`) and opens `kubectl port-forward` tunnels for epmd and distribution, so there is no node name or cookie to type.
+To connect to a node running in a Kubernetes pod, switch the bar to **kubectl** instead of **Direct**. Enter the namespace and click **List pods**, pick the **Pod** from the dropdown, then the **Container** and **Binary** if more than one is available, then **Connect**. exberly reads the node name and cookie off the pod itself (via `kubectl exec ... rpc`) and opens `kubectl port-forward` tunnels for epmd and distribution, so there is no node name or cookie to type.
 
 ![Connection form with a local demo node and masked cookie](screenshots/00-connect.jpg)
 

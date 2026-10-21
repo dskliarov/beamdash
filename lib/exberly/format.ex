@@ -217,6 +217,9 @@ defmodule Exberly.Format do
   def error(:kubectl_not_found),
     do: "kubectl is not on PATH."
 
+  def error({:pod_list_failed, reason}),
+    do: "Could not list pods in that namespace: #{inspect(reason)}"
+
   def error({:container_list_failed, reason}),
     do: "Could not list the pod's containers: #{inspect(reason)}"
 

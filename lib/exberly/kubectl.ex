@@ -46,6 +46,24 @@ defmodule Exberly.Kubectl do
   end
 
   @doc """
+  Pods in `namespace`, so the user can pick one from a list instead of
+  typing it.
+  """
+  @spec list_pods(String.t(), (list(String.t()) -> {binary(), integer()})) ::
+          {:ok, [String.t()]} | {:error, term()}
+  def list_pods(namespace, exec \\ &run_kubectl/1) do
+    case exec.(["get", "pods", "-n", namespace, "-o", "jsonpath={.items[*].metadata.name}"]) do
+      {output, 0} ->
+        {:ok, output |> String.trim() |> String.split(~r/\s+/, trim: true)}
+
+      {output, status} ->
+        {:error, {:pod_list_failed, {status, String.trim(output)}}}
+    end
+  catch
+    kind, reason -> {:error, {:pod_list_failed, {kind, reason}}}
+  end
+
+  @doc """
   Containers in `pod` (`connect/5` and `list_binaries/4` need one to pick
   which container `kubectl exec` runs in; pods with a single container
   don't need this at all, `kubectl exec` defaults to it on its own).
@@ -76,7 +94,8 @@ defmodule Exberly.Kubectl do
   Binaries under #{@release_bin_dir} in `pod`'s `container` (a release's
   name there is a good guess at the binary to pick for `connect/5`).
   """
-  @spec list_binaries(String.t(), String.t(), String.t(), (list(String.t()) -> {binary(), integer()})) ::
+  @spec list_binaries(String.t(), String.t(), String.t(), (list(String.t()) ->
+                                                             {binary(), integer()})) ::
           {:ok, [String.t()]} | {:error, term()}
   def list_binaries(namespace, pod, container, exec \\ &run_kubectl/1) do
     case exec.(exec_args(namespace, pod, container, ["ls", "-1", @release_bin_dir])) do
@@ -182,7 +201,12 @@ defmodule Exberly.Kubectl do
 
   defp discover_dist_port(local_epmd_port, short_name) do
     with {:ok, sock} <-
-           :gen_tcp.connect(~c"127.0.0.1", local_epmd_port, [:binary, active: false, packet: 0], 5_000),
+           :gen_tcp.connect(
+             ~c"127.0.0.1",
+             local_epmd_port,
+             [:binary, active: false, packet: 0],
+             5_000
+           ),
          :ok <- :gen_tcp.send(sock, <<1::16, ?n>>),
          {:ok, resp} <- :gen_tcp.recv(sock, 0, 5_000) do
       :gen_tcp.close(sock)

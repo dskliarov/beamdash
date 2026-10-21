@@ -38,6 +38,8 @@ defmodule ExberlyWeb.Connection do
         method: :direct,
         kube_namespace: "",
         kube_pod: "",
+        kube_pods: nil,
+        kube_pods_listing: false,
         kube_containers: nil,
         kube_container: nil,
         kube_binaries: nil,
@@ -92,15 +94,15 @@ defmodule ExberlyWeb.Connection do
     {:halt, update(socket, method: String.to_existing_atom(method), error: nil)}
   end
 
-  def handle_event("list_kube_binaries", %{"namespace" => namespace, "pod" => pod}, socket) do
+  def handle_event("list_kube_pods", %{"namespace" => namespace}, socket) do
     namespace = String.trim(namespace)
-    pod = String.trim(pod)
 
     socket =
       update(socket,
         kube_namespace: namespace,
-        kube_pod: pod,
-        kube_listing: true,
+        kube_pods_listing: true,
+        kube_pods: nil,
+        kube_pod: "",
         kube_containers: nil,
         kube_container: nil,
         kube_binaries: nil,
@@ -108,13 +110,36 @@ defmodule ExberlyWeb.Connection do
         error: nil
       )
 
-    case Kubectl.list_containers(namespace, pod) do
-      {:ok, containers} ->
-        {:halt, list_binaries(socket, namespace, pod, List.first(containers), containers)}
+    case Kubectl.list_pods(namespace) do
+      {:ok, pods} ->
+        socket = update(socket, kube_pods: pods, kube_pods_listing: false)
+
+        case pods do
+          [] -> {:halt, socket}
+          [pod | _] -> {:halt, list_containers(socket, namespace, pod)}
+        end
 
       {:error, reason} ->
-        {:halt, update(socket, error: Format.error(reason), kube_listing: false)}
+        {:halt, update(socket, error: Format.error(reason), kube_pods_listing: false)}
     end
+  end
+
+  # picking a different pod from the dropdown re-lists its containers and
+  # `/app/bin`, same as the initial pod listing does for the first pod.
+  def handle_event("select_kube_pod", %{"namespace" => namespace, "pod" => pod}, socket) do
+    namespace = String.trim(namespace)
+    pod = String.trim(pod)
+
+    socket =
+      update(socket,
+        kube_containers: nil,
+        kube_container: nil,
+        kube_binaries: nil,
+        kube_binary: nil,
+        error: nil
+      )
+
+    {:halt, list_containers(socket, namespace, pod)}
   end
 
   # the container dropdown only shows for a pod with more than one
@@ -200,15 +225,34 @@ defmodule ExberlyWeb.Connection do
 
   defp refresh(socket), do: socket
 
+  # Lists `pod`'s containers and then `/app/bin` in the first one, storing
+  # `pod` itself (shared by the initial pod listing and picking a different
+  # pod from the dropdown).
+  defp list_containers(socket, namespace, pod) do
+    socket = update(socket, kube_pod: pod, kube_listing: true)
+
+    case Kubectl.list_containers(namespace, pod) do
+      {:ok, containers} ->
+        list_binaries(socket, namespace, pod, List.first(containers), containers)
+
+      {:error, reason} ->
+        update(socket, error: Format.error(reason), kube_listing: false)
+    end
+  end
+
   # Lists `/app/bin` in `container` and fills `kube_binaries`/`kube_binary`,
-  # also storing the full container list and the one picked (shared by the
-  # initial "list_kube_binaries" submit and "select_kube_container").
+  # also storing the full container list and the one picked (shared by
+  # `list_containers/3` and "select_kube_container").
   defp list_binaries(socket, namespace, pod, container, containers) do
     socket = update(socket, kube_containers: containers, kube_container: container)
 
     case Kubectl.list_binaries(namespace, pod, container) do
       {:ok, binaries} ->
-        update(socket, kube_binaries: binaries, kube_binary: List.first(binaries), kube_listing: false)
+        update(socket,
+          kube_binaries: binaries,
+          kube_binary: List.first(binaries),
+          kube_listing: false
+        )
 
       {:error, reason} ->
         update(socket, error: Format.error(reason), kube_listing: false)
