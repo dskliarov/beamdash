@@ -187,13 +187,15 @@ defmodule ExberlyWeb.Connection do
      )}
   end
 
+  # The pod comes from the server's selection, not the form: while a pick is
+  # still being listed the browser keeps sending the previous pod's hidden field.
   def handle_event(
         "connect_kubectl",
-        %{"namespace" => namespace, "pod" => pod, "container" => container, "binary" => binary},
+        %{"namespace" => namespace, "container" => container, "binary" => binary},
         socket
       ) do
     namespace = String.trim(namespace)
-    pod = String.trim(pod)
+    pod = socket.assigns.conn.kube_pod
     container = String.trim(container)
     cluster = socket.assigns.conn.kube_cluster
 

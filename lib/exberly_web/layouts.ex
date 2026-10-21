@@ -26,6 +26,10 @@ defmodule ExberlyWeb.Layouts do
     """
   end
 
+  defp kube_method_label do
+    if Application.get_env(:exberly, :has_k8s, false), do: "Kubernetes", else: "kubectl"
+  end
+
   attr :active, :atom, required: true
   attr :syntax, :atom, required: true
   attr :conn, :map, default: nil, doc: "from ExberlyWeb.Connection; nil hides the bar"
@@ -61,7 +65,7 @@ defmodule ExberlyWeb.Layouts do
               phx-click="set_conn_method"
               phx-value-method="kubectl"
             >
-              kubectl
+              {kube_method_label()}
             </button>
           </div>
 

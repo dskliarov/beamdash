@@ -198,6 +198,19 @@ defmodule Exberly.ConnectionBarTest do
     assert LastConnection.get().node == ""
   end
 
+  test "the kubectl method is labelled Kubernetes when kubectl was found at startup" do
+    previous = Application.get_env(:exberly, :has_k8s)
+    on_exit(fn -> Application.put_env(:exberly, :has_k8s, previous) end)
+
+    Application.put_env(:exberly, :has_k8s, true)
+    assert bar(socket()) =~ ~r/>\s*Kubernetes\s*</
+    refute bar(socket()) =~ ~r/>\s*kubectl\s*</
+
+    Application.put_env(:exberly, :has_k8s, false)
+    assert bar(socket()) =~ ~r/>\s*kubectl\s*</
+    refute bar(socket()) =~ ~r/>\s*Kubernetes\s*</
+  end
+
   test "other events and messages pass through to the page" do
     assert {:cont, _} = Connection.handle_event("sort", %{}, socket())
     assert {:cont, _} = Connection.handle_info(:tick, socket())

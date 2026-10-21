@@ -794,6 +794,7 @@ table.gc-events td, table.gc-events th { padding: 3px 8px; }
 .bar .connect .field-label { white-space: nowrap; }
 .bar .connect select.pod-select { min-width: 0; width: 420px; padding: 5px 8px; }
 .bar .connect select { padding: 5px 8px; }
+.connect-methods { display: flex; flex-direction: column; gap: 8px; }
 .bar .connect-kubectl { display: flex; flex-direction: column; gap: 8px; }
 .bar .connect-kubectl .connect { flex-wrap: nowrap; margin: 0; }
 .bar .connect-kubectl .field-label { flex: 0 0 84px; }
