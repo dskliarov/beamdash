@@ -4,6 +4,8 @@ defmodule Exberly.Application do
 
   @impl true
   def start(_type, _args) do
+    Application.put_env(:exberly, :has_k8s, System.find_executable("kubectl") != nil)
+
     children = [
       {Phoenix.PubSub, name: Exberly.PubSub},
       Exberly.Target,
