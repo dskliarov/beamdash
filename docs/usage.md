@@ -41,7 +41,7 @@ erl -sname foo -setcookie demo_cookie
 2. Enter `demo_cookie` in **Cookie**, then click **Connect**. Use your target's actual cookie when connecting to your application.
 3. Check that the node name and **Disconnect** replace the form, and that OTP, process count and memory appear below it.
 
-The connection bar is shared by every tab. exberly starts distribution on first connect, matching short or long names to the target, and connects as a hidden node. Disconnect ends the shared connection for all browser tabs.
+The connection bar is shared by every tab. exberly starts distribution on first connect, matching short or long names to the target, and connects as a hidden node. Switching between a short-named and a long-named target (including across Direct and kubectl) restarts distribution with the matching mode automatically; this only fails if exberly itself was started as a named node (`-sname`/`-name`), since Erlang cannot change that from under a running one. Disconnect ends the shared connection for all browser tabs.
 
 To connect to a node running in a Kubernetes pod, switch the bar to **kubectl** instead of **Direct**. Enter the namespace and pod, click **List /app/bin** to pick the release binary, then **Connect**. exberly reads the node name and cookie off the pod itself (via `kubectl exec ... rpc`) and opens `kubectl port-forward` tunnels for epmd and distribution, so there is no node name or cookie to type.
 
@@ -256,7 +256,8 @@ Other optional entry points are **Ask exberly**, **Jev: triage busiest processes
 
 | Problem | What to check |
 | --- | --- |
-| Cannot connect | Target is running with `-sname` or `-name`; hostname resolves; cookie matches; short/long naming is compatible; epmd and distribution ports are reachable. Read the connection error. |
+| Cannot connect | Target is running with `-sname` or `-name`; hostname resolves; cookie matches; epmd and distribution ports are reachable. Read the connection error. |
+| "needs the other short/long name mode" error | exberly itself was started as a named node (`-sname`/`-name`), so it can't restart distribution in the mode this target needs. Restart exberly without `-sname`/`-name` (or with the matching mode). |
 | Empty trace | Start tracing before the work occurs, verify module/function/arity and remaining call limit, and check that another `dbg` session has not taken over. |
 | Empty GC trace | Select an allocating process, start recording, keep the GC page open and scroll to the events under **GC trace**. Extend the duration for intermittent activity. |
 | Charts look empty | Allow fresh samples to arrive. History begins when the view starts collecting; it is not historical telemetry from before connection. |

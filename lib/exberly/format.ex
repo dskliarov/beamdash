@@ -189,6 +189,10 @@ defmodule Exberly.Format do
     do:
       "Could not start distribution here (is epmd running? try `epmd -daemon`): #{inspect(reason)}"
 
+  def error({:distribution_mode_locked, _reason}),
+    do:
+      "This target needs the other short/long name mode, but exberly itself was started as a named node (-sname/-name), so it can't switch automatically. Restart exberly without -sname/-name, or with the mode this target needs."
+
   def error({:agent_load_failed, reason}),
     do: "Connected, but could not load the agent into the target: #{inspect(reason)}"
 

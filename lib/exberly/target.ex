@@ -287,30 +287,60 @@ defmodule Exberly.Target do
 
   def parse_node(node) when is_atom(node), do: {:ok, node}
 
-  # Long names when the target's host part is a dotted name or IP.
+  # Long names when the target's host part is a dotted name or IP, short
+  # names otherwise (a kubectl-discovered node's host is the pod name,
+  # never dotted). Distribution stays up across connects to avoid
+  # restarting it on every one, but a *mode* mismatch (e.g. switching from
+  # a dotted direct target to a short-named pod, or back) makes Erlang
+  # itself refuse the connection ("System running to use fully qualified
+  # hostnames"), so that case restarts distribution with the right mode —
+  # transparently, no user involvement needed.
   defp ensure_distributed(target) do
-    if Node.alive?() do
-      :ok
-    else
-      [_, host] = target |> Atom.to_string() |> String.split("@", parts: 2)
-      mode = if String.contains?(host, "."), do: :longnames, else: :shortnames
+    [_, host] = target |> Atom.to_string() |> String.split("@", parts: 2)
+    mode = if String.contains?(host, "."), do: :longnames, else: :shortnames
 
-      # Long names: use 127.0.0.1 as our own host rather than this
-      # machine's hostname, which `:longnames` otherwise appends and
-      # requires to resolve (it rarely does, e.g. over a kubectl tunnel to
-      # a pod whose address is unrelated to this machine's actual name).
-      # Same workaround as hot_load_via_portforward.exs's `run/4`.
-      name =
-        case mode do
-          :longnames -> :"exberly_#{System.unique_integer([:positive])}@127.0.0.1"
-          :shortnames -> :"exberly_#{System.unique_integer([:positive])}"
-        end
+    cond do
+      not Node.alive?() -> start_distributed(mode)
+      current_name_domain() == mode -> :ok
+      true -> restart_distributed(mode)
+    end
+  end
 
-      case Node.start(name, mode) do
-        {:ok, _} -> :ok
-        {:error, {:already_started, _}} -> :ok
-        {:error, reason} -> {:error, {:distribution_failed, reason}}
+  defp current_name_domain do
+    case :net_kernel.get_state() do
+      %{name_domain: name_domain} -> name_domain
+      _ -> nil
+    end
+  end
+
+  # `:net_kernel.stop/0` only works on distribution started dynamically
+  # (`Node.start/2`, what `start_distributed/1` below does); started
+  # statically (`-sname`/`-name`, e.g. `iex --sname exberly -S mix
+  # phx.server`) it refuses with `{:error, :not_allowed}` — nothing to do
+  # but report it, since restarting the whole VM is out of our hands.
+  defp restart_distributed(mode) do
+    case :net_kernel.stop() do
+      :ok -> start_distributed(mode)
+      {:error, reason} -> {:error, {:distribution_mode_locked, reason}}
+    end
+  end
+
+  defp start_distributed(mode) do
+    # Long names: use 127.0.0.1 as our own host rather than this
+    # machine's hostname, which `:longnames` otherwise appends and
+    # requires to resolve (it rarely does, e.g. over a kubectl tunnel to
+    # a pod whose address is unrelated to this machine's actual name).
+    # Same workaround as hot_load_via_portforward.exs's `run/4`.
+    name =
+      case mode do
+        :longnames -> :"exberly_#{System.unique_integer([:positive])}@127.0.0.1"
+        :shortnames -> :"exberly_#{System.unique_integer([:positive])}"
       end
+
+    case Node.start(name, mode) do
+      {:ok, _} -> :ok
+      {:error, {:already_started, _}} -> :ok
+      {:error, reason} -> {:error, {:distribution_failed, reason}}
     end
   end
 

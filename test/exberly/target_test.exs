@@ -78,4 +78,19 @@ defmodule Exberly.TargetTest do
     assert node == :"foo@#{host}"
     assert {:error, :empty_node_name} = Target.parse_node("  ")
   end
+
+  test "a target needing the other name mode restarts distribution automatically", ctx do
+    # A dotted host picks long names; this one can't resolve, so the
+    # connect itself fails, but distribution comes up in long names mode.
+    assert {:error, _} = Target.connect("nonexistent@198.51.100.1", @cookie, ctx.server)
+    assert Node.alive?()
+    assert %{name_domain: :longnames} = :net_kernel.get_state()
+
+    # ctx.node is a short name (started by :peer with no dots): connecting
+    # to it must restart distribution in short names mode by itself,
+    # exactly the scenario a kubectl pod (short, undotted hostname) hits
+    # after an earlier dotted direct connect.
+    assert {:ok, _} = Target.connect(Atom.to_string(ctx.node), @cookie, ctx.server)
+    assert %{name_domain: :shortnames} = :net_kernel.get_state()
+  end
 end
