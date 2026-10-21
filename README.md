@@ -231,10 +231,12 @@ statically-started node's distribution be stopped and restarted; a target
 needing the other mode fails with a clear error instead.
 
 To connect to a node running in a Kubernetes pod instead, switch the
-connection bar to **kubectl**, enter the namespace and pod, and List
-`/app/bin` to pick the release binary. exberly reads the node name and
-cookie off the pod itself, then opens the `kubectl port-forward` tunnels
-distribution needs to reach it; no `node@host` or cookie to type.
+connection bar to **kubectl**, pick the **Cluster** (one entry per
+kubeconfig file under `~/.kube` — exberly passes it to `kubectl` directly,
+no shell-level context switch needed), enter the namespace, pick the pod,
+and List `/app/bin` to pick the release binary. exberly reads the node
+name and cookie off the pod itself, then opens the `kubectl port-forward`
+tunnels distribution needs to reach it; no `node@host` or cookie to type.
 
 ## Jev: suggested next step (optional)
 

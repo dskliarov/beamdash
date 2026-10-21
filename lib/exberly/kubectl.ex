@@ -6,11 +6,12 @@ defmodule Exberly.Kubectl do
   routable, since Erlang distribution connects to that address directly
   rather than doing a hostname lookup).
 
-  Given a namespace, a pod, the container to run commands in (`list_containers/2`
+  Given a cluster (a kubeconfig file, see `list_kubeconfigs/1`), a
+  namespace, a pod, the container to run commands in (`list_containers/4`
   lists them; pods with more than one container otherwise default to
   whichever `kubectl exec` picks, which is not necessarily the one running
-  the release) and a release binary under `/app/bin` in it (`list_binaries/3`
-  lists them), `connect/5`:
+  the release) and a release binary under `/app/bin` in it (`list_binaries/5`
+  lists them), `connect/6`:
 
     1. reads the node name and distribution cookie off the pod with
        `kubectl exec ... <binary> rpc "..."`, which goes through the
@@ -46,13 +47,40 @@ defmodule Exberly.Kubectl do
   end
 
   @doc """
+  Kubeconfig files under `dir` (default `~/.kube`), one per cluster, so the
+  UI can offer a cluster picker instead of relying on an externally-set
+  KUBECONFIG/current-context.
+  """
+  @spec list_kubeconfigs(String.t()) ::
+          {:ok, [%{name: String.t(), path: String.t()}]} | {:error, term()}
+  def list_kubeconfigs(dir \\ kubeconfig_dir()) do
+    case File.ls(dir) do
+      {:ok, files} ->
+        {:ok,
+         files
+         |> Enum.filter(&String.ends_with?(&1, [".yaml", ".yml"]))
+         |> Enum.sort()
+         |> Enum.map(&%{name: Path.rootname(&1), path: Path.join(dir, &1)})}
+
+      {:error, reason} ->
+        {:error, {:kubeconfig_list_failed, reason}}
+    end
+  end
+
+  defp kubeconfig_dir, do: Application.get_env(:exberly, :kubeconfig_dir, Path.expand("~/.kube"))
+
+  @doc """
   Pods in `namespace`, so the user can pick one from a list instead of
   typing it.
   """
-  @spec list_pods(String.t(), (list(String.t()) -> {binary(), integer()})) ::
+  @spec list_pods(String.t() | nil, String.t(), (list(String.t()) -> {binary(), integer()})) ::
           {:ok, [String.t()]} | {:error, term()}
-  def list_pods(namespace, exec \\ &run_kubectl/1) do
-    case exec.(["get", "pods", "-n", namespace, "-o", "jsonpath={.items[*].metadata.name}"]) do
+  def list_pods(kubeconfig, namespace, exec \\ &run_kubectl/1) do
+    args =
+      kubeconfig_args(kubeconfig) ++
+        ["get", "pods", "-n", namespace, "-o", "jsonpath={.items[*].metadata.name}"]
+
+    case exec.(args) do
       {output, 0} ->
         {:ok, output |> String.trim() |> String.split(~r/\s+/, trim: true)}
 
@@ -64,22 +92,31 @@ defmodule Exberly.Kubectl do
   end
 
   @doc """
-  Containers in `pod` (`connect/5` and `list_binaries/4` need one to pick
+  Containers in `pod` (`connect/6` and `list_binaries/5` need one to pick
   which container `kubectl exec` runs in; pods with a single container
   don't need this at all, `kubectl exec` defaults to it on its own).
   """
-  @spec list_containers(String.t(), String.t(), (list(String.t()) -> {binary(), integer()})) ::
+  @spec list_containers(
+          String.t() | nil,
+          String.t(),
+          String.t(),
+          (list(String.t()) -> {binary(), integer()})
+        ) ::
           {:ok, [String.t()]} | {:error, term()}
-  def list_containers(namespace, pod, exec \\ &run_kubectl/1) do
-    case exec.([
-           "get",
-           "pod",
-           "-n",
-           namespace,
-           pod,
-           "-o",
-           "jsonpath={.spec.containers[*].name}"
-         ]) do
+  def list_containers(kubeconfig, namespace, pod, exec \\ &run_kubectl/1) do
+    args =
+      kubeconfig_args(kubeconfig) ++
+        [
+          "get",
+          "pod",
+          "-n",
+          namespace,
+          pod,
+          "-o",
+          "jsonpath={.spec.containers[*].name}"
+        ]
+
+    case exec.(args) do
       {output, 0} ->
         {:ok, output |> String.trim() |> String.split(~r/\s+/, trim: true)}
 
@@ -92,13 +129,18 @@ defmodule Exberly.Kubectl do
 
   @doc """
   Binaries under #{@release_bin_dir} in `pod`'s `container` (a release's
-  name there is a good guess at the binary to pick for `connect/5`).
+  name there is a good guess at the binary to pick for `connect/6`).
   """
-  @spec list_binaries(String.t(), String.t(), String.t(), (list(String.t()) ->
-                                                             {binary(), integer()})) ::
+  @spec list_binaries(
+          String.t() | nil,
+          String.t(),
+          String.t(),
+          String.t(),
+          (list(String.t()) -> {binary(), integer()})
+        ) ::
           {:ok, [String.t()]} | {:error, term()}
-  def list_binaries(namespace, pod, container, exec \\ &run_kubectl/1) do
-    case exec.(exec_args(namespace, pod, container, ["ls", "-1", @release_bin_dir])) do
+  def list_binaries(kubeconfig, namespace, pod, container, exec \\ &run_kubectl/1) do
+    case exec.(exec_args(kubeconfig, namespace, pod, container, ["ls", "-1", @release_bin_dir])) do
       {output, 0} ->
         {:ok, output |> String.split("\n", trim: true) |> Enum.sort()}
 
@@ -110,24 +152,25 @@ defmodule Exberly.Kubectl do
   end
 
   @doc """
-  Opens a tunnel to `pod`'s `container` in `namespace` through `binary` (a
-  path under #{@release_bin_dir}) and returns the node and cookie
-  discovered there, with the tunnel to pass to `Target.connect/2` and
-  later to `close/1`.
+  Opens a tunnel to `pod`'s `container` in `namespace` (in the cluster
+  `kubeconfig` points at) through `binary` (a path under
+  #{@release_bin_dir}) and returns the node and cookie discovered there,
+  with the tunnel to pass to `Target.connect/2` and later to `close/1`.
   """
-  @spec connect(String.t(), String.t(), String.t(), String.t(), keyword()) ::
+  @spec connect(String.t() | nil, String.t(), String.t(), String.t(), String.t(), keyword()) ::
           {:ok, %{node: node(), cookie: atom(), tunnel: %Tunnel{}}} | {:error, term()}
-  def connect(namespace, pod, container, binary, opts \\ []) do
+  def connect(kubeconfig, namespace, pod, container, binary, opts \\ []) do
     exec = Keyword.get(opts, :exec, &run_kubectl/1)
-    open_forward = Keyword.get(opts, :open_forward, &open_port_forward/3)
+    open_forward = Keyword.get(opts, :open_forward, &open_port_forward/4)
 
-    with {:ok, {node, cookie}} <- discover(namespace, pod, container, binary, exec),
+    with {:ok, {node, cookie}} <- discover(kubeconfig, namespace, pod, container, binary, exec),
          [short_name, _host] <- String.split(Atom.to_string(node), "@", parts: 2),
          {:ok, epmd_local} <- free_local_port(),
-         {:ok, epmd_forward} <- open_forward.(namespace, pod, {epmd_local, @epmd_port}),
+         {:ok, epmd_forward} <-
+           open_forward.(kubeconfig, namespace, pod, {epmd_local, @epmd_port}),
          {:ok, dist_port} <- discover_dist_port(epmd_local, short_name),
          {:ok, dist_local} <- free_local_port(),
-         {:ok, dist_forward} <- open_forward.(namespace, pod, {dist_local, dist_port}) do
+         {:ok, dist_forward} <- open_forward.(kubeconfig, namespace, pod, {dist_local, dist_port}) do
       install_epmd_module()
       persistent_term_put(short_name, dist_local)
 
@@ -146,7 +189,7 @@ defmodule Exberly.Kubectl do
     end
   end
 
-  @doc "Closes both port-forwards opened by `connect/5` and forgets the tunnel target."
+  @doc "Closes both port-forwards opened by `connect/6` and forgets the tunnel target."
   @spec close(%Tunnel{} | nil) :: :ok
   def close(nil), do: :ok
 
@@ -161,19 +204,20 @@ defmodule Exberly.Kubectl do
 
   ## Discovery (kubectl exec ... rpc), no tunnel needed
 
-  defp discover(namespace, pod, container, binary, exec) do
+  defp discover(kubeconfig, namespace, pod, container, binary, exec) do
     release_bin = Path.join(@release_bin_dir, binary)
 
     with {:error, elixir_reason} <-
-           discover_with(namespace, pod, container, release_bin, :elixir, exec),
+           discover_with(kubeconfig, namespace, pod, container, release_bin, :elixir, exec),
          {:error, erlang_reason} <-
-           discover_with(namespace, pod, container, release_bin, :erlang, exec) do
+           discover_with(kubeconfig, namespace, pod, container, release_bin, :erlang, exec) do
       {:error, {:discovery_failed, {elixir_reason, erlang_reason}}}
     end
   end
 
-  defp discover_with(namespace, pod, container, release_bin, flavor, exec) do
-    args = exec_args(namespace, pod, container, [release_bin, "rpc", rpc_expr(flavor)])
+  defp discover_with(kubeconfig, namespace, pod, container, release_bin, flavor, exec) do
+    args =
+      exec_args(kubeconfig, namespace, pod, container, [release_bin, "rpc", rpc_expr(flavor)])
 
     case exec.(args) do
       {output, 0} -> parse_discovery(output)
@@ -235,7 +279,7 @@ defmodule Exberly.Kubectl do
 
   ## kubectl port-forward (kept open until `close/1`)
 
-  defp open_port_forward(namespace, pod, {local_port, remote_port}) do
+  defp open_port_forward(kubeconfig, namespace, pod, {local_port, remote_port}) do
     case System.find_executable("kubectl") do
       nil ->
         {:error, :kubectl_not_found}
@@ -247,13 +291,15 @@ defmodule Exberly.Kubectl do
             [
               :binary,
               :exit_status,
-              args: [
-                "port-forward",
-                "-n",
-                namespace,
-                "pod/#{pod}",
-                "#{local_port}:#{remote_port}"
-              ]
+              args:
+                kubeconfig_args(kubeconfig) ++
+                  [
+                    "port-forward",
+                    "-n",
+                    namespace,
+                    "pod/#{pod}",
+                    "#{local_port}:#{remote_port}"
+                  ]
             ]
           )
 
@@ -314,11 +360,15 @@ defmodule Exberly.Kubectl do
 
   # `-c container` only when one is given: a single-container pod needs
   # none, `kubectl exec` already defaults to its one container.
-  defp exec_args(namespace, pod, container, command) do
-    base = ["exec", "-n", namespace, pod]
+  defp exec_args(kubeconfig, namespace, pod, container, command) do
+    base = kubeconfig_args(kubeconfig) ++ ["exec", "-n", namespace, pod]
     with_container = if container in [nil, ""], do: base, else: base ++ ["-c", container]
     with_container ++ ["--"] ++ command
   end
+
+  defp kubeconfig_args(nil), do: []
+  defp kubeconfig_args(""), do: []
+  defp kubeconfig_args(path), do: ["--kubeconfig", path]
 
   defp free_local_port do
     with {:ok, socket} <- :gen_tcp.listen(0, [:binary, ip: {127, 0, 0, 1}]),

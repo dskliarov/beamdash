@@ -91,7 +91,34 @@ defmodule ExberlyWeb.Layouts do
           </form>
 
           <div :if={Map.get(@conn, :method, :direct) == :kubectl} class="connect-kubectl">
-            <form id="list-kube-pods-form" phx-submit="list_kube_pods" class="connect">
+            <form
+              :if={Map.get(@conn, :kube_clusters, []) != []}
+              id="select-kube-cluster-form"
+              phx-change="select_kube_cluster"
+              class="connect"
+            >
+              <span class="field-label small muted">Cluster</span>
+              <select name="cluster" aria-label="Cluster">
+                <option
+                  :for={c <- @conn.kube_clusters}
+                  value={c.path}
+                  selected={c.path == @conn.kube_cluster}
+                >
+                  {c.name}
+                </option>
+              </select>
+            </form>
+            <p :if={Map.get(@conn, :kube_clusters, []) == []} class="muted small">
+              No kubeconfig files found under ~/.kube{if @conn[:kube_cluster_error],
+                do: " (#{@conn.kube_cluster_error})"}.
+            </p>
+
+            <form
+              :if={Map.get(@conn, :kube_clusters, []) != []}
+              id="list-kube-pods-form"
+              phx-submit="list_kube_pods"
+              class="connect"
+            >
               <input
                 name="namespace"
                 value={Map.get(@conn, :kube_namespace, "")}

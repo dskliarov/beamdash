@@ -12,7 +12,7 @@ defmodule Exberly.Target do
     4. loads the helper modules (`:exberly_agent` for process info,
        `:erlyberly` for tracing) and reads basic node info.
 
-  `connect_via_kubectl/4` reaches a node in a Kubernetes pod the same way,
+  `connect_via_kubectl/5` reaches a node in a Kubernetes pod the same way,
   but first opens a `kubectl port-forward` tunnel to it (see
   `Exberly.Kubectl`) and discovers its node name and cookie from the pod
   itself, since the pod's advertised address is not otherwise reachable
@@ -48,15 +48,17 @@ defmodule Exberly.Target do
 
   @doc """
   Connects to a node running as `binary` (under `/app/bin`, see
-  `Exberly.Kubectl.list_binaries/4`) in `container` (see
-  `Exberly.Kubectl.list_containers/3`; `nil` or `""` for a single-container
-  pod) in `pod`, in `namespace`, by opening a `kubectl port-forward` tunnel
-  to it and discovering its node name and cookie from the pod itself.
+  `Exberly.Kubectl.list_binaries/5`) in `container` (see
+  `Exberly.Kubectl.list_containers/4`; `nil` or `""` for a single-container
+  pod) in `pod`, in `namespace`, in the cluster `kubeconfig` points at (see
+  `Exberly.Kubectl.list_kubeconfigs/1`; `nil` or `""` uses `kubectl`'s own
+  ambient config), by opening a `kubectl port-forward` tunnel to it and
+  discovering its node name and cookie from the pod itself.
   """
-  def connect_via_kubectl(namespace, pod, container, binary, server \\ __MODULE__) do
+  def connect_via_kubectl(kubeconfig, namespace, pod, container, binary, server \\ __MODULE__) do
     GenServer.call(
       server,
-      {:connect_kubectl, namespace, pod, container, binary},
+      {:connect_kubectl, kubeconfig, namespace, pod, container, binary},
       @kubectl_connect_timeout
     )
   end
@@ -136,10 +138,10 @@ defmodule Exberly.Target do
     end
   end
 
-  def handle_call({:connect_kubectl, namespace, pod, container, binary}, _from, state) do
+  def handle_call({:connect_kubectl, kubeconfig, namespace, pod, container, binary}, _from, state) do
     state = drop_current(state, :reconnect)
 
-    case Kubectl.connect(namespace, pod, container, binary) do
+    case Kubectl.connect(kubeconfig, namespace, pod, container, binary) do
       {:ok, %{node: node, cookie: cookie, tunnel: tunnel}} ->
         result =
           with :ok <- ensure_distributed(node),
