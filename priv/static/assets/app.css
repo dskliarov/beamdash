@@ -794,6 +794,13 @@ table.gc-events td, table.gc-events th { padding: 3px 8px; }
 .bar .connect .field-label { white-space: nowrap; }
 .bar .connect select.pod-select { min-width: 0; width: 420px; padding: 5px 8px; }
 .bar .connect select { padding: 5px 8px; }
+.bar .connect-kubectl { display: flex; flex-direction: column; gap: 8px; }
+.bar .connect-kubectl .connect { flex-wrap: nowrap; margin: 0; }
+.bar .connect-kubectl .field-label { flex: 0 0 84px; }
+.bar .connect-kubectl input,
+.bar .connect-kubectl select,
+.bar .connect-kubectl button { height: 32px; box-sizing: border-box; }
+.bar .connect-kubectl select.pod-select { flex: 1 1 0; width: auto; min-width: 0; }
 .node-info { display: flex; flex-wrap: wrap; gap: 4px 16px; justify-content: flex-end; margin-left: auto; }
 .node-info span + span::before { content: "·"; margin-right: 16px; opacity: .6; }
 .node-info span + span { margin-left: -12px; }

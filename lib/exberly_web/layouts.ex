@@ -119,6 +119,7 @@ defmodule ExberlyWeb.Layouts do
               phx-submit="list_kube_pods"
               class="connect"
             >
+              <span class="field-label small muted">Namespace</span>
               <input
                 name="namespace"
                 value={Map.get(@conn, :kube_namespace, "")}
