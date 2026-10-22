@@ -71,7 +71,8 @@ defmodule Beamdash.AskAdvisor do
   @paths Map.new(@destinations, fn {key, _label, path, _w, _n} -> {key, path} end)
 
   @question %{
-    question: "Which beamdash view best answers this question about a running Erlang/Elixir node?",
+    question:
+      "Which beamdash view best answers this question about a running Erlang/Elixir node?",
     rules: [
       "Pick the most specific view that answers the question.",
       "Choose none when no view fits."

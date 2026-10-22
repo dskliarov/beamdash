@@ -91,6 +91,25 @@ defmodule Beamdash.Kubectl do
     kind, reason -> {:error, {:pod_list_failed, {kind, reason}}}
   end
 
+  @doc "Namespaces in the cluster, suggested in the namespace field."
+  @spec list_namespaces(String.t() | nil, (list(String.t()) -> {binary(), integer()})) ::
+          {:ok, [String.t()]} | {:error, term()}
+  def list_namespaces(kubeconfig, exec \\ &run_kubectl/1) do
+    args =
+      kubeconfig_args(kubeconfig) ++
+        ["get", "namespaces", "-o", "jsonpath={.items[*].metadata.name}"]
+
+    case exec.(args) do
+      {output, 0} ->
+        {:ok, output |> String.trim() |> String.split(~r/\s+/, trim: true)}
+
+      {output, status} ->
+        {:error, {:namespace_list_failed, {status, String.trim(output)}}}
+    end
+  catch
+    kind, reason -> {:error, {:namespace_list_failed, {kind, reason}}}
+  end
+
   @doc """
   Containers in `pod` (`connect/6` and `list_binaries/5` need one to pick
   which container `kubectl exec` runs in; pods with a single container

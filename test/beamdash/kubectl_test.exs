@@ -32,6 +32,24 @@ defmodule Beamdash.KubectlTest do
     end
   end
 
+  describe "list_namespaces/2" do
+    test "parses a jsonpath namespace list" do
+      exec = fn args ->
+        assert args == ["get", "namespaces", "-o", "jsonpath={.items[*].metadata.name}"]
+        {"default kube-system prod\n", 0}
+      end
+
+      assert {:ok, ["default", "kube-system", "prod"]} = Kubectl.list_namespaces(nil, exec)
+    end
+
+    test "reports kubectl's failure, such as a forbidden listing" do
+      exec = fn _args -> {"Error from server (Forbidden)\n", 1} end
+
+      assert {:error, {:namespace_list_failed, {1, "Error from server (Forbidden)"}}} =
+               Kubectl.list_namespaces(nil, exec)
+    end
+  end
+
   describe "list_pods/3" do
     test "parses a jsonpath pod list" do
       exec = fn args ->

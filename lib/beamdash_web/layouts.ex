@@ -124,14 +124,33 @@ defmodule BeamdashWeb.Layouts do
               class="connect"
             >
               <span class="field-label small muted">Namespace</span>
-              <input
-                name="namespace"
-                value={Map.get(@conn, :kube_namespace, "")}
-                placeholder="namespace"
-                required
-                autocomplete="off"
-                aria-label="Namespace"
-              />
+              <div
+                id="namespace-combobox"
+                class="combobox"
+                phx-hook="NamespaceCombobox"
+                data-options={Jason.encode!(@conn.kube_namespaces)}
+              >
+                <input
+                  name="namespace"
+                  value={Map.get(@conn, :kube_namespace, "")}
+                  placeholder="namespace"
+                  required
+                  autocomplete="off"
+                  role="combobox"
+                  aria-label="Namespace"
+                  aria-autocomplete="list"
+                  aria-expanded="false"
+                  aria-controls="namespace-options"
+                />
+                <ul
+                  id="namespace-options"
+                  class="combobox-list"
+                  role="listbox"
+                  phx-update="ignore"
+                  hidden
+                >
+                </ul>
+              </div>
               <button
                 type="submit"
                 class="secondary"

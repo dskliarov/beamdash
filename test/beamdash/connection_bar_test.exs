@@ -174,7 +174,7 @@ defmodule Beamdash.ConnectionBarTest do
 
   test "a connection saved before the rename to beamdash is still found" do
     default = Path.join(:filename.basedir(:user_config, "beamdash"), "last_connection.json")
-    old = Path.join(:filename.basedir(:user_config, "elixberly"), "last_connection.json")
+    old = Path.join(:filename.basedir(:user_config, "exberly"), "last_connection.json")
     assert LastConnection.legacy_path(default) == old
     assert LastConnection.legacy_path("/somewhere/else.json") == nil
   end
@@ -209,6 +209,27 @@ defmodule Beamdash.ConnectionBarTest do
     Application.put_env(:beamdash, :has_k8s, false)
     assert bar(socket()) =~ ~r/>\s*kubectl\s*</
     refute bar(socket()) =~ ~r/>\s*Kubernetes\s*</
+  end
+
+  test "the namespace field suggests the namespaces found in the cluster" do
+    conn =
+      Map.merge(socket().assigns.conn, %{
+        method: :kubectl,
+        kube_clusters: [%{name: "prod", path: "/k/prod.yaml"}],
+        kube_cluster: "/k/prod.yaml",
+        kube_namespace: "",
+        kube_namespaces: ["default", "prod"]
+      })
+
+    html =
+      %{active: :gc, syntax: :erlang, conn: conn}
+      |> BeamdashWeb.Layouts.header()
+      |> rendered_to_string()
+
+    assert html =~ ~s(phx-hook="NamespaceCombobox")
+    assert html =~ ~s(data-options="[&quot;default&quot;,&quot;prod&quot;]")
+    assert html =~ ~s(role="combobox")
+    assert html =~ ~s(id="namespace-options")
   end
 
   test "other events and messages pass through to the page" do

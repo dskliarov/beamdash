@@ -15,7 +15,7 @@ defmodule BeamdashWeb.Connection do
   session that failed to connect is offered instead until one succeeds.
   """
   import Phoenix.Component, only: [assign: 3]
-  import Phoenix.LiveView, only: [attach_hook: 4, connected?: 1]
+  import Phoenix.LiveView, only: [attach_hook: 4, connected?: 1, start_async: 3]
 
   alias Beamdash.{Format, Kubectl, LastConnection, Target}
 
@@ -41,6 +41,7 @@ defmodule BeamdashWeb.Connection do
         kube_cluster: kube_clusters |> List.first() |> then(&(&1 && &1.path)),
         kube_cluster_error: kube_cluster_error,
         kube_namespace: "",
+        kube_namespaces: [],
         kube_pod: "",
         kube_pods: nil,
         kube_pods_listing: false,
@@ -52,11 +53,16 @@ defmodule BeamdashWeb.Connection do
       })
       |> attach_hook(:conn_event, :handle_event, &handle_event/3)
       |> attach_hook(:conn_info, :handle_info, &handle_info/2)
+      |> attach_hook(:conn_namespaces, :handle_async, &handle_async/3)
 
-    if connected?(socket) do
-      :ok = Target.subscribe()
-      send(self(), :beamdash_conn_tick)
-    end
+    socket =
+      if connected?(socket) do
+        :ok = Target.subscribe()
+        send(self(), :beamdash_conn_tick)
+        list_namespaces(socket)
+      else
+        socket
+      end
 
     {:cont, socket}
   end
@@ -101,17 +107,22 @@ defmodule BeamdashWeb.Connection do
   # picking a different cluster invalidates everything listed under the old
   # one, same reset `"select_kube_pod"` does for a different pod.
   def handle_event("select_kube_cluster", %{"cluster" => cluster}, socket) do
-    {:halt,
-     update(socket,
-       kube_cluster: cluster,
-       kube_pods: nil,
-       kube_pod: "",
-       kube_containers: nil,
-       kube_container: nil,
-       kube_binaries: nil,
-       kube_binary: nil,
-       error: nil
-     )}
+    socket =
+      socket
+      |> update(
+        kube_cluster: cluster,
+        kube_namespaces: [],
+        kube_pods: nil,
+        kube_pod: "",
+        kube_containers: nil,
+        kube_container: nil,
+        kube_binaries: nil,
+        kube_binary: nil,
+        error: nil
+      )
+      |> list_namespaces()
+
+    {:halt, socket}
   end
 
   def handle_event("list_kube_pods", %{"namespace" => namespace}, socket) do
@@ -247,6 +258,22 @@ defmodule BeamdashWeb.Connection do
   end
 
   def handle_info(_message, socket), do: {:cont, socket}
+
+  defp handle_async(:kube_namespaces, {:ok, {:ok, namespaces}}, socket),
+    do: {:halt, update(socket, kube_namespaces: namespaces)}
+
+  defp handle_async(:kube_namespaces, _result, socket), do: {:halt, socket}
+
+  defp handle_async(_name, _result, socket), do: {:cont, socket}
+
+  # Runs async so a slow or unreachable cluster never delays the page; a
+  # failed listing (often RBAC forbids it) just leaves the suggestions empty.
+  defp list_namespaces(%{assigns: %{conn: %{kube_cluster: nil}}} = socket), do: socket
+
+  defp list_namespaces(socket) do
+    cluster = socket.assigns.conn.kube_cluster
+    start_async(socket, :kube_namespaces, fn -> Kubectl.list_namespaces(cluster) end)
+  end
 
   defp refresh(%{assigns: %{conn: %{status: :connected}}} = socket) do
     case Target.node_info() do
