@@ -25,7 +25,7 @@ const Resizer = {
     const el = this.el;
     const d = el.dataset;
     const root = document.documentElement;
-    const key = "exberly:" + d.var;
+    const key = "beamdash:" + d.var;
     const store = (v) => {
       try {
         v == null ? localStorage.removeItem(key) : localStorage.setItem(key, String(v));

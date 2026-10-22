@@ -1,4 +1,4 @@
-# exberly
+# beamdash
 
 An Erlang and Elixir node inspection tool built with Elixir and Phoenix
 LiveView. It connects to a running Erlang or Elixir node and shows what is
@@ -30,7 +30,7 @@ happening inside it.
   available), Statistics (up time, run queue, IO in/out), and System
   statistics / limit (atoms, processes, ports and ETS tables against their
   limits, with a bar, and the distribution buffer busy limit). Read by
-  exberly's agent with the same calls as `observer_backend:sys_info/0`,
+  beamdash's agent with the same calls as `observer_backend:sys_info/0`,
   so the target needs no `runtime_tools`; refreshed every 10 s, as in
   Observer, or with Refresh.
 - **Load Charts:** Observer's Load Charts: Scheduler Utilization (%), one
@@ -96,7 +96,7 @@ happening inside it.
     it away. Click a line for the whole event. As with any
     sys:trace, the same lines are printed on the target's console. Traced
     processes are highlighted in the table, and a "tracing" legend entry
-    lists them. If exberly disconnects or goes away, tracing is switched
+    lists them. If beamdash disconnects or goes away, tracing is switched
     off on the target by itself.
   - **State** (gen_servers and gen_statems): `sys:get_state/2` in a panel
     of the dock, with records shown by field name when the module has debug
@@ -127,8 +127,8 @@ happening inside it.
   - *ETS:* every table with owner, rows and memory, and how much each has
     grown since the page was opened (the list refreshes every 5 s).
 
-  recon is a dependency of exberly. It is used from the node if the node
-  has it; otherwise exberly loads its copy into the node (never over the
+  recon is a dependency of beamdash. It is used from the node if the node
+  has it; otherwise beamdash loads its copy into the node (never over the
   node's own). Without recon, built-in equivalents are used; the page says
   which.
 - **GC:** collections and bytes reclaimed per second across the node, with
@@ -193,7 +193,7 @@ happening inside it.
   spawn), for a set number of seconds. Results refresh while it runs and
   show as a sortable, filterable table, in total or per process. tprof
   runs in its own trace session, so it does not clash with tracing; if
-  exberly disconnects, profiling stops on the target by itself.
+  beamdash disconnects, profiling stops on the target by itself.
 - **Call graph:** what a function calls, as an expandable tree, from an
   xref index of the target's code (built once; OTP and Elixir standard
   libraries are not indexed, so calls into them are leaves).
@@ -207,7 +207,7 @@ happening inside it.
 Requires Elixir 1.15+ and Erlang/OTP 25+ (`brew install elixir`).
 
 ```bash
-cd ~/projects/erl/exberly
+cd ~/projects/erl/beamdash
 mix setup            # fetch deps and compile
 mix phx.server       # open http://localhost:4000
 ```
@@ -221,20 +221,20 @@ erl -sname foo -setcookie abc
 Then connect to `foo` (or `foo@yourhost`) with cookie `abc`, from the bar at the
 top of any tab.
 
-exberly starts Erlang distribution itself on first connect, picking short or
+beamdash starts Erlang distribution itself on first connect, picking short or
 long names to match the target, and restarts it automatically if a later
 target needs the other mode (e.g. switching from a dotted direct target to
 a kubectl pod's short, undotted name, or back) — no user action needed. You
-can also start it as a named node: `iex --sname exberly -S mix phx.server`,
-but then exberly can't switch modes for you, since Erlang won't let a
+can also start it as a named node: `iex --sname beamdash -S mix phx.server`,
+but then beamdash can't switch modes for you, since Erlang won't let a
 statically-started node's distribution be stopped and restarted; a target
 needing the other mode fails with a clear error instead.
 
 To connect to a node running in a Kubernetes pod instead, switch the
 connection bar to **kubectl**, pick the **Cluster** (one entry per
-kubeconfig file under `~/.kube` — exberly passes it to `kubectl` directly,
+kubeconfig file under `~/.kube` — beamdash passes it to `kubectl` directly,
 no shell-level context switch needed), enter the namespace, pick the pod,
-and List `/app/bin` to pick the release binary. exberly reads the node
+and List `/app/bin` to pick the release binary. beamdash reads the node
 name and cookie off the pod itself, then opens the `kubectl port-forward`
 tunnels distribution needs to reach it; no `node@host` or cookie to type.
 
@@ -246,7 +246,7 @@ should come next (message backlog, CPU work, heap growth, retained binaries,
 GC activity, what it waits on, idle memory, or no clear issue). It is a
 suggestion, never a diagnosis, and nothing is changed on the node.
 
-- **exberly does the arithmetic.** It sends derived facts, not just raw
+- **beamdash does the arithmetic.** It sends derived facts, not just raw
   samples: queue growth per second, memory change over the window,
   reductions rate (mean, peak), binary bytes against process memory, old-heap
   share, the process's status, a wait category ("OTP receive loop",
@@ -269,15 +269,15 @@ suggestion, never a diagnosis, and nothing is changed on the node.
   click. TypeSafe's documentation does not say how long requests are kept;
   calls may be charged.
 
-Set `TYPESAFE_API_KEY` in the environment that starts exberly. Jev is then
+Set `TYPESAFE_API_KEY` in the environment that starts beamdash. Jev is then
 on (setting the key is the opt-in); **Settings → Enable Jev analysis** turns
-it off or on for all open tabs until exberly restarts. The model is pinned
+it off or on for all open tabs until beamdash restarts. The model is pinned
 (`jev-1.13.0`); `TYPESAFE_MODEL` selects another. If the system's CA
 certificates are unavailable, set `TYPESAFE_CACERTFILE` to a PEM bundle; TLS
-verification stays on. The key stays on the exberly host: it is never sent
+verification stays on. The key stays on the beamdash host: it is never sent
 to the browser or the inspected node.
 
-`enabled: false` under `config :exberly, Exberly.Jev` in
+`enabled: false` under `config :beamdash, Beamdash.Jev` in
 `config/config.exs`, or `JEV_ENABLED=false` (or `0`, `no`, `off`) in the
 environment, disables Jev entirely: on every tab, every Jev element (the Ask
 box, triage, the process, GC, memory and sequence sections, and the Settings
@@ -288,28 +288,28 @@ the switch itself stays, so Jev can be turned back on.
 
 ### More Jev, same rules
 
-The same rules apply to these too: exberly measures, Jev only picks one
+The same rules apply to these too: beamdash measures, Jev only picks one
 of a fixed set of options, nothing identifying is sent, and every request
 is shown under "What is sent to TypeSafe".
 
-- **Ask exberly** (under the header, every tab): type a question such as
+- **Ask beamdash** (under the header, every tab): type a question such as
   "who is leaking binaries?" or "trace demo_shop". Jev picks the view that
   answers it (processes by memory, queue or CPU, triage, a memory view,
   the health check, GC, Tracing, Seq trace, Profile, Crashes…) and
-  exberly opens it; when two views fit about equally, both are offered.
+  beamdash opens it; when two views fit about equally, both are offered.
   A module named in the question is matched against the node's loaded
   modules here and opened on the Tracing or Profile tab. Only the typed
   question is sent.
 - **Triage** (Processes tab): **Jev: triage busiest processes** asks, in
   one request, about each of up to 30 of the busiest processes (by memory,
-  queue and reductions rate; exberly's own helpers left out), sent as
+  queue and reductions rate; beamdash's own helpers left out), sent as
   anonymous ids `p1, p2, …` with their 30-second trends, rank on the node,
   status, wait category and OTP kind. Processes whose answer is an
   investigation are flagged in the table (⚑ and the suggestion); **Show
   only flagged** narrows the table to them. Opening a flagged process shows
   the flag at the top of its panel with **How to check it**: a few steps for
-  that investigation, written by exberly (not Jev) from what the panel
-  knows, with buttons where exberly can take the step (Force GC, State,
+  that investigation, written by beamdash (not Jev) from what the panel
+  knows, with buttons where beamdash can take the step (Force GC, State,
   the Tracing/Profile/GC tab on that module or process, or the process a
   pending call is waiting on). A call waiting for another process's reply
   (`gen:do_call`) is sent as its own wait category, `call_reply`, not as
@@ -329,7 +329,7 @@ is shown under "What is sent to TypeSafe".
 `/?triage=1` and `/memory?check=1` run the triage and the health check as
 soon as enough history is collected; Ask uses them.
 
-**Checking the suggestions.** `mix exberly.jev_eval` sends fixed
+**Checking the suggestions.** `mix beamdash.jev_eval` sends fixed
 scenarios with a known right answer and reports how many Jev gets right:
 7 process and 6 GC cases (a growing mailbox, a hot loop, heap growth,
 retained binaries, an idle memory hog, a blocked process, healthy ones),
@@ -337,20 +337,20 @@ retained binaries, an idle memory hog, a blocked process, healthy ones),
 12 processes to triage. Run it before changing `TYPESAFE_MODEL` and
 compare (`--model jev-latest`; `--only memory,seq,route,triage` to run
 some sets; `--strict` exits 1 on any miss). `TYPESAFE_ENDPOINT` points
-exberly at a stand-in instead of TypeSafe's API, for testing only.
+beamdash at a stand-in instead of TypeSafe's API, for testing only.
 
 ## How it works
 
 ```
-LiveView (browser) ──▶ Exberly.Target ──hidden connection──▶ target node
-                                                               └─ :exberly_agent
+LiveView (browser) ──▶ Beamdash.Target ──hidden connection──▶ target node
+                                                               └─ :beamdash_agent
 ```
 
-- **`Exberly.Target`** owns the one connection. It sets the cookie for that
+- **`Beamdash.Target`** owns the one connection. It sets the cookie for that
   node only, connects with `:net_kernel.hidden_connect_node/1` (so it never
   joins the target's cluster or shows in `nodes()`), monitors the node and
   notifies subscribers when it goes down.
-- **`:exberly_agent`** (`src/exberly_agent.erl`) is loaded into the target
+- **`:beamdash_agent`** (`src/beamdash_agent.erl`) is loaded into the target
   with `:code.load_binary/3`. It gathers all process info in one RPC per
   refresh. If the target runs an older OTP that rejects the BEAM compiled
   here, the loader sends the module's abstract code and compiles it on the
@@ -358,25 +358,25 @@ LiveView (browser) ──▶ Exberly.Target ──hidden connection──▶ tar
   Reading another process's info is a signal that process handles itself
   (about one reduction), so the agent asks for everything in one
   `process_info` call: an idle process you are watching shows about 1
-  reduction/s of exberly's own (2 on OTP 25 for gen_servers and other
+  reduction/s of beamdash's own (2 on OTP 25 for gen_servers and other
   proc_lib processes).
 - **Tracing agent:** loaded on connect, it runs the trace collector on the
   target using `dbg`.
-- **`Exberly.Tracer`** starts and stops traces through it. The
+- **`Beamdash.Tracer`** starts and stops traces through it. The
   collector sends trace messages straight to the Tracer's pid, so nothing
   is polled. The Tracer pairs each call with its return per process and
   keeps the last 2,000 entries.
-- **`Exberly.SysTracer`** switches sys:trace on and off through the
+- **`Beamdash.SysTracer`** switches sys:trace on and off through the
   agent, which also installs a sys debug function that copies each event to
   a collector process on the target. The collector sends events on in
-  batches (at most 1,000 a second), watches exberly and turns tracing off
-  everywhere if exberly goes away.
-- **`Exberly.SeqTracer`**, **`Exberly.CallGraph`** and
-  **`Exberly.Crashes`** drive the seq_trace collector, xref
+  batches (at most 1,000 a second), watches beamdash and turns tracing off
+  everywhere if beamdash goes away.
+- **`Beamdash.SeqTracer`**, **`Beamdash.CallGraph`** and
+  **`Beamdash.Crashes`** drive the seq_trace collector, xref
   analysis and error_logger handler. Seq trace results are polled once a
   second while a seq trace is active; crash reports are pushed.
 - **UI:** `HomeLive` (`/`), `TraceLive` (`/trace`), `SeqLive` (`/seq`) and
-  `CrashLive` (`/crashes`); `ExberlyWeb.Syntax` shares the syntax switch
+  `CrashLive` (`/crashes`); `BeamdashWeb.Syntax` shares the syntax switch
   between pages. There is no Node.js toolchain: the Phoenix and LiveView
   JS are served straight from the deps.
 
@@ -391,10 +391,10 @@ type in.
 
 After a successful connection the node and cookie are saved, as plain JSON,
 in `last_connection.json` in your user config folder
-(`~/Library/Application Support/exberly` on macOS, `~/.config/exberly`
+(`~/Library/Application Support/beamdash` on macOS, `~/.config/beamdash`
 on Linux), readable only by you, so the connection bar is filled in next
 time. A failed attempt never replaces them. **Settings → Forget** deletes
-the file; `config :exberly, :last_connection_file, false` turns saving
+the file; `config :beamdash, :last_connection_file, false` turns saving
 off (or give it another path). Tests use a temporary file.
 
 ## Tests
@@ -411,7 +411,7 @@ calls and reply aliases), call graphs, crash reports and both syntaxes.
 
 ## Ideas for later
 
-- OTP 27 trace sessions instead of global `dbg`, so exberly no longer
+- OTP 27 trace sessions instead of global `dbg`, so beamdash no longer
   clashes with other tracers.
 - Module source view (`get_source_code/1`).
 
@@ -420,7 +420,7 @@ calls and reply aliases), call graphs, crash reports and both syntaxes.
 The tracing agent is written in Elixir and runs on nodes **without Elixir**:
 it calls only Erlang/OTP modules
 (no `Enum`, `String`, interpolation, `inspect` or `rescue`).
-`test/exberly/agent_test.exs` checks the compiled module imports nothing
+`test/beamdash/agent_test.exs` checks the compiled module imports nothing
 from Elixir and exercises it on plain Erlang nodes. Writing new code in it,
 keep to the same rule.
 

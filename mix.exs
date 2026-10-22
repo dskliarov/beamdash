@@ -1,9 +1,9 @@
-defmodule Exberly.MixProject do
+defmodule Beamdash.MixProject do
   use Mix.Project
 
   def project do
     [
-      app: :exberly,
+      app: :beamdash,
       version: "0.1.0",
       elixir: "~> 1.15",
       start_permanent: Mix.env() == :prod,
@@ -15,7 +15,7 @@ defmodule Exberly.MixProject do
 
   def application do
     [
-      mod: {Exberly.Application, []},
+      mod: {Beamdash.Application, []},
       extra_applications: [:logger, :runtime_tools, :inets, :ssl]
     ]
   end
@@ -24,7 +24,7 @@ defmodule Exberly.MixProject do
   defp elixirc_paths(_), do: ["lib"]
 
   # No Node.js toolchain: the Phoenix and LiveView JS are served straight
-  # from the deps' priv/static folders (see ExberlyWeb.Endpoint).
+  # from the deps' priv/static folders (see BeamdashWeb.Endpoint).
   defp deps do
     [
       {:phoenix, "~> 1.7"},

@@ -846,7 +846,7 @@ table.gc-events td, table.gc-events th { padding: 3px 8px; }
   border: 1px solid color-mix(in srgb, var(--mem-2) 55%, transparent); white-space: nowrap;
 }
 
-/* under the header: Ask exberly (left) and node info (right) */
+/* under the header: Ask beamdash (left) and node info (right) */
 .subbar { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 8px 16px; padding: 8px 0 0; }
 .ask { flex: 1 1 420px; min-width: 0; max-width: 640px; }
 .ask form { display: flex; gap: 6px; }

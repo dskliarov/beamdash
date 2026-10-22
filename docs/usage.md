@@ -1,4 +1,4 @@
-# Using exberly
+# Using beamdash
 
 A practical guide to inspecting Erlang and Elixir nodes, with screenshots from a disposable local application. Start with a node overview, find the process involved, then collect a short trace or profile to test your explanation.
 
@@ -24,7 +24,7 @@ Screenshots were captured on 20 October 2026 using OTP 29, Erlang syntax and a 1
 
 ## Start and connect
 
-Install the project dependencies and start the web application from the repository root. exberly requires Elixir 1.15+ and OTP 25+; profiling a target requires OTP 27+.
+Install the project dependencies and start the web application from the repository root. beamdash requires Elixir 1.15+ and OTP 25+; profiling a target requires OTP 27+.
 
 ```sh
 mix setup
@@ -41,9 +41,9 @@ erl -sname foo -setcookie demo_cookie
 2. Enter `demo_cookie` in **Cookie**, then click **Connect**. Use your target's actual cookie when connecting to your application.
 3. Check that the node name and **Disconnect** replace the form, and that OTP, process count and memory appear below it.
 
-The connection bar is shared by every tab. exberly starts distribution on first connect, matching short or long names to the target, and connects as a hidden node. Switching between a short-named and a long-named target (including across Direct and kubectl) restarts distribution with the matching mode automatically; this only fails if exberly itself was started as a named node (`-sname`/`-name`), since Erlang cannot change that from under a running one. Disconnect ends the shared connection for all browser tabs.
+The connection bar is shared by every tab. beamdash starts distribution on first connect, matching short or long names to the target, and connects as a hidden node. Switching between a short-named and a long-named target (including across Direct and kubectl) restarts distribution with the matching mode automatically; this only fails if beamdash itself was started as a named node (`-sname`/`-name`), since Erlang cannot change that from under a running one. Disconnect ends the shared connection for all browser tabs.
 
-To connect to a node running in a Kubernetes pod, switch the bar to **kubectl** instead of **Direct**. Pick the **Cluster** from the dropdown (one entry per kubeconfig file under `~/.kube`; exberly passes it to `kubectl` directly, so there is no need to run a context-switching shell command first), enter the namespace and click **List pods**, pick the **Pod** from the dropdown, then the **Container** and **Binary** if more than one is available, then **Connect**. exberly reads the node name and cookie off the pod itself (via `kubectl exec ... rpc`) and opens `kubectl port-forward` tunnels for epmd and distribution, so there is no node name or cookie to type.
+To connect to a node running in a Kubernetes pod, switch the bar to **kubectl** instead of **Direct**. Pick the **Cluster** from the dropdown (one entry per kubeconfig file under `~/.kube`; beamdash passes it to `kubectl` directly, so there is no need to run a context-switching shell command first), enter the namespace and click **List pods**, pick the **Pod** from the dropdown, then the **Container** and **Binary** if more than one is available, then **Connect**. beamdash reads the node name and cookie off the pod itself (via `kubectl exec ... rpc`) and opens `kubectl port-forward` tunnels for epmd and distribution, so there is no node name or cookie to type.
 
 ![Connection form with a local demo node and masked cookie](screenshots/00-connect.jpg)
 
@@ -51,7 +51,7 @@ To connect to a node running in a Kubernetes pod, switch the bar to **kubectl** 
 
 ## Try the screenshot demo
 
-The included [demo launcher](demo.exs) starts exberly and a separate local Erlang node, connects them, and sends an order every 250 ms. It provides two gen_servers, a supervisor, an ETS table and a retained 1 MiB binary. It makes no Jev requests and saves no connection credentials.
+The included [demo launcher](demo.exs) starts beamdash and a separate local Erlang node, connects them, and sends an order every 250 ms. It provides two gen_servers, a supervisor, an ETS table and a retained 1 MiB binary. It makes no Jev requests and saves no connection credentials.
 
 After `mix setup`, run this **instead of** `mix phx.server`:
 
@@ -70,10 +70,10 @@ Filter processes by `demo_`. `demo_shop` handles orders and repeatedly allocates
 To produce a crash report, run the following in another terminal while the demo is running (macOS):
 
 ```sh
-touch /private/tmp/exberly-demo-crash
+touch /private/tmp/beamdash-demo-crash
 ```
 
-The demo consumes the marker, crashes `demo_shop`, and its supervisor restarts the worker with a new PID. Stop the launcher with **Ctrl+C twice**. The demo uses the node names `exberly_docs` and `exberly_demo`; run one copy at a time.
+The demo consumes the marker, crashes `demo_shop`, and its supervisor restarts the worker with a new PID. Stop the launcher with **Ctrl+C twice**. The demo uses the node names `beamdash_docs` and `beamdash_demo`; run one copy at a time.
 
 ## Find your way around
 
@@ -228,7 +228,7 @@ Open **⚙ Settings**. A normal successful connection saves the last node and co
 
 ![Settings with connection remembering disabled for the demo](screenshots/12-settings.jpg)
 
-Jev is optional. To enable it, set your key in the shell that starts exberly, then restart the application. Keep the real value outside the repository:
+Jev is optional. To enable it, set your key in the shell that starts beamdash, then restart the application. Keep the real value outside the repository:
 
 ```sh
 export TYPESAFE_API_KEY='your-key-here'
@@ -239,7 +239,7 @@ With a configured key, **Settings → Enable Jev analysis** toggles Jev for all 
 
 For process or GC analysis, keep a process selected through at least 15 seconds of representative work. When **Jev: next step** is ready, click **Analyze**, review the suggestion and **What is sent to TypeSafe**, then verify the suggestion with a trace, state inspection or profile. The GC analysis also considers recorded GC statistics. Jev suggests an investigation; it does not change the target.
 
-Other optional entry points are **Ask exberly**, **Jev: triage busiest processes**, Memory's health check and Seq's message-flow analysis. Process/GC requests use derived anonymous metrics, not process names, PIDs, messages, state or stacks. **Ask** sends the question you type. The API key remains on the exberly host. Requests can incur service charges; TypeSafe's documented retention is unspecified. The default model is `jev-1.13.0`; `TYPESAFE_MODEL` overrides it.
+Other optional entry points are **Ask beamdash**, **Jev: triage busiest processes**, Memory's health check and Seq's message-flow analysis. Process/GC requests use derived anonymous metrics, not process names, PIDs, messages, state or stacks. **Ask** sends the question you type. The API key remains on the beamdash host. Requests can incur service charges; TypeSafe's documented retention is unspecified. The default model is `jev-1.13.0`; `TYPESAFE_MODEL` overrides it.
 
 ## Choose an investigation
 
@@ -257,7 +257,7 @@ Other optional entry points are **Ask exberly**, **Jev: triage busiest processes
 | Problem | What to check |
 | --- | --- |
 | Cannot connect | Target is running with `-sname` or `-name`; hostname resolves; cookie matches; epmd and distribution ports are reachable. Read the connection error. |
-| "needs the other short/long name mode" error | exberly itself was started as a named node (`-sname`/`-name`), so it can't restart distribution in the mode this target needs. Restart exberly without `-sname`/`-name` (or with the matching mode). |
+| "needs the other short/long name mode" error | beamdash itself was started as a named node (`-sname`/`-name`), so it can't restart distribution in the mode this target needs. Restart beamdash without `-sname`/`-name` (or with the matching mode). |
 | Empty trace | Start tracing before the work occurs, verify module/function/arity and remaining call limit, and check that another `dbg` session has not taken over. |
 | Empty GC trace | Select an allocating process, start recording, keep the GC page open and scroll to the events under **GC trace**. Extend the duration for intermittent activity. |
 | Charts look empty | Allow fresh samples to arrive. History begins when the view starts collecting; it is not historical telemetry from before connection. |
@@ -266,7 +266,7 @@ Other optional entry points are **Ask exberly**, **Jev: triage busiest processes
 | Jev switch or Analyze is missing | Check the server's `TYPESAFE_API_KEY`, environment/config disable flags and the Settings switch. Restart after changing environment variables. |
 | Jev Analyze is disabled | Keep the same process selected long enough to collect the required history, during representative work. |
 | PID disappears after a crash | Find the replacement by registered name in Processes or Apps; the old PID is no longer the worker. |
-| `observer:start()` fails with `wx` / `No driver found` | Observer's desktop GUI needs a working Erlang wx driver. exberly's browser UI can inspect the node without starting `observer_wx`; repairing the GUI requires a wx-enabled Erlang installation. |
+| `observer:start()` fails with `wx` / `No driver found` | Observer's desktop GUI needs a working Erlang wx driver. beamdash's browser UI can inspect the node without starting `observer_wx`; repairing the GUI requires a wx-enabled Erlang installation. |
 
 ## Refreshing the screenshots
 

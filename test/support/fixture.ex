@@ -1,13 +1,13 @@
-defmodule Exberly.Test.Fixture do
+defmodule Beamdash.Test.Fixture do
   @moduledoc false
-  # Starts a peer node, connects exberly's processes to it, and loads a
+  # Starts a peer node, connects beamdash's processes to it, and loads a
   # small gen_server module compiled with debug_info (so erlyberly can find
   # its records and xref can index it).
 
-  @cookie "exberly_test_cookie"
+  @cookie "beamdash_test_cookie"
 
   @source """
-  -module(exberly_fixture).
+  -module(beamdash_fixture).
   -behaviour(gen_server).
   -export([add/2, boom/1, spin/1, spin_notify/1, start/0, bump/0, total/1, adder/0]).
   -export([init/1, handle_call/3, handle_cast/2]).
@@ -50,7 +50,7 @@ defmodule Exberly.Test.Fixture do
 
   @doc "Compile an Erlang module from source here and load it on `node`."
   def load_module(node, name, source) do
-    dir = Path.join(System.tmp_dir!(), "exberly_#{name}_#{System.unique_integer([:positive])}")
+    dir = Path.join(System.tmp_dir!(), "beamdash_#{name}_#{System.unique_integer([:positive])}")
     File.mkdir_p!(dir)
     src = Path.join(dir, "#{name}.erl")
     File.write!(src, source)
@@ -64,16 +64,16 @@ defmodule Exberly.Test.Fixture do
   end
 
   def load(node) do
-    dir = Path.join(System.tmp_dir!(), "exberly_fixture_#{System.unique_integer([:positive])}")
+    dir = Path.join(System.tmp_dir!(), "beamdash_fixture_#{System.unique_integer([:positive])}")
     File.mkdir_p!(dir)
-    src = Path.join(dir, "exberly_fixture.erl")
+    src = Path.join(dir, "beamdash_fixture.erl")
     File.write!(src, @source)
 
-    {:ok, :exberly_fixture} =
+    {:ok, :beamdash_fixture} =
       :compile.file(String.to_charlist(src), [:debug_info, outdir: String.to_charlist(dir)])
 
     true = :erpc.call(node, :code, :add_patha, [String.to_charlist(dir)])
-    {:module, _} = :erpc.call(node, :code, :load_file, [:exberly_fixture])
+    {:module, _} = :erpc.call(node, :code, :load_file, [:beamdash_fixture])
     :ok
   end
 
@@ -117,9 +117,9 @@ defmodule Exberly.Test.Fixture do
   `enabled: false`) and restores it when the test ends.
   """
   def put_jev_config(changes) do
-    previous = Application.get_env(:exberly, Exberly.Jev, [])
-    Application.put_env(:exberly, Exberly.Jev, Keyword.merge(previous, changes))
-    ExUnit.Callbacks.on_exit(fn -> Application.put_env(:exberly, Exberly.Jev, previous) end)
+    previous = Application.get_env(:beamdash, Beamdash.Jev, [])
+    Application.put_env(:beamdash, Beamdash.Jev, Keyword.merge(previous, changes))
+    ExUnit.Callbacks.on_exit(fn -> Application.put_env(:beamdash, Beamdash.Jev, previous) end)
     :ok
   end
 end
