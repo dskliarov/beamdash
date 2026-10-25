@@ -1,15 +1,15 @@
 import Config
 
 # A fresh secret per boot is fine for a local tool (sessions just reset).
-config :exberly, ExberlyWeb.Endpoint,
+config :beamdash, BeamdashWeb.Endpoint,
   secret_key_base:
     System.get_env("SECRET_KEY_BASE") || Base.encode64(:crypto.strong_rand_bytes(48)),
   http: [ip: {127, 0, 0, 1}, port: String.to_integer(System.get_env("PORT", "4000"))]
 
-# Optional Jev analysis (TypeSafe). Credentials stay on the exberly host.
+# Optional Jev analysis (TypeSafe). Credentials stay on the beamdash host.
 # Only variables that are set override config/config.exs, so `enabled: false`
 # there keeps Jev off. The model is pinned; set TYPESAFE_MODEL to try another
-# (re-run `mix exberly.jev_eval` before switching).
+# (re-run `mix beamdash.jev_eval` before switching).
 jev_env =
   [
     # JEV_ENABLED=false turns Jev off entirely: no requests, nothing of it in the UI
@@ -26,4 +26,4 @@ jev_env =
   ]
   |> Enum.reject(fn {_key, value} -> is_nil(value) end)
 
-if jev_env != [], do: config(:exberly, Exberly.Jev, jev_env)
+if jev_env != [], do: config(:beamdash, Beamdash.Jev, jev_env)

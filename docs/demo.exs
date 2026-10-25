@@ -1,24 +1,24 @@
-# A disposable local node for exploring exberly and reproducing the usage guide.
+# A disposable local node for exploring beamdash and reproducing the usage guide.
 # Run from the project root: mix run --no-start docs/demo.exs
 # Stop with Ctrl+C twice. No Jev requests are made and no connection is saved.
 System.cmd("epmd", ["-daemon"])
-unless Node.alive?(), do: Node.start(:exberly_docs, :shortnames)
-Application.put_env(:exberly, :last_connection_file, false)
-Application.put_env(:exberly, Exberly.Jev, enabled: false)
-endpoint = Application.fetch_env!(:exberly, ExberlyWeb.Endpoint)
+unless Node.alive?(), do: Node.start(:beamdash_docs, :shortnames)
+Application.put_env(:beamdash, :last_connection_file, false)
+Application.put_env(:beamdash, Beamdash.Jev, enabled: false)
+endpoint = Application.fetch_env!(:beamdash, BeamdashWeb.Endpoint)
 port = System.get_env("PORT", "4000") |> String.to_integer()
 
 Application.put_env(
-  :exberly,
-  ExberlyWeb.Endpoint,
+  :beamdash,
+  BeamdashWeb.Endpoint,
   Keyword.merge(endpoint, http: [ip: {127, 0, 0, 1}, port: port], server: true)
 )
 
-{:ok, _} = Application.ensure_all_started(:exberly)
+{:ok, _} = Application.ensure_all_started(:beamdash)
 
 {:ok, peer, target} =
   :peer.start(%{
-    name: :exberly_demo,
+    name: :beamdash_demo,
     args: [~c"-setcookie", ~c"demo_cookie"],
     connection: :standard_io
   })
@@ -74,7 +74,7 @@ sources = %{
   """
 }
 
-dir = Path.join(System.tmp_dir!(), "exberly_docs_#{System.unique_integer([:positive])}")
+dir = Path.join(System.tmp_dir!(), "beamdash_docs_#{System.unique_integer([:positive])}")
 File.mkdir_p!(dir)
 
 Enum.each(sources, fn {module, source} ->
@@ -107,16 +107,16 @@ end)
 
 :ok = :erpc.call(target, :application, :start, [:demo_shop])
 Node.disconnect(target)
-{:ok, _} = Exberly.Target.connect(Atom.to_string(target), "demo_cookie")
+{:ok, _} = Beamdash.Target.connect(Atom.to_string(target), "demo_cookie")
 IO.puts("Demo ready: http://localhost:#{port} — node #{target}, cookie demo_cookie")
 IO.puts("demo_shop receives an order every 250 ms; its supervisor restarts it after crashes.")
-IO.puts("To generate a demo crash: touch /private/tmp/exberly-demo-crash")
+IO.puts("To generate a demo crash: touch /private/tmp/beamdash-demo-crash")
 
 loop = fn loop, n ->
   :erpc.call(target, :demo_shop, :checkout, [rem(n, 10)])
 
-  if File.exists?("/private/tmp/exberly-demo-crash") do
-    File.rm!("/private/tmp/exberly-demo-crash")
+  if File.exists?("/private/tmp/beamdash-demo-crash") do
+    File.rm!("/private/tmp/beamdash-demo-crash")
     :erpc.call(target, :demo_shop, :crash, [])
   end
 
@@ -130,7 +130,7 @@ end
 try do
   loop.(loop, 0)
 after
-  Exberly.Target.disconnect()
+  Beamdash.Target.disconnect()
   :peer.stop(peer)
   File.rm_rf(dir)
 end

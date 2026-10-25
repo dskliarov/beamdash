@@ -25,7 +25,7 @@ const Resizer = {
     const el = this.el;
     const d = el.dataset;
     const root = document.documentElement;
-    const key = "exberly:" + d.var;
+    const key = "beamdash:" + d.var;
     const store = (v) => {
       try {
         v == null ? localStorage.removeItem(key) : localStorage.setItem(key, String(v));
@@ -235,10 +235,49 @@ const NavOverflow = {
   },
 };
 
+// Namespace input backed by a <datalist> of the cluster's namespaces:
+// picking a suggestion lists that namespace's pods straight away, typing
+// waits for Enter or "List pods" (any name is accepted).
+const NamespacePick = {
+  mounted() {
+    this.el.addEventListener("input", (e) => {
+      // a pick arrives as a replacement or as a plain input event without an inputType
+      if (e.inputType && e.inputType !== "insertReplacementText") return;
+      const options = this.el.list ? Array.from(this.el.list.options) : [];
+      if (options.some((o) => o.value === this.el.value)) this.el.form.requestSubmit();
+    });
+  },
+};
+
+// The Logs tab: copies or downloads log lines the page pushes as
+// "logs-export" ({name, text, mode}); the text never goes through the DOM.
+const LogExport = {
+  mounted() {
+    this.handleEvent("logs-export", ({ name, text, lines, mode }) => {
+      if (mode === "copy") {
+        const done = (ok, reason) => this.pushEvent("export_done", { ok, lines, reason });
+        // navigator.clipboard is only there in a secure context (HTTPS or localhost)
+        if (!navigator.clipboard) return done(false, "no_clipboard");
+        navigator.clipboard.writeText(text).then(() => done(true), () => done(false));
+        return;
+      }
+      const url = URL.createObjectURL(new Blob([text + "\n"], { type: "text/plain" }));
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = name;
+      document.body.append(a);
+      a.click();
+      a.remove();
+      // revoked once the click's download has started
+      setTimeout(() => URL.revokeObjectURL(url), 0);
+    });
+  },
+};
+
 const csrfToken = document.querySelector("meta[name='csrf-token']").getAttribute("content");
 const liveSocket = new LiveView.LiveSocket("/live", Phoenix.Socket, {
   params: { _csrf_token: csrfToken },
-  hooks: { Resizer, DockSpacer, NavOverflow },
+  hooks: { Resizer, DockSpacer, NavOverflow, NamespacePick, LogExport },
 });
 liveSocket.connect();
 window.liveSocket = liveSocket;

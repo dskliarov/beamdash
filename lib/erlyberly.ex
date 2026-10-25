@@ -23,17 +23,17 @@ defmodule :erlyberly do
   call Erlang/OTP modules: no `Enum`, `String`, `Keyword`, `Map`, string
   interpolation, `inspect`, `raise`/`rescue` or comprehensions. Lists are
   charlists (`~c"..."`), errors are raised with `:erlang.error/1` and caught
-  with `catch kind, reason`. `Exberly.AgentTest` checks the compiled BEAM
+  with `catch kind, reason`. `Beamdash.AgentTest` checks the compiled BEAM
   imports nothing from Elixir.
 
   The module keeps its Erlang name, `erlyberly`, and the same functions and
-  return values as the Erlang original, so the exberly side is unchanged.
+  return values as the Erlang original, so the beamdash side is unchanged.
   """
 
   @behaviour :gen_event
 
   # These run on the target node, which has the tools (xref) and
-  # syntax_tools applications; exberly itself does not need them.
+  # syntax_tools applications; beamdash itself does not need them.
   @compile {:no_warn_undefined, [:xref, :erl_syntax, :erl_prettypr]}
 
   @tcollector :erlyberly_tcollector
