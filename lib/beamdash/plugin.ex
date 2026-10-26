@@ -27,7 +27,7 @@ defmodule Beamdash.Plugin do
   Each page is `{slug, label, module}`:
 
     * `slug` is the page's URL segment. It must match
-      `^[a-z][a-z0-9_-]{0,31}$`, and it must be unique within the plugin.
+      `\\A[a-z][a-z0-9_-]{0,31}\\z`, and it must be unique within the plugin.
     * `label` is a string. It is shown in the Plugins menu.
     * `module` is the page's LiveView, which uses `Beamdash.Plugin.Page`.
 
@@ -62,7 +62,6 @@ defmodule Beamdash.Plugin do
 
   alias Beamdash.{Apps, Target}
 
-  @slug ~r/^[a-z][a-z0-9_-]{0,31}$/
   @options [:name, :pages]
 
   @doc """
@@ -121,14 +120,15 @@ defmodule Beamdash.Plugin do
   @doc """
   The version of application `app` running on the attached node, such as
   `{:ok, "0.11.1"}`. Returns `:not_running` when it isn't running there, or
-  when no node is attached.
+  when no node is attached. Library applications count, as they do for the
+  Plugins menu.
   """
   @spec app_version(atom(), GenServer.server()) :: {:ok, String.t()} | :not_running
   def app_version(app, target \\ Target) when is_atom(app) do
     with node when node != nil <- __current_node__(target),
-         {:ok, apps} <- Apps.list(node),
-         %{vsn: vsn} <- Enum.find(apps, &(&1.name == app)) do
-      {:ok, to_string(vsn)}
+         {:ok, running} <- Apps.running(node),
+         {_, vsn} <- List.keyfind(running, app, 0) do
+      {:ok, vsn}
     else
       _ -> :not_running
     end
@@ -147,9 +147,41 @@ defmodule Beamdash.Plugin do
     :exit, _ -> nil
   end
 
+  @doc """
+  The path of beamdash's details page for `pid`, a process on the attached
+  node, to link to it: `<.link navigate={Beamdash.Plugin.process_path(pid)}>`.
+  """
+  @spec process_path(pid()) :: String.t()
+  def process_path(pid) when is_pid(pid),
+    do: "/?pid=" <> URI.encode_www_form(Beamdash.Format.pid(pid, :erlang))
+
+  @doc """
+  A link that moves beamdash's connection to `node`, a node the attached
+  node is connected to, as clicking it on the Nodes tab does. With
+  `return_to` (a beamdash path, such as the page's own
+  `"/plugins/my_plugin/overview"`), beamdash comes back there once
+  connected; a switch that fails stays on the Nodes tab, which says why.
+  `<.link navigate={Beamdash.Plugin.switch_path(node, path)}>`.
+  """
+  @spec switch_path(node(), String.t() | nil) :: String.t()
+  def switch_path(node, return_to \\ nil) when is_atom(node) do
+    query = [switch: Atom.to_string(node)] ++ if(return_to, do: [return: return_to], else: [])
+    "/nodes?" <> URI.encode_query(query)
+  end
+
   @doc "beamdash's own version, such as `\"0.1.0\"`."
   @spec version() :: String.t()
   def version, do: to_string(Application.spec(:beamdash, :vsn))
+
+  @doc false
+  # Whether `slug` is a valid page slug. Also used by the install's check of
+  # a compiled `__beamdash_plugin__/0`.
+  @spec __valid_slug__?(term()) :: boolean()
+  def __valid_slug__?(slug), do: is_binary(slug) and Regex.match?(slug_regex(), slug)
+
+  # Not a module attribute: a compiled regex can't be escaped into code on
+  # OTP 28 with Elixir < 1.19.
+  defp slug_regex, do: ~r/\A[a-z][a-z0-9_-]{0,31}\z/
 
   ## Option checks (compile time)
 
@@ -215,10 +247,10 @@ defmodule Beamdash.Plugin do
   end
 
   defp page!({:{}, _, [slug, label, module]} = page, env, fail) do
-    unless is_binary(slug) and Regex.match?(@slug, slug) do
+    unless __valid_slug__?(slug) do
       fail.(
         "invalid slug #{Macro.to_string(slug)} in :pages. " <>
-          "A slug is a string matching #{inspect(Regex.source(@slug))}"
+          "A slug is a string matching #{inspect(Regex.source(slug_regex()))}"
       )
     end
 

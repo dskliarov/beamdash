@@ -30,7 +30,7 @@ defmodule BeamdashWeb.Layouts do
     if Application.get_env(:beamdash, :has_k8s, false), do: "Kubernetes", else: "kubectl"
   end
 
-  attr :active, :atom, required: true
+  attr :active, :any, required: true, doc: "a tab's key, or {:plugin, app, slug}"
   attr :syntax, :atom, required: true
   attr :conn, :map, default: nil, doc: "from BeamdashWeb.Connection; nil hides the bar"
   attr :ask, :map, default: nil, doc: "from BeamdashWeb.Ask; nil hides the box"
@@ -46,9 +46,26 @@ defmodule BeamdashWeb.Layouts do
     ~H"""
     <header class="bar">
       <h1>beamdash</h1>
-      <.nav active={@active} syntax={@syntax} />
+      <.nav active={@active} syntax={@syntax} plugins={(@conn && @conn[:plugins]) || []} />
 
       <div :if={@conn} class="conn-line">
+        <div
+          :if={@conn.status != :connected && @conn[:reconnecting]}
+          class="reconnecting"
+          role="status"
+        >
+          <span class="dot dot-wait" aria-hidden="true"></span>
+          <span>
+            Reconnecting to <strong>{@conn.reconnecting.node}</strong>
+            · try {@conn.reconnecting.attempt} at {Calendar.strftime(
+              @conn.reconnecting.next_at,
+              "%H:%M:%S"
+            )} UTC<span :if={@conn.reconnecting.error} class="muted small">
+              · last try: {Beamdash.Format.error(@conn.reconnecting.error)}
+            </span>
+          </span>
+          <button type="button" class="secondary small-btn" phx-click="stop_reconnect">Stop</button>
+        </div>
         <div :if={@conn.status != :connected} class="connect-panel">
           <div class="seg method-switch" role="group" aria-label="Connection method">
             <button
@@ -294,6 +311,7 @@ defmodule BeamdashWeb.Layouts do
     {"Node",
      [
        {"/system", :system, "System", "System", "s"},
+       {"/nodes", :nodes, "Nodes", "Nodes", "n"},
        {"/load", :load, "Load", "Load Charts", "l"},
        {"/apps", :apps, "Apps", "Applications", "a"},
        {"/memory", :memory, "Memory", "Memory", "m"},
@@ -316,8 +334,12 @@ defmodule BeamdashWeb.Layouts do
   @doc "The tab groups: `[{group, [{path, key, label, title, shortcut}]}]`."
   def tab_groups, do: @groups
 
-  attr :active, :atom, required: true
+  attr :active, :any, required: true, doc: "a tab's key, or {:plugin, app, slug}"
   attr :syntax, :atom, required: true
+
+  attr :plugins, :list,
+    default: [],
+    doc: "the active plugins, `Beamdash.Plugins.active/1`: `[%{app, name, pages}]`"
 
   @doc """
   The tabs, grouped (node, processes, tracing) with short labels; the full
@@ -325,6 +347,10 @@ defmodule BeamdashWeb.Layouts do
   "More" menu (the NavOverflow hook, never the current one). `g` then a
   key opens a tab; `?` lists the keys. Settings is the gear at the end,
   next to the Erlang/Elixir switch.
+
+  With active plugins, a Plugins menu follows the tabs: one group per
+  plugin, linking to its pages. It is not a tab, so it is never moved into
+  More and has no shortcut.
   """
   def nav(assigns) do
     assigns = assign(assigns, groups: @groups)
@@ -344,6 +370,38 @@ defmodule BeamdashWeb.Layouts do
           {label}
         </.link>
       <% end %>
+      <details
+        :if={@plugins != []}
+        class="tabs-plugins"
+        phx-mounted={Phoenix.LiveView.JS.ignore_attributes(["open"])}
+      >
+        <summary
+          class={match?({:plugin, _, _}, @active) && "active"}
+          title="Plugins"
+          aria-current={match?({:plugin, _, _}, @active) && "page"}
+        >
+          Plugins ▾
+        </summary>
+        <div class="tabs-plugins-menu" role="menu">
+          <div
+            :for={plugin <- @plugins}
+            class="plugin-group"
+            role="group"
+            aria-labelledby={"plugin-group-#{plugin.app}"}
+          >
+            <span class="plugin-group-name" id={"plugin-group-#{plugin.app}"}>{plugin.name}</span>
+            <.link
+              :for={page <- plugin.pages}
+              navigate={"/plugins/#{plugin.app}/#{page.slug}"}
+              class={@active == {:plugin, to_string(plugin.app), page.slug} && "active"}
+              role="menuitem"
+              aria-current={@active == {:plugin, to_string(plugin.app), page.slug} && "page"}
+            >
+              {page.label}
+            </.link>
+          </div>
+        </div>
+      </details>
       <details class="tabs-more" hidden>
         <summary title="More tabs">More ▾</summary>
         <div class="tabs-more-menu" role="menu"></div>

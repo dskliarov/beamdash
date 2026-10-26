@@ -8,7 +8,7 @@ defmodule Beamdash.ConnectionBarTest do
   alias Beamdash.Test.Fixture
 
   @endpoint BeamdashWeb.Endpoint
-  @tabs ~w(/ /system /load /apps /memory /logs /gc /trace /seq /profile /crashes /settings)
+  @tabs ~w(/ /system /nodes /load /apps /memory /logs /gc /trace /seq /profile /crashes /settings)
 
   setup do
     Target.disconnect()
@@ -114,6 +114,28 @@ defmodule Beamdash.ConnectionBarTest do
              Connection.handle_info({:beamdash_target, {:disconnected, :nodedown}}, s)
 
     assert bar(s3) =~ "Lost the connection to #{node}"
+  end
+
+  test "a lost connection being tried again shows in the bar, with Stop" do
+    next_at = ~U[2026-10-26 12:00:05Z]
+
+    conn =
+      Map.put(socket().assigns.conn, :reconnecting, %{
+        node: :"kv1@127.0.0.1",
+        attempt: 3,
+        error: :connect_failed,
+        next_at: next_at
+      })
+
+    html = bar(Phoenix.Component.assign(socket(), :conn, conn))
+    assert html =~ ~s(class="reconnecting")
+    assert html =~ ~r/Reconnecting to <strong>kv1@127.0.0.1<\/strong>\s*· try 3 at 12:00:05 UTC/
+    assert html =~ "last try: Could not connect."
+    assert html =~ ~s(phx-click="stop_reconnect")
+
+    {:halt, s} = Connection.handle_event("stop_reconnect", %{}, socket())
+    assert s.assigns.conn.reconnecting == nil
+    refute bar(s) =~ ~s(class="reconnecting")
   end
 
   test "a failed connect shows the error in the bar" do

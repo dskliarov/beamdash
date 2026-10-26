@@ -6,7 +6,7 @@ defmodule Beamdash.Settings do
   `{:beamdash_jev, enabled}` or `{:beamdash_kubeconfig_dir, dir}`.
 
   The syntax and Jev switch last for this VM's lifetime. The kubeconfig
-  directory is also saved, as JSON in `<user config dir>/beamdash/settings.json`
+  directory and auto-reconnect are also saved, as JSON in `<user config dir>/beamdash/settings.json`
   (next to `Beamdash.LastConnection`'s file), so it is still chosen after a
   restart; `config :beamdash, :settings_file` points elsewhere, `false`
   turns saving off.
@@ -15,6 +15,7 @@ defmodule Beamdash.Settings do
   @key {__MODULE__, :syntax}
   @jev_key {__MODULE__, :jev_enabled}
   @kube_key {__MODULE__, :kubeconfig_dir}
+  @reconnect_key {__MODULE__, :auto_reconnect}
   @syntaxes [:erlang, :elixir]
 
   def syntaxes, do: @syntaxes
@@ -82,6 +83,28 @@ defmodule Beamdash.Settings do
   @doc "Goes back to the default kubeconfig directory (and forgets the saved one)."
   def reset_kubeconfig_dir, do: put_kubeconfig_dir(default_kubeconfig_dir())
 
+  @doc """
+  Whether a lost connection is tried again (see `Beamdash.Target`). Off
+  until switched on in Settings; saved for the next start.
+  """
+  def auto_reconnect? do
+    case :persistent_term.get(@reconnect_key, nil) do
+      nil ->
+        enabled = read()["auto_reconnect"] == true
+        :persistent_term.put(@reconnect_key, enabled)
+        enabled
+
+      enabled ->
+        enabled
+    end
+  end
+
+  def put_auto_reconnect(enabled) when is_boolean(enabled) do
+    :persistent_term.put(@reconnect_key, enabled)
+    save("auto_reconnect", if(enabled, do: true))
+    :ok
+  end
+
   @doc "The file the settings are saved in, or `nil` when saving is off."
   def path do
     case Application.get_env(:beamdash, :settings_file) do
@@ -93,7 +116,11 @@ defmodule Beamdash.Settings do
 
   @doc false
   # Drops the in-memory copy so the next read loads the file (tests).
-  def reload, do: :persistent_term.erase(@kube_key) |> then(fn _ -> :ok end)
+  def reload do
+    :persistent_term.erase(@kube_key)
+    :persistent_term.erase(@reconnect_key)
+    :ok
+  end
 
   defp saved_kubeconfig_dir do
     case read()["kubeconfig_dir"] do

@@ -22,7 +22,9 @@ defmodule Beamdash.NavTest do
     paths = Enum.map(tabs, &elem(&1, 0))
 
     assert Enum.sort(paths) ==
-             Enum.sort(~w(/system /load /apps /memory /logs / /gc /crashes /trace /seq /profile))
+             Enum.sort(
+               ~w(/system /nodes /load /apps /memory /logs / /gc /crashes /trace /seq /profile)
+             )
 
     keys = Enum.map(tabs, &elem(&1, 4)) ++ [","]
     assert keys == Enum.uniq(keys)
@@ -57,5 +59,40 @@ defmodule Beamdash.NavTest do
   test "Settings is marked current on its page" do
     {attrs, _} = link(html(:settings), "/settings")
     assert attrs =~ ~s(class="tab settings-tab active") and attrs =~ ~s(aria-current="page")
+  end
+
+  @plugins [%{app: "hello_plugin", name: "Hello", pages: [%{slug: "hello", label: "Hello"}]}]
+
+  defp html(active, plugins),
+    do: render_component(&Layouts.nav/1, active: active, syntax: :erlang, plugins: plugins)
+
+  test "the Plugins menu: one group per active plugin, after the tabs, outside More" do
+    h = html(:load, @plugins)
+    assert h =~ ~s(class="tabs-plugins")
+    assert h =~ ~r/<summary[^>]*>\s*Plugins ▾\s*<\/summary>/
+    assert h =~ ~s(<div class="plugin-group")
+    assert h =~ ~r/class="plugin-group-name"[^>]*>\s*Hello\s*</
+    {attrs, text} = link(h, "/plugins/hello_plugin/hello")
+    assert text == "Hello"
+    # not a tab: NavOverflow and the g shortcuts leave it alone
+    refute attrs =~ ~s(class="tab)
+    refute attrs =~ "data-key"
+    # after the last tab, before the More menu
+    [before, _] = String.split(h, ~s(class="tabs-plugins"), parts: 2)
+    assert before =~ ~s(href="/profile")
+    refute before =~ "tabs-more"
+    refute h =~ ~r/<summary[^>]*class="[^"]*active/
+
+    h = html({:plugin, "hello_plugin", "hello"}, @plugins)
+    assert h =~ ~r/<summary[^>]*class="[^"]*active/
+    {attrs, _} = link(h, "/plugins/hello_plugin/hello")
+    assert attrs =~ ~s(aria-current="page")
+    # no tab is current on a plugin page
+    refute h =~ ~s(class="tab active")
+  end
+
+  test "no Plugins menu without active plugins" do
+    refute html(:load) =~ "tabs-plugins"
+    refute html(:load, []) =~ "tabs-plugins"
   end
 end

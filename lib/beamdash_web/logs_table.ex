@@ -8,11 +8,14 @@ defmodule BeamdashWeb.LogsTable do
   (`Beamdash.Logs.Group.mask_spans/1`) marked, and a "+N newer" button
   while newer similar lines have joined it since. Clicking a single line (or
   one of an expanded group's lines) opens its full message and metadata.
+  While a node is attached, a line's pid opens that process on the
+  Processes tab.
   """
   use Phoenix.Component
 
   alias Beamdash.Format
   alias Beamdash.Logs.Filter
+  alias Beamdash.Target
 
   attr :info, :map, required: true, doc: "`Beamdash.Logs.info/1`"
   attr :node, :atom, default: nil
@@ -93,6 +96,10 @@ defmodule BeamdashWeb.LogsTable do
   attr :rows, :any, required: true, doc: "the `:rows` stream"
   attr :filter, :map, required: true, doc: "the parsed text filter, for highlighting"
 
+  attr :node, :atom,
+    default: nil,
+    doc: "the attached node, when connected: pids link to its processes"
+
   def table(assigns) do
     ~H"""
     <div class="log logs-table" role="table" aria-label="Log lines">
@@ -125,7 +132,7 @@ defmodule BeamdashWeb.LogsTable do
           >
             <span class="mono" role="cell" title={first_at(row)}>{time(row.entry.at)}</span>
             <span role="cell"><.level level={row.entry.level} /></span>
-            <span class="mono" role="cell">{row.entry.pid}</span>
+            <span class="mono" role="cell"><.pid pid={row.entry.pid} node={@node} /></span>
             <span class="mono" role="cell">{row.entry.where}</span>
             <span class="logs-msg" role="cell" title={row.entry.message}>
               {highlighted(first_line(row.entry.message), @filter)}
@@ -189,7 +196,7 @@ defmodule BeamdashWeb.LogsTable do
               <% end %>
             </span>
           </div>
-          <.details :if={row.count == 1 and open?(row)} entry={row.entry} />
+          <.details :if={row.count == 1 and open?(row)} entry={row.entry} node={@node} />
           <div :if={row.expanded?} class="logs-lines" role="rowgroup">
             <div :for={{e, spans} <- row.lines} class={["logs-line", e.id in row.open && "open"]}>
               <div
@@ -205,12 +212,12 @@ defmodule BeamdashWeb.LogsTable do
               >
                 <span class="mono" role="cell">{time(e.at)}</span>
                 <span role="cell"><.level level={e.level} /></span>
-                <span class="mono" role="cell">{e.pid}</span>
+                <span class="mono" role="cell"><.pid pid={e.pid} node={@node} /></span>
                 <span class="mono" role="cell">{e.where}</span>
                 <span class="logs-line-msg" role="cell">{masked(spans)}</span>
                 <span role="cell"></span>
               </div>
-              <.details :if={e.id in row.open} entry={e} />
+              <.details :if={e.id in row.open} entry={e} node={@node} />
             </div>
           </div>
         </div>
@@ -220,6 +227,7 @@ defmodule BeamdashWeb.LogsTable do
   end
 
   attr :entry, :map, required: true
+  attr :node, :atom, default: nil
 
   defp details(assigns) do
     ~H"""
@@ -236,7 +244,7 @@ defmodule BeamdashWeb.LogsTable do
         </tr>
         <tr :if={@entry.pid}>
           <th>pid</th>
-          <td class="mono">{@entry.pid}</td>
+          <td class="mono"><.pid pid={@entry.pid} node={@node} /></td>
         </tr>
         <tr :if={@entry.where}>
           <th>where</th>
@@ -250,6 +258,32 @@ defmodule BeamdashWeb.LogsTable do
     </div>
     """
   end
+
+  attr :pid, :string, default: nil
+  attr :node, :atom, default: nil
+
+  # A pid opens the process on the Processes tab while a node is attached
+  defp pid(assigns) do
+    assigns = assign(assigns, :href, process_href(assigns.pid, assigns.node))
+
+    ~H"""
+    <.link :if={@href} navigate={@href} class="proc-link" title="Open this process">{@pid}</.link><span :if={
+      !@href
+    }>{@pid}</span>
+    """
+  end
+
+  # Pids from the logger handler are printed as this node sees them
+  # ("<25518.86.0>"); pids in text lines as the target printed them
+  # ("<0.86.0>", "#PID<0.86.0>"), which localize_pid/2 rewrites.
+  defp process_href(pid, node) when is_binary(pid) and node != nil do
+    bare = String.replace_prefix(pid, "#PID", "")
+
+    if Regex.match?(~r/^<\d+\.\d+\.\d+>$/, bare),
+      do: "/?pid=" <> URI.encode_www_form(Target.localize_pid(bare, node))
+  end
+
+  defp process_href(_pid, _node), do: nil
 
   attr :level, :atom, default: nil
 

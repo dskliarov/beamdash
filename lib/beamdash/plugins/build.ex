@@ -70,6 +70,22 @@ defmodule Beamdash.Plugins.Build do
     end
   end
 
+  @doc """
+  True when `path` is `plugins_dir/0` or inside it, after both are expanded
+  and their symbolic links resolved. A path plugin's folder must not be:
+  beamdash deletes what it keeps there.
+  """
+  @spec in_plugins_dir?(Path.t()) :: boolean()
+  def in_plugins_dir?(path) do
+    with {:ok, real_root} <- resolve(plugins_dir()),
+         {:ok, real} <- resolve(path) do
+      root_parts = Path.split(real_root)
+      Enum.take(Path.split(real), length(root_parts)) == root_parts
+    else
+      _ -> false
+    end
+  end
+
   defp guard(path) do
     root = Path.expand(plugins_dir())
     target = Path.expand(path)
@@ -183,13 +199,17 @@ defmodule Beamdash.Plugins.Build do
     end
   end
 
+  # A symbolic link is refused, not followed, as in lib/.
   defp parse_file(path, label) do
-    case File.stat(path) do
+    case File.lstat(path) do
       {:ok, %File.Stat{type: :regular, size: size}} when size <= @max_bytes ->
         with {:ok, text} <- File.read(path), do: quote_text(text, label)
 
       {:ok, %File.Stat{type: :regular}} ->
         {:error, "#{label} is too big"}
+
+      {:ok, %File.Stat{type: :symlink}} ->
+        {:error, "#{label} is a symbolic link; beamdash doesn't follow it"}
 
       _ ->
         {:error, "#{label} not found"}
@@ -522,6 +542,7 @@ defmodule Beamdash.Plugins.Build do
          :ok <- renames_under_prefix(found.renames, prefix_name),
          :ok <- no_clashes(modules, allow),
          prefix = Module.concat([prefix_name]),
+         :ok <- namespace_free(prefix, allow),
          :ok <- prefix_defined(defined, prefix) do
       {:ok, %{prefix: prefix, modules: modules}}
     end
@@ -895,6 +916,45 @@ defmodule Beamdash.Plugins.Build do
     end
   end
 
+  @doc false
+  # Top-level names a plugin may never use as its prefix.
+  @spec reserved_prefixes() :: [String.t()]
+  def reserved_prefixes, do: ["Elixir", "Beamdash", "BeamdashWeb"]
+
+  # The prefix must be the plugin's own namespace: no module that is loaded
+  # or on the code path (other than `allow`, the plugin's own when it is
+  # rebuilt) may be `Prefix` or `Prefix.*`.
+  defp namespace_free(prefix, allow) do
+    base = inspect(prefix)
+    full = Atom.to_string(prefix)
+    allowed = MapSet.new(allow, &Atom.to_string/1)
+
+    names =
+      Enum.map(:code.all_available(), fn {name, _, _} -> List.to_string(name) end) ++
+        Enum.map(:code.all_loaded(), fn {module, _} -> Atom.to_string(module) end)
+
+    used =
+      names
+      |> Enum.filter(
+        &((&1 == full or String.starts_with?(&1, full <> ".")) and &1 not in allowed)
+      )
+      |> Enum.uniq()
+      |> Enum.sort()
+
+    cond do
+      base in reserved_prefixes() or used != [] ->
+        shown = used |> Enum.take(3) |> Enum.map(&module_label(String.to_atom(&1)))
+        also = if shown == [], do: "", else: " (#{Enum.join(shown, ", ")})"
+
+        {:error,
+         "the prefix #{base} is already used by beamdash, Elixir or a library#{also}; " <>
+           "name your plugin's modules under a top-level name of its own"}
+
+      true ->
+        :ok
+    end
+  end
+
   defp taken?(module),
     do: :code.is_loaded(module) != false or :code.which(module) != :non_existing
 
@@ -947,6 +1007,9 @@ defmodule Beamdash.Plugins.Build do
       {:ok, modules} ->
         case unexpected(modules, expected) do
           [] ->
+            # Elixir < 1.19 leaves the compiled modules loaded; only load/2
+            # may load them.
+            unload_from(ebin, modules, loaded_before)
             {:ok, modules}
 
           extra ->
@@ -1052,6 +1115,34 @@ defmodule Beamdash.Plugins.Build do
       else: message
   end
 
+  @doc """
+  Kills the compiler workers of a `compile/3` that ran in `owner`, which has
+  exited, and waits until they are gone. The workers aren't linked to the
+  process that started the compile, so they would go on compiling, and
+  loading, the plugin's modules. They are found by the compiler's
+  `:elixir_compiler_info` process key (an Elixir internal; with no such key
+  nothing is found).
+  """
+  @spec stop_compile(pid()) :: :ok
+  def stop_compile(owner) when is_pid(owner) do
+    workers =
+      for pid <- Process.list(),
+          pid != self(),
+          {:dictionary, dict} <- [Process.info(pid, :dictionary)],
+          match?({_, {^owner, _}}, List.keyfind(dict, :elixir_compiler_info, 0)),
+          do: pid
+
+    refs =
+      for pid <- workers do
+        ref = Process.monitor(pid)
+        Process.exit(pid, :kill)
+        ref
+      end
+
+    for ref <- refs, do: receive(do: ({:DOWN, ^ref, :process, _, _} -> :ok))
+    :ok
+  end
+
   ## Checking
 
   @doc """
@@ -1068,6 +1159,7 @@ defmodule Beamdash.Plugins.Build do
          :ok <- all_under_prefix(beams, prefix),
          :ok <- one_entry(beams, prefix),
          {:ok, plugin} <- declaration(beams, prefix),
+         :ok <- page_shapes(plugin, prefix),
          :ok <- valid_pages(plugin, beams),
          :ok <- imports_exist(beams) do
       {:ok, plugin}
@@ -1221,6 +1313,28 @@ defmodule Beamdash.Plugins.Build do
     {:error,
      "could not read the plugin declaration of #{inspect(prefix)}: it must `use Beamdash.Plugin`"}
   end
+
+  # `use Beamdash.Plugin` checks the pages at compile time, but a
+  # hand-written __beamdash_plugin__/0 skips that.
+  defp page_shapes(%{pages: pages}, prefix) do
+    case Enum.find(pages, &(not page_shape?(&1))) do
+      nil ->
+        :ok
+
+      page ->
+        {:error,
+         "the plugin declaration of #{inspect(prefix)} has an invalid page: #{inspect(page)}. " <>
+           "A page is %{slug: slug, label: string, module: module}, and the slug matches " <>
+           ~S|\A[a-z][a-z0-9_-]{0,31}\z. `use Beamdash.Plugin` writes the declaration|}
+    end
+  end
+
+  defp page_shape?(%{slug: slug, label: label, module: module}),
+    do:
+      Plugin.__valid_slug__?(slug) and is_binary(label) and is_atom(module) and
+        module not in [nil, true, false]
+
+  defp page_shape?(_), do: false
 
   defp valid_pages(plugin, beams) do
     bad =

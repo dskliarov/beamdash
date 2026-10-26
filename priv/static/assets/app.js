@@ -161,12 +161,19 @@ const NavOverflow = {
       if (e.target.closest("[data-shortcuts-open]")) this.help();
     };
     document.addEventListener("click", this.onHelp);
+    // the Plugins menu closes on a pick or a click elsewhere
+    this.onMenuClick = (e) => {
+      const menu = this.el.querySelector(".tabs-plugins[open]");
+      if (menu && (!menu.contains(e.target) || e.target.closest("a"))) menu.open = false;
+    };
+    document.addEventListener("click", this.onMenuClick);
   },
   updated() { this.layout(); },
   destroyed() {
     this.resize.disconnect();
     window.removeEventListener("keydown", this.onKey);
     document.removeEventListener("click", this.onHelp);
+    document.removeEventListener("click", this.onMenuClick);
   },
 
   layout() {

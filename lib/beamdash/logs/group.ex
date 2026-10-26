@@ -10,14 +10,18 @@ defmodule Beamdash.Logs.Group do
   """
 
   # Applied in order; each mask only sees text the previous ones left alone.
-  @masks [
-    {~r/\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:?\d{2})?/, nil},
-    {~r/<\d+\.\d+\.\d+>/, nil},
-    {~r/#Reference<[\d.]+>/, nil},
-    {~r/[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}/, nil},
-    {~r/\b[0-9a-fA-F]{8,}\b/, ~r/\d/},
-    {~r/\d+(\.\d+)?/, nil}
-  ]
+  # A function, not an attribute: compiled regexes can't be escaped into
+  # code on OTP 28 with Elixir < 1.19.
+  defp masks do
+    [
+      {~r/\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:?\d{2})?/, nil},
+      {~r/<\d+\.\d+\.\d+>/, nil},
+      {~r/#Reference<[\d.]+>/, nil},
+      {~r/[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}/, nil},
+      {~r/\b[0-9a-fA-F]{8,}\b/, ~r/\d/},
+      {~r/\d+(\.\d+)?/, nil}
+    ]
+  end
 
   @doc "The grouping key `{level, where, masked_message}` of an entry."
   def key(%{level: level, where: where, message: message}) do
@@ -32,7 +36,7 @@ defmodule Beamdash.Logs.Group do
 
   @doc "Splits `message` into `{:text, s}` and `{:var, s}` (the masked parts) segments."
   def mask_spans(message) do
-    Enum.reduce(@masks, [{:text, message}], fn mask, spans ->
+    Enum.reduce(masks(), [{:text, message}], fn mask, spans ->
       spans |> Enum.flat_map(&split_span(&1, mask)) |> merge_text()
     end)
   end

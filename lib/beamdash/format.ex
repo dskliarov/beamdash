@@ -185,6 +185,10 @@ defmodule Beamdash.Format do
 
   def error(:not_distributed), do: "This VM is not running distribution."
 
+  def error(:switch_needs_direct),
+    do:
+      "Switching needs a direct connection: the other nodes of a pod's cluster can't be reached through its kubectl tunnel. Connect to their pod from the bar."
+
   def error({:distribution_failed, reason}),
     do:
       "Could not start distribution here (is epmd running? try `epmd -daemon`): #{inspect(reason)}"

@@ -21,6 +21,16 @@ defmodule Beamdash.Target do
 
   Subscribers receive `{:beamdash_target, {:connected, node}}` and
   `{:beamdash_target, {:disconnected, reason}}`.
+
+  With auto-reconnect on (`Beamdash.Settings.auto_reconnect?/0`), a
+  connection lost to the node going down (or its kubectl tunnel failing)
+  is tried again the way it was made, in the background, after 1, 2, 5,
+  10 and then every 15 s, until it succeeds, the user connects or
+  disconnects, or the setting is turned off. `reconnecting/1` says how
+  it goes; success is an ordinary `{:connected, node}`.
+
+  `switch/2` moves the connection to another node of the attached node's
+  cluster, with the cookie the attached node uses for it.
   """
 
   use GenServer
@@ -32,10 +42,25 @@ defmodule Beamdash.Target do
   @connect_timeout 15_000
   @kubectl_connect_timeout 60_000
 
-  defstruct node: nil, subscribers: %{}, tunnel: nil, source: nil
+  @reconnect_delays [1_000, 2_000, 5_000, 10_000, 15_000]
+
+  defstruct node: nil,
+            subscribers: %{},
+            tunnel: nil,
+            source: nil,
+            params: nil,
+            reconnect: nil,
+            auto_reconnect: nil,
+            reconnect_delays: @reconnect_delays
 
   ## API
 
+  @doc """
+  Options: `:name`, and for tests `:auto_reconnect` (a 0-arity function
+  read when a connection is lost and before each try; default
+  `Beamdash.Settings.auto_reconnect?/0`) and `:reconnect_delays` (ms
+  between tries, the last one repeating).
+  """
   def start_link(opts \\ []) do
     {name, opts} = Keyword.pop(opts, :name, __MODULE__)
     GenServer.start_link(__MODULE__, opts, name: name)
@@ -64,6 +89,42 @@ defmodule Beamdash.Target do
   end
 
   def disconnect(server \\ __MODULE__), do: GenServer.call(server, :disconnect)
+
+  @doc """
+  Connects to `node`, a node the attached node is connected to, with the
+  cookie the attached node uses for it. Only for direct connections: a
+  pod's peers aren't reachable through its kubectl tunnel.
+  """
+  def switch(node, server \\ __MODULE__) when is_atom(node),
+    do: GenServer.call(server, {:switch, node}, @connect_timeout + @rpc_timeout)
+
+  @doc """
+  `nil`, or while a lost connection is being tried again
+  `%{node: node, attempt: n, error: reason | nil, next_at: DateTime.t()}`
+  (`error` from the previous try).
+  """
+  def reconnecting(server \\ __MODULE__), do: GenServer.call(server, :reconnecting)
+
+  @doc "Stops trying to reconnect."
+  def stop_reconnect(server \\ __MODULE__), do: GenServer.call(server, :stop_reconnect)
+
+  @doc """
+  The attached node and the nodes it is connected to:
+  `{:ok, %{this: node, visible: [node], hidden: [node]}}`, sorted, without
+  beamdash's own node among the hidden ones.
+  """
+  def cluster_nodes(server \\ __MODULE__) do
+    case status(server) do
+      %{status: :connected, node: node} ->
+        with {:ok, visible} <- rpc(node, :erlang, :nodes, [:visible]),
+             {:ok, hidden} <- rpc(node, :erlang, :nodes, [:hidden]) do
+          {:ok, %{this: node, visible: Enum.sort(visible), hidden: Enum.sort(hidden -- [node()])}}
+        end
+
+      _ ->
+        {:error, :not_connected}
+    end
+  end
 
   @doc "Returns `%{status: :connected | :disconnected, node: node() | nil}`."
   def status(server \\ __MODULE__), do: GenServer.call(server, :status)
@@ -108,6 +169,28 @@ defmodule Beamdash.Target do
   def garbage_collect(pid, server \\ __MODULE__) when is_pid(pid),
     do: call_agent(server, :garbage_collect, [pid])
 
+  @doc """
+  The node's primary logger level and each running application's level:
+  `%{primary: level, apps: [{app, level | :default | :mixed}]}`, sorted by
+  application (see `beamdash_agent:log_levels/0`).
+  """
+  def log_levels(server \\ __MODULE__), do: call_agent(server, :log_levels, [])
+
+  @doc """
+  Sets the logger level of every module of `app` on the node, or removes
+  those module levels with `:default`. `{:ok, :ok}`, or `{:ok, {:error,
+  reason}}` from the node.
+  """
+  def set_app_log_level(app, level, server \\ __MODULE__) when is_atom(app) and is_atom(level),
+    do: call_agent(server, :log_set_app_level, [app, level])
+
+  @doc """
+  Sets the node's primary logger level. `{:ok, :ok}`, or `{:ok, {:error,
+  reason}}` from the node.
+  """
+  def set_primary_log_level(level, server \\ __MODULE__) when is_atom(level),
+    do: call_agent(server, :log_set_primary_level, [level])
+
   @doc false
   def rpc(node, mod, fun, args, timeout \\ @rpc_timeout) do
     {:ok, :erpc.call(node, mod, fun, args, timeout)}
@@ -127,78 +210,67 @@ defmodule Beamdash.Target do
   ## GenServer
 
   @impl true
-  def init(_opts), do: {:ok, %__MODULE__{}}
+  def init(opts) do
+    {:ok,
+     %__MODULE__{
+       auto_reconnect: Keyword.get(opts, :auto_reconnect, &Beamdash.Settings.auto_reconnect?/0),
+       reconnect_delays: Keyword.get(opts, :reconnect_delays, @reconnect_delays)
+     }}
+  end
 
   @impl true
   def handle_call({:connect, node_input, cookie}, _from, state) do
-    state = drop_current(state, :reconnect)
+    state = state |> cancel_reconnect() |> drop_current(:reconnect)
 
-    result =
-      with {:ok, node} <- parse_node(node_input),
-           :ok <- ensure_distributed(node),
-           :ok <- put_cookie(node, cookie),
-           :ok <- hidden_connect(node),
-           :ok <- load_agent(node),
-           {:ok, info} <- rpc(node, :beamdash_agent, :node_info, []) do
-        {:ok, node, info}
-      end
-
-    case result do
-      {:ok, node, info} ->
-        true = Node.monitor(node, true)
-        remember_pid_index(node)
-        notify(state, {:connected, node})
-        {:reply, {:ok, info}, %{state | node: node, source: :direct}}
-
-      {:error, _} = error ->
-        {:reply, error, state}
+    with {:ok, node} <- parse_node(node_input),
+         {:ok, connection} <- establish({:direct, node, cookie}, self()) do
+      {:reply, {:ok, connection.info}, connected(state, connection)}
+    else
+      {:error, _} = error -> {:reply, error, state}
     end
   end
 
   def handle_call({:connect_kubectl, kubeconfig, namespace, pod, container, binary}, _from, state) do
-    state = drop_current(state, :reconnect)
+    state = state |> cancel_reconnect() |> drop_current(:reconnect)
+    params = {:kubectl, kubeconfig, namespace, pod, container, binary}
 
-    case Kubectl.connect(kubeconfig, namespace, pod, container, binary) do
-      {:ok, %{node: node, cookie: cookie, tunnel: tunnel}} ->
-        result =
-          with :ok <- ensure_distributed(node),
-               :ok <- put_cookie(node, cookie),
-               :ok <- hidden_connect(node),
-               :ok <- load_agent(node),
-               {:ok, info} <- rpc(node, :beamdash_agent, :node_info, []) do
-            {:ok, node, info}
-          end
-
-        case result do
-          {:ok, node, info} ->
-            true = Node.monitor(node, true)
-            remember_pid_index(node)
-            notify(state, {:connected, node})
-
-            source =
-              {:kubectl,
-               %{
-                 kubeconfig: kubeconfig,
-                 namespace: namespace,
-                 pod: pod,
-                 container: if(container in [nil, ""], do: nil, else: container)
-               }}
-
-            {:reply, {:ok, info}, %{state | node: node, tunnel: tunnel, source: source}}
-
-          {:error, _} = error ->
-            Kubectl.close(tunnel)
-            {:reply, error, state}
-        end
-
-      {:error, _} = error ->
-        {:reply, error, state}
+    case establish(params, self()) do
+      {:ok, connection} -> {:reply, {:ok, connection.info}, connected(state, connection)}
+      {:error, _} = error -> {:reply, error, state}
     end
   end
 
-  def handle_call(:disconnect, _from, state) do
-    {:reply, :ok, drop_current(state, :user)}
+  def handle_call({:switch, _node}, _from, %{node: nil} = state),
+    do: {:reply, {:error, :not_connected}, state}
+
+  def handle_call({:switch, node}, _from, %{node: node} = state),
+    do: {:reply, rpc(node, :beamdash_agent, :node_info, []), state}
+
+  def handle_call({:switch, _node}, _from, %{params: {:kubectl, _, _, _, _, _}} = state),
+    do: {:reply, {:error, :switch_needs_direct}, state}
+
+  def handle_call({:switch, node}, from, %{params: {:direct, _, current_cookie}} = state) do
+    # the cookie the attached node talks to `node` with (its own, unless
+    # set per node), read before the connection to it is dropped
+    cookie =
+      case rpc(state.node, :erlang, :get_cookie, [node]) do
+        {:ok, cookie} when is_atom(cookie) and cookie != :nocookie -> cookie
+        _ -> current_cookie
+      end
+
+    handle_call({:connect, node, cookie}, from, state)
   end
+
+  def handle_call(:disconnect, _from, state) do
+    {:reply, :ok, state |> cancel_reconnect() |> drop_current(:user)}
+  end
+
+  def handle_call(:reconnecting, _from, %{reconnect: nil} = state), do: {:reply, nil, state}
+
+  def handle_call(:reconnecting, _from, %{reconnect: r} = state),
+    do: {:reply, Map.take(r, [:node, :attempt, :error, :next_at]), state}
+
+  def handle_call(:stop_reconnect, _from, state), do: {:reply, :ok, cancel_reconnect(state)}
 
   def handle_call(:status, _from, %{node: nil} = state) do
     {:reply, %{status: :disconnected, node: nil}, state}
@@ -225,8 +297,9 @@ defmodule Beamdash.Target do
   def handle_info({:nodedown, node}, %{node: node} = state) do
     Logger.info("beamdash: lost connection to #{node}")
     Kubectl.close(state.tunnel)
+    state = maybe_reconnect(state)
     notify(state, {:disconnected, :nodedown})
-    {:noreply, %{state | node: nil, tunnel: nil, source: nil}}
+    {:noreply, %{state | node: nil, tunnel: nil, source: nil, params: nil}}
   end
 
   def handle_info({:nodedown, _other}, state), do: {:noreply, state}
@@ -241,8 +314,46 @@ defmodule Beamdash.Target do
   def handle_info({port, {:exit_status, _status}}, %{tunnel: tunnel} = state)
       when tunnel != nil and (port == tunnel.epmd_port or port == tunnel.dist_port) do
     Logger.warning("beamdash: lost the kubectl port-forward to #{inspect(state.node)}")
-    {:noreply, drop_current(state, :tunnel_failed)}
+    {:noreply, state |> maybe_reconnect() |> drop_current(:tunnel_failed)}
   end
+
+  def handle_info({:reconnect_try, ref}, %{reconnect: %{ref: ref} = r} = state) do
+    if state.auto_reconnect.() do
+      owner = self()
+
+      {:ok, _} =
+        Task.start(fn -> send(owner, {:reconnect_result, ref, establish(r.params, owner)}) end)
+
+      {:noreply, state}
+    else
+      {:noreply, %{state | reconnect: nil}}
+    end
+  end
+
+  def handle_info({:reconnect_try, _stale}, state), do: {:noreply, state}
+
+  def handle_info({:reconnect_result, ref, {:ok, connection}}, %{reconnect: %{ref: ref}} = state) do
+    Logger.info("beamdash: reconnected to #{connection.node}")
+    {:noreply, connected(%{state | reconnect: nil}, connection)}
+  end
+
+  def handle_info(
+        {:reconnect_result, ref, {:error, reason}},
+        %{reconnect: %{ref: ref} = r} = state
+      ) do
+    {:noreply,
+     %{state | reconnect: schedule_try(%{r | attempt: r.attempt + 1, error: reason}, state)}}
+  end
+
+  # a try that finished after the user connected, disconnected or stopped
+  # it: undo what it set up, unless it reached the node now attached
+  def handle_info({:reconnect_result, _stale, {:ok, connection}}, state) do
+    Kubectl.close(connection.tunnel)
+    if connection.node != state.node, do: Node.disconnect(connection.node)
+    {:noreply, state}
+  end
+
+  def handle_info({:reconnect_result, _stale, {:error, _}}, state), do: {:noreply, state}
 
   # kubectl prints more than the one "Forwarding from" line `Kubectl`
   # already waited for (one per address family); nothing else we read a
@@ -252,6 +363,89 @@ defmodule Beamdash.Target do
   end
 
   ## Helpers
+
+  # Makes the connection `params` describes: `{:direct, node, cookie}` or
+  # `{:kubectl, kubeconfig, namespace, pod, container, binary}`. Run in the
+  # GenServer or, for a reconnect, in a task: kubectl's port-forwards are
+  # then handed to `owner`, which watches them.
+  defp establish({:direct, node, cookie} = params, _owner) do
+    with {:ok, info} <- attach(node, cookie),
+         do: {:ok, %{node: node, info: info, tunnel: nil, source: :direct, params: params}}
+  end
+
+  defp establish({:kubectl, kubeconfig, namespace, pod, container, binary} = params, owner) do
+    with {:ok, %{node: node, cookie: cookie, tunnel: tunnel}} <-
+           Kubectl.connect(kubeconfig, namespace, pod, container, binary) do
+      if owner != self() do
+        for port <- [tunnel.epmd_port, tunnel.dist_port] do
+          Port.connect(port, owner)
+          Process.unlink(port)
+        end
+      end
+
+      case attach(node, cookie) do
+        {:ok, info} ->
+          source =
+            {:kubectl,
+             %{
+               kubeconfig: kubeconfig,
+               namespace: namespace,
+               pod: pod,
+               container: if(container in [nil, ""], do: nil, else: container)
+             }}
+
+          {:ok, %{node: node, info: info, tunnel: tunnel, source: source, params: params}}
+
+        {:error, _} = error ->
+          Kubectl.close(tunnel)
+          error
+      end
+    end
+  end
+
+  defp attach(node, cookie) do
+    with :ok <- ensure_distributed(node),
+         :ok <- put_cookie(node, cookie),
+         :ok <- hidden_connect(node),
+         :ok <- load_agent(node),
+         do: rpc(node, :beamdash_agent, :node_info, [])
+  end
+
+  defp connected(state, connection) do
+    true = Node.monitor(connection.node, true)
+    remember_pid_index(connection.node)
+    notify(state, {:connected, connection.node})
+
+    %{
+      state
+      | node: connection.node,
+        tunnel: connection.tunnel,
+        source: connection.source,
+        params: connection.params
+    }
+  end
+
+  # Starts trying the lost connection again, when the setting is on.
+  defp maybe_reconnect(%{params: nil} = state), do: state
+
+  defp maybe_reconnect(state) do
+    if state.auto_reconnect.() do
+      r = %{ref: make_ref(), params: state.params, node: state.node, attempt: 1, error: nil}
+      %{state | reconnect: schedule_try(r, state)}
+    else
+      state
+    end
+  end
+
+  defp schedule_try(r, state) do
+    delays = state.reconnect_delays
+    delay = Enum.at(delays, r.attempt - 1, List.last(delays))
+    Process.send_after(self(), {:reconnect_try, r.ref}, delay)
+    Map.put(r, :next_at, DateTime.add(DateTime.utc_now(), delay, :millisecond))
+  end
+
+  # a try still running reports with the old ref and is undone
+  defp cancel_reconnect(state), do: %{state | reconnect: nil}
 
   defp drop_current(%{node: nil} = state, _reason), do: state
 
@@ -271,7 +465,7 @@ defmodule Beamdash.Target do
     Node.disconnect(node)
     Kubectl.close(state.tunnel)
     notify(state, {:disconnected, reason})
-    %{state | node: nil, tunnel: nil, source: nil}
+    %{state | node: nil, tunnel: nil, source: nil, params: nil}
   end
 
   defp notify(state, event) do

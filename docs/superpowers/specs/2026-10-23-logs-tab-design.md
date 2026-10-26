@@ -168,6 +168,27 @@ Started in the application tree after `Beamdash.Crashes`; modeled on it.
   changing a filter, the grouping checkbox, or resuming resets the stream
   from `Logs.entries/1`.
 - Not connected: the usual "Not connected" hint.
+- **App levels** (added 2026-10-26): an "App levels" button in the header
+  row opens a panel listing the node's running applications, each with a
+  level `<select>` (default, all, debug, info, notice, warning, error,
+  critical, alert, emergency, none; "mixed" when only some of its modules
+  have a level). Picking one sets the logger level of every module of that
+  application on the node (`logger:set_application_level/2`); default
+  removes them again (`unset_application_level/1`). The change lasts until
+  the node restarts. A "Primary level" `<select>` above the table sets the
+  node's primary level (`logger:set_primary_config(level, L)`), and the
+  header's level follows it. Module levels apply only to the `?LOG_*`
+  macros (and Elixir's Logger), which put `mfa` in the metadata; a plain
+  `logger:debug(...)` call, as riak_core makes, is checked against the
+  primary level alone (`logger:do_log/3`), so the panel says to lower the
+  primary level for those. It also says that debug calls purged at compile
+  time can't be turned on, and for kubectl that the node's console handler
+  level may still hide events. Agent (version 17): `log_levels()` →
+  `#{primary, apps => [{App, Level | default | mixed}]}`,
+  `log_set_app_level(App, Level)` and `log_set_primary_level(Level)`;
+  `Target`: `log_levels/1`, `set_app_log_level/3`,
+  `set_primary_log_level/2`. Only applications the node listed and known
+  levels are accepted from the browser (no new atoms).
 
 ## Errors
 

@@ -22,5 +22,18 @@ Beamdash.LastConnection.reload()
 Application.put_env(:beamdash, :settings_file, Path.join(last_connection_dir, "settings.json"))
 Beamdash.Settings.reload()
 
-ExUnit.after_suite(fn _ -> File.rm_rf(last_connection_dir) end)
+# Nor the real plugins (config/config.exs points :plugins_dir at a temp dir,
+# since the app reads it at startup).
+plugins_dir = Beamdash.Plugins.Build.plugins_dir()
+true = String.starts_with?(plugins_dir, System.tmp_dir!())
+
+ExUnit.after_suite(fn _ ->
+  File.rm_rf(last_connection_dir)
+  File.rm_rf(plugins_dir)
+end)
+
+# The riak_core plugin's integration test needs the sibling checkout
+# ../beamdash-riak-core-plugin: run it with `mix test --only riak_core_plugin`.
+ExUnit.configure(exclude: [:riak_core_plugin])
+
 ExUnit.start()

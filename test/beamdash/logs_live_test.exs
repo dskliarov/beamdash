@@ -294,6 +294,37 @@ defmodule Beamdash.LogsLiveTest do
     assert html =~ "9 of 9 lines"
   end
 
+  test "a pid links to its process while a node is attached", ctx do
+    {_, socket} = ctx |> mount() |> render()
+    init = :erpc.call(ctx.node, :erlang, :whereis, [:init])
+    local = Beamdash.Format.pid(init, :erlang)
+    printed = Target.localize_pid("<0.86.0>", ctx.node)
+    refute printed == "<0.86.0>"
+
+    entries = [
+      %{new_entry(8, "from the handler") | pid: local},
+      %{new_entry(9, "from a text line") | pid: "<0.86.0>"},
+      %{new_entry(10, "from an Elixir line") | pid: "#PID<0.86.0>"},
+      %{new_entry(11, "not a pid") | pid: "worker"}
+    ]
+
+    {html, socket} = socket |> info({:beamdash_logs, {:entries, entries}}) |> render()
+    href = &~s(href="/?pid=#{URI.encode_www_form(&1)}")
+    shown = local |> String.replace("<", "&lt;") |> String.replace(">", "&gt;")
+    assert html =~ ~r/#{Regex.escape(href.(local))}[^>]*>#{shown}</
+    assert html =~ ~r/#{Regex.escape(href.(printed))}[^>]*>&lt;0.86.0&gt;</
+    assert html =~ ~r/#{Regex.escape(href.(printed))}[^>]*>#PID&lt;0.86.0&gt;</
+    assert html =~ ~r/<span>worker<\/span>/
+
+    {html, _} =
+      socket
+      |> Phoenix.Component.assign(status: :disconnected)
+      |> info({:beamdash_logs, {:entries, [%{new_entry(12, "detached") | pid: local}]}})
+      |> render()
+
+    refute html =~ "proc-link"
+  end
+
   # a Logs that starts empty, so the test's own entries number from 1
   defp empty_logs(ctx) do
     id = System.unique_integer([:positive])
@@ -608,5 +639,110 @@ defmodule Beamdash.LogsLiveTest do
     {:noreply, socket} = LogsLive.handle_async(:previous, {:exit, :boom}, socket)
     {html, _} = render(socket)
     assert html =~ "Could not load the previous container"
+  end
+
+  defp async_result(socket, key) do
+    assert_receive {:phoenix, :async_result, {:start, {_ref, nil, ^key, result}}}, 5_000
+    {:noreply, socket} = LogsLive.handle_async(key, result, socket)
+    socket
+  end
+
+  # the <select> of one application's level, and its selected option
+  defp app_level(html, app) do
+    [_, select] =
+      Regex.run(~r/<select[^>]*name="level"[^>]*data-app="#{app}"[^>]*>(.*?)<\/select>/s, html)
+
+    [_, value] = Regex.run(~r/<option[^>]*value="([^"]*)"[^>]*selected/, select)
+    value
+  end
+
+  test "App levels lists the node's applications and sets one", ctx do
+    {html, socket} = ctx |> mount() |> render()
+    refute html =~ "logs-app-levels"
+
+    {html, socket} = socket |> event("toggle_app_levels") |> render()
+    assert html =~ "Loading application levels…"
+
+    {html, socket} = socket |> async_result(:app_levels) |> render()
+    assert html =~ ~s(id="logs-app-levels")
+    assert app_level(html, "kernel") == "default"
+    assert app_level(html, "stdlib") == "default"
+    assert html =~ "primary level"
+
+    socket = event(socket, "set_app_level", %{"app" => "stdlib", "level" => "debug"})
+
+    {html, socket} =
+      socket |> async_result(:set_app_level) |> async_result(:app_levels) |> render()
+
+    assert app_level(html, "stdlib") == "debug"
+    assert html =~ "stdlib set to debug"
+    assert [{:lists, :debug}] = :erpc.call(ctx.node, :logger, :get_module_level, [[:lists]])
+
+    socket = event(socket, "set_app_level", %{"app" => "stdlib", "level" => "default"})
+
+    {html, socket} =
+      socket |> async_result(:set_app_level) |> async_result(:app_levels) |> render()
+
+    assert app_level(html, "stdlib") == "default"
+    assert [] = :erpc.call(ctx.node, :logger, :get_module_level, [[:lists]])
+
+    {html, _} = socket |> event("toggle_app_levels") |> render()
+    refute html =~ "logs-app-levels"
+  end
+
+  test "App levels ignores an application or level the node didn't list", ctx do
+    {_, socket} = ctx |> mount() |> render()
+    socket = socket |> event("toggle_app_levels") |> async_result(:app_levels)
+
+    for params <- [
+          %{"app" => "no_such_app_#{System.unique_integer([:positive])}", "level" => "debug"},
+          %{"app" => "stdlib", "level" => "loud"},
+          %{"app" => "stdlib"}
+        ] do
+      socket = event(socket, "set_app_level", params)
+      refute_receive {:phoenix, :async_result, _}, 100
+      {html, _} = render(socket)
+      assert app_level(html, "stdlib") == "default"
+    end
+  end
+
+  defp primary_level(html) do
+    [_, select] =
+      Regex.run(~r/<form[^>]*id="logs-primary-level".*?<select[^>]*>(.*?)<\/select>/s, html)
+
+    [_, value] = Regex.run(~r/<option[^>]*value="([^"]*)"[^>]*selected/, select)
+    value
+  end
+
+  test "App levels sets the node's primary level", ctx do
+    {_, socket} = ctx |> mount() |> render()
+    {html, socket} = socket |> event("toggle_app_levels") |> async_result(:app_levels) |> render()
+    %{level: before} = :erpc.call(ctx.node, :logger, :get_primary_config, [])
+    assert primary_level(html) == Atom.to_string(before)
+
+    for params <- [%{"level" => "default"}, %{"level" => "loud"}, %{}] do
+      _ = event(socket, "set_primary_level", params)
+      refute_receive {:phoenix, :async_result, _}, 100
+      assert %{level: ^before} = :erpc.call(ctx.node, :logger, :get_primary_config, [])
+    end
+
+    # the header's level, as a Direct stream reports it on attach
+    socket = Phoenix.Component.assign(socket, info: %{socket.assigns.info | level: :notice})
+    socket = event(socket, "set_primary_level", %{"level" => "debug"})
+
+    {html, socket} =
+      socket |> async_result(:set_primary_level) |> async_result(:app_levels) |> render()
+
+    assert primary_level(html) == "debug"
+    assert html =~ "Primary level set to debug"
+    assert socket.assigns.info.level == :debug
+    assert %{level: :debug} = :erpc.call(ctx.node, :logger, :get_primary_config, [])
+  end
+
+  test "App levels shows an error when the node can't be asked", ctx do
+    {_, socket} = ctx |> mount() |> render()
+    :ok = Target.disconnect(ctx.target)
+    {html, _} = socket |> event("toggle_app_levels") |> async_result(:app_levels) |> render()
+    assert html =~ "Could not read the application levels"
   end
 end

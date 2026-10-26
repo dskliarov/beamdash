@@ -10,6 +10,17 @@ defmodule BeamdashWeb.Connection do
   lets `{:beamdash_target, _}` messages continue to the page's own
   `handle_info/2`.
 
+  `@conn.plugins` holds the active plugins (`Beamdash.Plugins.active/1`)
+  for the nav's Plugins menu, updated on `{:beamdash_plugins, :changed}`.
+  A page that shows plugins can define `plugins_changed/2`: it gets the
+  socket and the event (`:changed` or `{:removed, app}`) and returns the
+  socket. Other `{:beamdash_plugins, _}` messages (an install's progress)
+  go on to the page.
+
+  `@conn.reconnecting` is `Beamdash.Target.reconnecting/1` while a lost
+  connection is being tried again: the bar says so, with a Stop button
+  (`stop_reconnect`).
+
   The form starts with the last node and cookie that connected
   (`Beamdash.LastConnection`, kept across restarts); a node typed in this
   session that failed to connect is offered instead until one succeeds.
@@ -47,7 +58,9 @@ defmodule BeamdashWeb.Connection do
           kube_container: nil,
           kube_binaries: nil,
           kube_binary: nil,
-          kube_listing: false
+          kube_listing: false,
+          reconnecting: if(status == :connected, do: nil, else: Target.reconnecting()),
+          plugins: active_plugins()
         })
       )
       |> attach_hook(:conn_event, :handle_event, &handle_event/3)
@@ -55,6 +68,7 @@ defmodule BeamdashWeb.Connection do
 
     if connected?(socket) do
       :ok = Target.subscribe()
+      :ok = Phoenix.PubSub.subscribe(Beamdash.PubSub, "plugins")
       send(self(), :beamdash_conn_tick)
     end
 
@@ -93,7 +107,12 @@ defmodule BeamdashWeb.Connection do
 
   def handle_event("disconnect", _params, socket) do
     :ok = Target.disconnect()
-    {:halt, update(socket, status: :disconnected, node: nil, info: nil)}
+    {:halt, update(socket, status: :disconnected, node: nil, info: nil, reconnecting: nil)}
+  end
+
+  def handle_event("stop_reconnect", _params, socket) do
+    :ok = Target.stop_reconnect()
+    {:halt, update(socket, reconnecting: nil)}
   end
 
   # namespaces are re-listed each time Kubernetes is picked from another
@@ -250,12 +269,26 @@ defmodule BeamdashWeb.Connection do
     do:
       {:cont,
        socket
-       |> update(status: :connected, node: node, error: nil, node_input: Atom.to_string(node))
+       |> update(
+         status: :connected,
+         node: node,
+         error: nil,
+         node_input: Atom.to_string(node),
+         reconnecting: nil
+       )
        |> refresh()}
 
   def handle_info({:beamdash_target, {:disconnected, reason}}, socket) do
     error = if reason == :nodedown, do: "Lost the connection to #{socket.assigns.conn.node}."
-    {:cont, update(socket, status: :disconnected, node: nil, info: nil, error: error)}
+
+    {:cont,
+     update(socket,
+       status: :disconnected,
+       node: nil,
+       info: nil,
+       error: error,
+       reconnecting: Target.reconnecting()
+     )}
   end
 
   # Broadcast on the "settings" topic, which `BeamdashWeb.Syntax` (mounted
@@ -303,7 +336,26 @@ defmodule BeamdashWeb.Connection do
     end
   end
 
+  def handle_info({:beamdash_plugins, event}, socket)
+      when event == :changed or (is_tuple(event) and elem(event, 0) == :removed) do
+    socket = update(socket, plugins: active_plugins())
+
+    socket =
+      if function_exported?(socket.view, :plugins_changed, 2),
+        do: socket.view.plugins_changed(socket, event),
+        else: socket
+
+    {:halt, socket}
+  end
+
   def handle_info(_message, socket), do: {:cont, socket}
+
+  # [] when the registry isn't there (it never breaks the bar)
+  defp active_plugins do
+    Beamdash.Plugins.active()
+  catch
+    :exit, _ -> []
+  end
 
   defp refresh(%{assigns: %{conn: %{status: :connected}}} = socket) do
     case Target.node_info() do
@@ -311,6 +363,9 @@ defmodule BeamdashWeb.Connection do
       {:error, _} -> socket
     end
   end
+
+  defp refresh(%{assigns: %{conn: %{status: :disconnected}}} = socket),
+    do: update(socket, reconnecting: Target.reconnecting())
 
   defp refresh(socket), do: socket
 

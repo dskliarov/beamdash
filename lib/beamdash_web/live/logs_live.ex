@@ -42,6 +42,8 @@ defmodule BeamdashWeb.LogsLive do
   @max_rows 1_000
   @max_entries 2_000
   @levels ~w(debug info notice warning error)
+  # what an application's level can be set to, most verbose first
+  @app_levels ~w(default all debug info notice warning error critical alert emergency none)
 
   @impl true
   def mount(_params, session, socket) do
@@ -78,7 +80,12 @@ defmodule BeamdashWeb.LogsLive do
         export_note: nil,
         total: 0,
         shown: 0,
-        no_level: 0
+        no_level: 0,
+        app_levels_open?: false,
+        app_levels: nil,
+        app_levels_loading?: false,
+        app_levels_error: nil,
+        app_level_note: nil
       )
       |> stream(:rows, [])
 
@@ -135,6 +142,47 @@ defmodule BeamdashWeb.LogsLive do
     :ok = Logs.reconnect(socket.assigns.logs)
     {:noreply, assign(socket, info: Logs.info(socket.assigns.logs))}
   end
+
+  defp event("toggle_app_levels", _params, socket) do
+    if socket.assigns.app_levels_open? do
+      {:noreply, assign(socket, app_levels_open?: false, app_level_note: nil)}
+    else
+      {:noreply, socket |> assign(app_levels_open?: true) |> load_app_levels()}
+    end
+  end
+
+  # only an application the node listed and a known level: the names
+  # come from the browser, so they are never made into new atoms
+  defp event("set_app_level", %{"app" => app, "level" => level}, socket)
+       when level in @app_levels do
+    with %{apps: apps} <- socket.assigns.app_levels,
+         {app, _} <- Enum.find(apps, fn {a, _} -> Atom.to_string(a) == app end) do
+      target = socket.assigns.target
+      level = String.to_existing_atom(level)
+
+      {:noreply,
+       start_async(socket, :set_app_level, fn ->
+         {app, level, Target.set_app_log_level(app, level, target)}
+       end)}
+    else
+      _ -> {:noreply, socket}
+    end
+  end
+
+  defp event("set_app_level", _params, socket), do: {:noreply, socket}
+
+  defp event("set_primary_level", %{"level" => level}, socket)
+       when level in @app_levels and level != "default" do
+    target = socket.assigns.target
+    level = String.to_existing_atom(level)
+
+    {:noreply,
+     start_async(socket, :set_primary_level, fn ->
+       {level, Target.set_primary_log_level(level, target)}
+     end)}
+  end
+
+  defp event("set_primary_level", _params, socket), do: {:noreply, socket}
 
   defp event("view", %{"view" => "previous"}, socket) do
     server = socket.assigns.logs
@@ -278,6 +326,79 @@ defmodule BeamdashWeb.LogsLive do
   # the user went back to Live meanwhile
   def handle_async(:previous, _result, socket), do: {:noreply, socket}
 
+  # (the header's level is read when the stream attaches: keep it current)
+  def handle_async(:app_levels, {:ok, {:ok, %{primary: primary, apps: _} = levels}}, socket) do
+    {:noreply,
+     assign(socket,
+       app_levels: levels,
+       app_levels_loading?: false,
+       info: current_level(socket.assigns.info, primary)
+     )}
+  end
+
+  def handle_async(:app_levels, result, socket) do
+    {:noreply,
+     assign(socket,
+       app_levels: nil,
+       app_levels_loading?: false,
+       app_levels_error: "Could not read the application levels: #{async_error(result)}"
+     )}
+  end
+
+  def handle_async(:set_app_level, {:ok, {app, level, {:ok, :ok}}}, socket) do
+    note = if level == :default, do: "#{app} reset to the default", else: "#{app} set to #{level}"
+    {:noreply, socket |> assign(app_level_note: {:ok, note}) |> load_app_levels()}
+  end
+
+  def handle_async(:set_app_level, result, socket) do
+    reason =
+      case result do
+        {:ok, {app, _level, {:ok, {:error, reason}}}} -> "#{app}: #{Format.error(reason)}"
+        {:ok, {app, _level, error}} -> "#{app}: #{async_error({:ok, error})}"
+        other -> async_error(other)
+      end
+
+    {:noreply,
+     socket
+     |> assign(app_level_note: {:error, "Could not set the level: #{reason}"})
+     |> load_app_levels()}
+  end
+
+  def handle_async(:set_primary_level, {:ok, {level, {:ok, :ok}}}, socket) do
+    note = "Primary level set to #{level}"
+    {:noreply, socket |> assign(app_level_note: {:ok, note}) |> load_app_levels()}
+  end
+
+  def handle_async(:set_primary_level, result, socket) do
+    reason =
+      case result do
+        {:ok, {_level, {:ok, {:error, reason}}}} -> Format.error(reason)
+        {:ok, {_level, error}} -> async_error({:ok, error})
+        other -> async_error(other)
+      end
+
+    {:noreply,
+     socket
+     |> assign(app_level_note: {:error, "Could not set the primary level: #{reason}"})
+     |> load_app_levels()}
+  end
+
+  defp async_error({:ok, {:error, reason}}), do: Format.error(reason)
+  defp async_error({:ok, other}), do: inspect(other)
+  defp async_error({:exit, reason}), do: Format.error(reason)
+
+  # only a stream that reported a level (a Direct one) shows it
+  defp current_level(%{level: nil} = info, _primary), do: info
+  defp current_level(info, primary), do: %{info | level: primary}
+
+  defp load_app_levels(socket) do
+    target = socket.assigns.target
+
+    socket
+    |> assign(app_levels_loading?: true, app_levels_error: nil)
+    |> start_async(:app_levels, fn -> Target.log_levels(target) end)
+  end
+
   defp previous_error({status, output}) when is_integer(status) and is_binary(output),
     do: "kubectl exited with #{status}: #{String.trim(output)}"
 
@@ -308,14 +429,23 @@ defmodule BeamdashWeb.LogsLive do
 
   def handle_info({:beamdash_logs, :cleared}, socket), do: {:noreply, cleared(socket)}
 
-  def handle_info({:beamdash_logs, {:info, info}}, socket),
-    do: {:noreply, assign(socket, info: info)}
+  def handle_info({:beamdash_logs, {:info, info}}, socket) do
+    info =
+      case socket.assigns.app_levels do
+        %{primary: primary} -> current_level(info, primary)
+        nil -> info
+      end
 
-  def handle_info({:beamdash_target, {:connected, node}}, socket),
-    do: {:noreply, assign(socket, status: :connected, node: node)}
+    {:noreply, assign(socket, info: info)}
+  end
+
+  def handle_info({:beamdash_target, {:connected, node}}, socket) do
+    socket = assign(socket, status: :connected, node: node, app_level_note: nil)
+    {:noreply, if(socket.assigns.app_levels_open?, do: load_app_levels(socket), else: socket)}
+  end
 
   def handle_info({:beamdash_target, {:disconnected, _}}, socket),
-    do: {:noreply, assign(socket, status: :disconnected)}
+    do: {:noreply, assign(socket, status: :disconnected, app_levels: nil, app_level_note: nil)}
 
   def handle_info(_message, socket), do: {:noreply, socket}
 
@@ -757,6 +887,14 @@ defmodule BeamdashWeb.LogsLive do
         >
           Download all
         </button>
+        <button
+          type="button"
+          class="secondary"
+          phx-click="toggle_app_levels"
+          aria-expanded={to_string(@app_levels_open?)}
+        >
+          App levels
+        </button>
         <span class="muted small">
           {@shown} of {@total} lines<span :if={@info.dropped > 0}>, {@info.dropped} dropped</span>
         </span>
@@ -768,6 +906,15 @@ defmodule BeamdashWeb.LogsLive do
           {elem(@export_note, 1)}
         </span>
       </div>
+
+      <.app_levels
+        :if={@app_levels_open?}
+        levels={@app_levels}
+        loading?={@app_levels_loading?}
+        error={@app_levels_error}
+        note={@app_level_note}
+        source={@info.source}
+      />
 
       <p :if={@view == :previous and @previous_loading?} class="muted">
         Loading previous container…
@@ -783,8 +930,95 @@ defmodule BeamdashWeb.LogsLive do
         <button type="button" class="secondary" phx-click="clear_filter">Clear filter</button>
       </p>
 
-      <BeamdashWeb.LogsTable.table rows={@streams.rows} filter={@filter} />
+      <BeamdashWeb.LogsTable.table
+        rows={@streams.rows}
+        filter={@filter}
+        node={if @status == :connected, do: @node}
+      />
     </main>
+    """
+  end
+
+  attr :levels, :map, required: true
+  attr :loading?, :boolean, required: true
+  attr :error, :string, required: true
+  attr :note, :any, required: true
+  attr :source, :atom, required: true
+
+  defp app_levels(assigns) do
+    assigns = assign(assigns, :choices, @app_levels)
+
+    ~H"""
+    <section id="logs-app-levels" class="logs-app-levels">
+      <form
+        :if={@levels}
+        id="logs-primary-level"
+        class="logs-primary-level"
+        phx-change="set_primary_level"
+      >
+        <label>
+          Primary level
+          <select name="level" aria-label="Primary log level">
+            <option
+              :for={choice <- tl(@choices)}
+              value={choice}
+              selected={choice == Atom.to_string(@levels.primary)}
+            >
+              {choice}
+            </option>
+          </select>
+        </label>
+      </form>
+      <p class="muted small">
+        Levels set here last on the node until it restarts. The primary level applies to every
+        log call. An application's level applies to the ?LOG_* macros (Logger in Elixir) in its
+        modules; plain <code>logger:debug(...)</code>
+        calls, such as riak_core's, follow the primary level only, so lower the primary level
+        to see them. Debug calls removed when the code was compiled can't be turned on.
+        <span :if={@source == :kubectl}>
+          kubectl logs shows what the node's console prints, so its handler level may still hide
+          events.
+        </span>
+      </p>
+      <p :if={@loading? and @levels == nil} class="muted">Loading application levels…</p>
+      <p :if={@error} class="error">{@error}</p>
+      <p
+        :if={@note}
+        class={["logs-note small", elem(@note, 0) == :error && "error"]}
+        role="status"
+      >
+        {elem(@note, 1)}
+      </p>
+      <table :if={@levels} class="logs-app-levels-table">
+        <thead>
+          <tr>
+            <th>Application</th><th>Level</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr :for={{app, level} <- @levels.apps}>
+            <td>{app}</td>
+            <td>
+              <form phx-change="set_app_level">
+                <input type="hidden" name="app" value={app} />
+                <select name="level" data-app={app} aria-label={"Log level of #{app}"}>
+                  <option :if={level == :mixed} value="" selected disabled>
+                    mixed (some modules)
+                  </option>
+                  <option
+                    :for={choice <- @choices}
+                    value={choice}
+                    selected={choice == Atom.to_string(level)}
+                  >
+                    {choice}
+                  </option>
+                </select>
+              </form>
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
     """
   end
 

@@ -66,6 +66,28 @@ defmodule Beamdash.PluginsBuildTest do
     """
   end
 
+  # Fetches hello_plugin with `req`, `hex.info` printing `info_out`; gives
+  # the version that was fetched, or the error.
+  defp resolve_with(tmp, info_out, req) do
+    Application.put_env(:beamdash, :plugins_hex_cmd, fn
+      ["hex.info", "hello_plugin"] ->
+        {info_out, 0}
+
+      ["hex.package", "fetch", "hello_plugin", _version, "--unpack", "--output", out] ->
+        File.mkdir_p!(out)
+        File.cp_r!(@fixture, out)
+        {"ok", 0}
+    end)
+
+    {:ok, spec} = Spec.parse(~s|{:hello_plugin, "#{req}"}|)
+    dest = Path.join(tmp, unique_name("dest"))
+
+    case Fetch.fetch(spec, dest) do
+      {:ok, %{resolved: version}} -> {:ok, version}
+      {:error, msg} -> {:error, msg}
+    end
+  end
+
   defp unique_name(prefix), do: "#{prefix}#{System.unique_integer([:positive])}"
 
   # Cleans up modules a test's plugin may have loaded.
@@ -81,6 +103,15 @@ defmodule Beamdash.PluginsBuildTest do
       assert project.supports == [{:hello_app, "~> 1.0"}]
       assert project.shipped == [{:phoenix_live_view, "~> 1.0"}]
       assert project.beamdash_req == nil
+    end
+
+    test "a symlinked mix.exs is refused, not followed", %{tmp: tmp} do
+      root = Path.join(tmp, "linked")
+      File.mkdir_p!(root)
+      File.ln_s!(Path.join(@fixture, "mix.exs"), Path.join(root, "mix.exs"))
+
+      assert {:error, msg} = Build.read_project(root)
+      assert msg =~ "mix.exs is a symbolic link"
     end
 
     test "app: some_call() is refused and never run", %{tmp: tmp} do
@@ -629,6 +660,40 @@ defmodule Beamdash.PluginsBuildTest do
       end
     end
 
+    test "check: a hand-written __beamdash_plugin__/0 with bad pages is refused", %{tmp: tmp} do
+      cases = [
+        {~S|%{name: "C", pages: [%{slug: "p", label: "P"}]}|, ~r/invalid page/},
+        {~S|%{name: "C", pages: [%{slug: "p", label: :p, module: X.P}]}|, ~r/invalid page/},
+        {~S|%{name: "C", pages: [%{slug: "Bad", label: "P", module: X.P}]}|, ~r/invalid page/},
+        {~S|%{name: "C", pages: [%{slug: "p\n", label: "P", module: X.P}]}|, ~r/invalid page/},
+        {~S|%{name: "C", pages: [%{slug: "p", label: "P", module: "X.P"}]}|, ~r/invalid page/},
+        {~S|%{name: "C", pages: [:junk]}|, ~r/invalid page/},
+        {~S|%{name: :c, pages: []}|, ~r/plugin declaration/}
+      ]
+
+      for {{decl, expected}, i} <- Enum.with_index(cases) do
+        a = unique_name("Hand")
+        mod = Module.concat([a])
+
+        root =
+          write_plugin(tmp, "hand#{i}", mix_exs("[]"), [
+            {"lib/a.ex", "defmodule #{a} do\n  def __beamdash_plugin__, do: #{decl}\nend\n"}
+          ])
+
+        ebin = Path.join(tmp, "hand#{i}_ebin")
+        File.mkdir_p!(ebin)
+
+        try do
+          assert {:ok, modules} = compile_quiet(root, ebin)
+          assert {:error, msg} = Build.check(modules, mod, ebin), decl
+          assert msg =~ expected, msg
+        after
+          Code.delete_path(ebin)
+          cleanup_modules([mod])
+        end
+      end
+    end
+
     test "unload purges and deletes modules" do
       {:module, _} = Code.ensure_loaded(Beamdash.Plugins.Spec)
       # a throwaway module compiled from a string
@@ -1078,6 +1143,92 @@ defmodule Beamdash.PluginsBuildTest do
       File.mkdir_p!(dest)
       assert {:error, msg} = Fetch.fetch(spec, dest)
       assert msg =~ "mix.exs"
+    end
+
+    # The shape Hex 2.5+ prints (lib/mix/tasks/hex.info.ex format_releases/2):
+    # "\nRecent releases:\n", then "  <version> (<date>)" per release, with
+    # " (retired)" after a retired one (yellow on a terminal), then "  ...".
+    test "hex: the real hex.info output (Hex 2.5+), retired releases skipped", %{tmp: tmp} do
+      out =
+        "A plugin.\n\nConfig: {:hello_plugin, \"~> 0.3\"}\nLocked version: 0.1.0\n\n" <>
+          "Recent releases:\n" <>
+          "  \e[33m0.3.0 (2026-03-01) (retired)\e[0m\n" <>
+          "  0.2.1 (2026-02-01)\n" <>
+          "  0.2.0-rc.1 (2026-01-15)\n" <>
+          "  0.2.0\n" <>
+          "  ...\n\n" <>
+          "Downloads:\n  1,234 all time\n  56 this week\n\n" <>
+          "Licenses: Apache-2.0\nLinks:\n  GitHub: https://example.com\n"
+
+      assert resolve_with(tmp, out, "~> 0.2") == {:ok, "0.2.1"}
+      assert resolve_with(tmp, out, ">= 0.3.0") |> elem(0) == :error
+    end
+
+    # The shape Hex up to 2.4 printed: one line, comma separated, retired
+    # ones marked " (retired)", and ", ..." when there are more.
+    test "hex: the one-line Releases: list of older Hex versions", %{tmp: tmp} do
+      out =
+        "A plugin.\n\nConfig: {:hello_plugin, \"~> 0.3\"}\n" <>
+          "Releases: 0.3.0 (retired), 0.2.1, 0.2.0, 0.1.0, ...\n\n" <>
+          "Licenses: MIT\n"
+
+      assert resolve_with(tmp, out, "~> 0.2") == {:ok, "0.2.1"}
+      assert resolve_with(tmp, out, "~> 0.1.0") == {:ok, "0.1.0"}
+    end
+
+    test "hex: Hex not installed fails fast with a clear message", %{tmp: tmp} do
+      prompt =
+        "Mix requires the Hex package manager to fetch dependencies\n" <>
+          ~s|Shall I install Hex? (if running non-interactively, use "mix local.hex --force") [Yn] | <>
+          ~s|** (Mix) The task "hex.info" could not be found\n|
+
+      Application.put_env(:beamdash, :plugins_hex_cmd, fn _ -> {prompt, 1} end)
+      dest = Path.join(tmp, "dest")
+
+      {:ok, spec} = Spec.parse(~S|{:hello_plugin, "~> 0.1"}|)
+      assert {:error, msg} = Fetch.fetch(spec, dest)
+      assert msg =~ "Hex is not installed"
+      assert msg =~ "mix local.hex"
+
+      # an exact version skips hex.info and still says so
+      {:ok, spec} = Spec.parse(~S|{:hello_plugin, "== 0.1.0"}|)
+      assert {:error, msg} = Fetch.fetch(spec, dest)
+      assert msg =~ "Hex is not installed"
+    end
+
+    test "run_cmd answers a prompt from :input instead of waiting" do
+      sh = System.find_executable("sh")
+
+      assert Fetch.run_cmd(sh, ["-c", "read x; echo got:$x"], input: "n\n") ==
+               {:ok, {"got:n\n", 0}}
+    end
+
+    test "path: a folder inside the plugins dir is refused", %{tmp: tmp} do
+      plugins = Path.join(tmp, "plugins")
+      inside = Path.join(plugins, "hello_plugin")
+      File.mkdir_p!(inside)
+      File.cp_r!(@fixture, inside)
+      Application.put_env(:beamdash, :plugins_dir, plugins)
+      dest = Path.join(tmp, "dest")
+
+      # directly, as the plugins dir itself, and through a symlink outside it
+      link = Path.join(tmp, "link")
+      File.ln_s!(inside, link)
+
+      for path <- [inside, plugins, link, Path.join(plugins, "../plugins/hello_plugin")] do
+        {:ok, spec} = Spec.parse(~s|{:hello_plugin, path: "#{path}"}|)
+        assert {:error, msg} = Fetch.fetch(spec, dest), path
+        assert msg =~ "inside the plugins folder"
+      end
+
+      # reached through a symlinked plugins dir
+      alias_dir = Path.join(tmp, "alias")
+      File.ln_s!(plugins, alias_dir)
+      Application.put_env(:beamdash, :plugins_dir, alias_dir)
+      {:ok, spec} = Spec.parse(~s|{:hello_plugin, path: "#{inside}"}|)
+      assert {:error, _} = Fetch.fetch(spec, dest)
+
+      assert File.regular?(Path.join(inside, "mix.exs"))
     end
 
     test "path: the folder itself, unchanged", %{tmp: tmp} do

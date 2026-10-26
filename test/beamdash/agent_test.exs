@@ -660,4 +660,64 @@ defmodule Beamdash.AgentTest do
       assert :dropped = :beamdash_agent.log_send(remote, [], 0)
     end
   end
+
+  describe "application log levels" do
+    setup do
+      {peer, node} = Fixture.start_peer()
+      on_exit(fn -> Fixture.stop_peer(peer) end)
+
+      target = start_supervised!({Target, name: :"target_#{System.unique_integer([:positive])}"})
+      {:ok, _} = Target.connect(Atom.to_string(node), Fixture.cookie(), target)
+      %{node: node, target: target}
+    end
+
+    defp app_level(levels, app), do: levels.apps |> List.keyfind(app, 0) |> elem(1)
+
+    test "lists the running applications and the primary level", %{target: target} do
+      assert {:ok, %{primary: primary, apps: apps}} = Target.log_levels(target)
+      assert is_atom(primary)
+      assert {:kernel, :default} in apps
+      assert {:stdlib, :default} in apps
+      assert apps == Enum.sort(apps)
+    end
+
+    test "sets and resets an application's level", %{node: node, target: target} do
+      assert {:ok, :ok} = Target.set_app_log_level(:stdlib, :debug, target)
+      assert {:ok, levels} = Target.log_levels(target)
+      assert app_level(levels, :stdlib) == :debug
+      assert app_level(levels, :kernel) == :default
+      assert [{:lists, :debug}] = :erpc.call(node, :logger, :get_module_level, [[:lists]])
+
+      assert {:ok, :ok} = Target.set_app_log_level(:stdlib, :default, target)
+      assert {:ok, levels} = Target.log_levels(target)
+      assert app_level(levels, :stdlib) == :default
+      assert [] = :erpc.call(node, :logger, :get_module_level, [[:lists]])
+    end
+
+    test "an application with only some modules overridden is mixed",
+         %{node: node, target: target} do
+      :ok = :erpc.call(node, :logger, :set_module_level, [:lists, :error])
+      assert {:ok, levels} = Target.log_levels(target)
+      assert app_level(levels, :stdlib) == :mixed
+    end
+
+    test "refuses a bad level or an application that isn't loaded", %{target: target} do
+      assert {:ok, {:error, {:invalid_level, :loud}}} =
+               Target.set_app_log_level(:stdlib, :loud, target)
+
+      assert {:ok, {:error, {:not_loaded, :no_such_app}}} =
+               Target.set_app_log_level(:no_such_app, :debug, target)
+    end
+
+    test "sets the primary level", %{node: node, target: target} do
+      assert {:ok, :ok} = Target.set_primary_log_level(:debug, target)
+      assert {:ok, %{primary: :debug}} = Target.log_levels(target)
+      assert %{level: :debug} = :erpc.call(node, :logger, :get_primary_config, [])
+
+      assert {:ok, {:error, {:invalid_level, :loud}}} =
+               Target.set_primary_log_level(:loud, target)
+
+      assert {:ok, %{primary: :debug}} = Target.log_levels(target)
+    end
+  end
 end

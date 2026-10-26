@@ -13,6 +13,8 @@ defmodule Beamdash.Application do
       Beamdash.SeqTracer,
       Beamdash.Crashes,
       Beamdash.Logs,
+      {Task.Supervisor, name: Beamdash.Plugins.TaskSup},
+      Beamdash.Plugins,
       Beamdash.SysTracer,
       Beamdash.Profiler,
       BeamdashWeb.Endpoint

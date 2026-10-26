@@ -131,6 +131,8 @@ defmodule Beamdash.PluginApiTest do
            ~r/slug "Bad Slug"/},
           {"a slug starting with a digit", ~s|name: "x", pages: [{"1ring", "R", Some.Page}]|,
            ~r/slug "1ring"/},
+          {"a slug with a trailing newline", ~s|name: "x", pages: [{"ring\\n", "R", P}]|,
+           ~r/slug "ring\\n"/},
           {"a too long slug", ~s|name: "x", pages: [{"a#{String.duplicate("b", 32)}", "L", P}]|,
            ~r/slug/},
           {"a duplicate slug", ~s|name: "x", pages: [{"a", "A", P.A}, {"a", "B", P.B}]|,
@@ -140,11 +142,16 @@ defmodule Beamdash.PluginApiTest do
            ~r/module/},
           {"a page that isn't a 3-tuple", ~s|name: "x", pages: [{"a", P.A}]|, ~r/pages/}
         ] do
+      # Source and options, not the regex: compiled regexes can't be escaped
+      # on OTP 28 with Elixir < 1.19.
+      @message {message.source, Regex.opts(message)}
+
       test "refuse #{what}" do
         mod = unique(BadPlugin)
+        {source, opts} = @message
 
         error =
-          assert_raise ArgumentError, unquote(Macro.escape(message)), fn ->
+          assert_raise ArgumentError, Regex.compile!(source, opts), fn ->
             compile(plugin_source(mod, unquote(opts)), mod)
           end
 
@@ -211,6 +218,15 @@ defmodule Beamdash.PluginApiTest do
       assert Plugin.app_version(:no_such_app, target) == :not_running
     end
 
+    test "app_running? and app_version see library applications, as the registry does" do
+      {target, node} = start_connected_target()
+      # hello_app has no :mod, so no application master
+      Beamdash.Test.PluginFixture.start_app(node, "1.2.0")
+
+      assert Plugin.app_running?(:hello_app, target)
+      assert Plugin.app_version(:hello_app, target) == {:ok, "1.2.0"}
+    end
+
     test "a target that isn't running: not connected, not running" do
       assert Plugin.rpc(:erlang, :node, [], 1_000, target: :no_such_target) ==
                {:error, :not_connected}
@@ -228,6 +244,18 @@ defmodule Beamdash.PluginApiTest do
     test "version is beamdash's version" do
       assert Plugin.version() == "#{Application.spec(:beamdash, :vsn)}"
       assert Plugin.version() == Mix.Project.config()[:version]
+    end
+
+    test "switch_path is the Nodes tab's link that switches to a node" do
+      assert Plugin.switch_path(:"kv2@127.0.0.1") == "/nodes?switch=kv2%40127.0.0.1"
+
+      assert Plugin.switch_path(:"kv2@127.0.0.1", "/plugins/riak_core_plugin/ring") ==
+               "/nodes?switch=kv2%40127.0.0.1&return=%2Fplugins%2Friak_core_plugin%2Fring"
+    end
+
+    test "process_path is the Processes tab's link to a pid" do
+      pid = :erlang.list_to_pid(~c"<0.85.0>")
+      assert Plugin.process_path(pid) == "/?pid=%3C0.85.0%3E"
     end
   end
 

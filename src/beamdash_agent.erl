@@ -12,6 +12,7 @@
 -export([process_details/2, garbage_collect/1]).
 -export([sys_trace/3, sys_trace_stop_all/0, sys_event/3]).
 -export([log_attach/1, log_detach/0, log/2, log_send/3]).
+-export([log_levels/0, log_set_app_level/2, log_set_primary_level/1]).
 -export([tprof_available/0, tprof_start/4, tprof_collect/1, tprof_stop/0]).
 -export([recon_available/0, memory_snapshot/0, top_processes/2, gc_all/0,
          binary_leaks/1, ets_tables/0, process_state/2]).
@@ -25,7 +26,7 @@
 %% dictionary key in the same process_info call as everything else.
 -define(INITIAL_CALL_KEY, {dictionary, '$initial_call'}).
 
-version() -> 15.
+version() -> 17.
 
 node_info() ->
     {WallClockMs, _} = erlang:statistics(wall_clock),
@@ -785,6 +786,50 @@ log_detach() ->
             after ?LOG_TIMEOUT -> erlang:demonitor(Ref, [flush]), ok
             end
     end.
+
+%% The node's primary logger level, and for each running application the
+%% level its modules are set to: default (no module level set, so the
+%% primary level applies), one level when every module has it, or mixed.
+log_levels() ->
+    Apps = lists:sort([App || {App, _, _} <- application:which_applications()]),
+    #{primary => maps:get(level, logger:get_primary_config()),
+      apps => [{App, log_app_level(App)} || App <- Apps]}.
+
+log_app_level(App) ->
+    Mods = case application:get_key(App, modules) of
+               {ok, M} -> M;
+               undefined -> []
+           end,
+    Set = logger:get_module_level(Mods),
+    case lists:usort([L || {_, L} <- Set]) of
+        [] -> default;
+        [Level] when length(Set) =:= length(Mods) -> Level;
+        _ -> mixed
+    end.
+
+%% Sets the level of every module of App (logger:set_application_level/2),
+%% or removes those module levels again with default. Module levels apply
+%% only to the ?LOG_* macros (which add mfa to the metadata): a plain
+%% logger:debug(...) call is checked against the primary level alone.
+log_set_app_level(App, default) when is_atom(App) ->
+    logger:unset_application_level(App);
+log_set_app_level(App, Level) when is_atom(App) ->
+    case log_level_name(Level) of
+        true -> logger:set_application_level(App, Level);
+        false -> {error, {invalid_level, Level}}
+    end.
+
+%% Sets the node's primary level, which every log event is checked against
+%% (a module level, when set, replaces it for that module's macro calls).
+log_set_primary_level(Level) ->
+    case log_level_name(Level) of
+        true -> logger:set_primary_config(level, Level);
+        false -> {error, {invalid_level, Level}}
+    end.
+
+log_level_name(Level) ->
+    lists:member(Level, [none, emergency, alert, critical, error, warning,
+                         notice, info, debug, all]).
 
 %% The logger callback. It runs in the process that logged, so it must be
 %% cheap and must never raise: logger removes a handler that crashes. With

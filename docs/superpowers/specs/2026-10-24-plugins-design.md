@@ -317,8 +317,8 @@ beamdash starts anyway. Startup never fetches from the network.
   - one field, "Mix dependency", placeholder `{:riak_core_plugin, "~> 0.1"}`;
   - three examples under it (Hex, Git with tag, local path);
   - the warning: "A plugin runs inside beamdash with full access to the nodes
-    you connect to, and fetching it runs its mix.exs. Add only plugins you
-    trust.";
+    you connect to, and compiling it runs its code inside beamdash. Add only
+    plugins you trust.";
   - progress: Checking… / Fetching… / Compiling… / Loaded, or the error.
 - Shows the plugins directory path.
 

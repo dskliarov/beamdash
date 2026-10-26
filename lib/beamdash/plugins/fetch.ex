@@ -15,8 +15,9 @@ defmodule Beamdash.Plugins.Fetch do
       and optionally the private working directory, to `{output, status}`),
       which tests replace. mix runs in a fresh 0700 directory, never in a
       shared one, because it would evaluate a `./mix.exs` found there.
-    * **Path:** nothing is copied. The folder must exist and hold a
-      `mix.exs`; it is the source, and `resolved` is its path.
+    * **Path:** nothing is copied. The folder must exist, hold a `mix.exs`
+      and not be inside the plugins dir (symbolic links resolved), where
+      beamdash deletes things; it is the source, and `resolved` is its path.
 
   External commands run as ports with a timeout from
   `config :beamdash, :plugins_fetch_timeout` (default 120 000 ms). A command
@@ -25,7 +26,7 @@ defmodule Beamdash.Plugins.Fetch do
   stops it asking for credentials.
   """
 
-  alias Beamdash.Plugins.Spec
+  alias Beamdash.Plugins.{Build, Spec}
 
   @default_timeout 120_000
   @max_output 1_000
@@ -61,6 +62,11 @@ defmodule Beamdash.Plugins.Fetch do
     cond do
       not File.dir?(path) ->
         {:error, "the folder #{path} does not exist"}
+
+      Build.in_plugins_dir?(path) ->
+        {:error,
+         "the folder #{path} is inside the plugins folder #{Build.plugins_dir()}, " <>
+           "where beamdash deletes what it keeps: move it somewhere else"}
 
       true ->
         with :ok <- has_mix_exs(path, "the folder #{path}"),
@@ -188,22 +194,41 @@ defmodule Beamdash.Plugins.Fetch do
     end
   end
 
-  # "Recent releases:" (or "Releases:") then one "  0.11.1 (2026-06-12)" per
-  # line, up to a blank line. A trailing "..." line is skipped.
+  # The releases listed by `mix hex.info`. Hex 2.5 and later print
+  # "Recent releases:" and then one "  0.11.1 (2026-06-12)" per line, up to a
+  # blank line; older Hex printed them on one line, comma separated, after
+  # "Releases: ". Either may end with "..." and mark a release " (retired)";
+  # retired releases are skipped. Colour codes are stripped first.
   defp parse_releases(output) do
-    output
-    |> String.split("\n")
-    |> Enum.drop_while(&(not Regex.match?(~r/\A\s*(Recent releases|Releases):/, &1)))
-    |> Enum.drop(1)
-    |> Enum.take_while(&(String.trim(&1) != ""))
-    |> Enum.flat_map(fn line ->
-      with [_, text] <- Regex.run(~r/\A\s+(\S+)\s+\(/, line),
-           {:ok, version} <- Version.parse(text) do
-        [version]
-      else
-        _ -> []
+    lines =
+      Regex.replace(~r/\e\[[0-9;]*m/, output, "")
+      |> String.split(["\r\n", "\n"])
+      |> Enum.drop_while(&(not Regex.match?(~r/\A\s*(?:Recent releases|Releases):/, &1)))
+
+    entries =
+      case lines do
+        [] ->
+          []
+
+        [header | rest] ->
+          [_, inline] = String.split(header, ":", parts: 2)
+
+          if String.trim(inline) == "",
+            do: Enum.take_while(rest, &(String.trim(&1) != "")),
+            else: String.split(inline, ",")
       end
-    end)
+
+    Enum.flat_map(entries, &release_version/1)
+  end
+
+  defp release_version(entry) do
+    with [text | notes] <- String.split(entry),
+         false <- "(retired)" in notes,
+         {:ok, version} <- Version.parse(text) do
+      [version]
+    else
+      _ -> []
+    end
   end
 
   defp hex_fetch(package, version, src, cwd) do
@@ -214,17 +239,25 @@ defmodule Beamdash.Plugins.Fetch do
   # A configured runner takes the args (arity 1) or the args and the private
   # working directory (arity 2).
   defp hex(args, cwd) do
-    result =
+    {out, status} =
       case Application.get_env(:beamdash, :plugins_hex_cmd) do
         nil -> default_hex_cmd(args, cwd)
         runner when is_function(runner, 2) -> runner.(args, cwd)
         runner when is_function(runner, 1) -> runner.(args)
       end
 
-    case result do
-      {out, 0} -> {:ok, out}
-      {out, status} -> {:error, failure(out, "mix #{Enum.at(args, 0)}", status)}
+    cond do
+      hex_missing?(out) -> {:error, "Hex is not installed: run `mix local.hex`"}
+      status == 0 -> {:ok, out}
+      true -> {:error, failure(out, "mix #{Enum.at(args, 0)}", status)}
     end
+  end
+
+  # Without Hex, mix asks "Shall I install Hex?"; `default_hex_cmd/2`
+  # answers no, so mix then says the hex task could not be found.
+  defp hex_missing?(out) do
+    String.contains?(out, "Shall I install Hex?") or
+      Regex.match?(~r/The task "hex\.[a-z_.]+" could not be found/, out)
   end
 
   defp failure(out, what, status) do
@@ -267,7 +300,9 @@ defmodule Beamdash.Plugins.Fetch do
         {"mix not found on PATH (needed for Hex plugins)", 127}
 
       mix ->
-        opts = [env: [{"MIX_ENV", "prod"}], cd: cwd]
+        # Without Hex, mix asks whether to install it and waits on stdin:
+        # the "n" answers that, so it fails at once instead of timing out.
+        opts = [env: [{"MIX_ENV", "prod"}], cd: cwd, input: "n\n"]
 
         case run_cmd(mix, args, opts) do
           {:ok, result} -> result
@@ -283,7 +318,8 @@ defmodule Beamdash.Plugins.Fetch do
   # Runs `exe args` as a port and collects its output (stderr included)
   # until it exits. Returns `{:ok, {output, status}}`, or `{:error, :timeout}`
   # after killing it, or `{:error, reason}` when it can't be started.
-  # Options: `:env` ([{name, value}]) and `:cd`.
+  # Options: `:env` ([{name, value}]), `:cd`, and `:input` (written to
+  # its stdin once it starts).
   #
   # erts starts a port program as the leader of a new session and process
   # group (its pgid is its os_pid), so on timeout the whole group is killed:
@@ -299,9 +335,17 @@ defmodule Beamdash.Plugins.Fetch do
         if(opts[:cd], do: [cd: opts[:cd]], else: [])
 
     port = Port.open({:spawn_executable, exe}, port_opts)
+    if input = opts[:input], do: send_input(port, input)
     collect(port, now() + timeout(), [])
   rescue
     error in ErlangError -> {:error, error.original}
+  end
+
+  # The program may already have exited and closed the port.
+  defp send_input(port, input) do
+    Port.command(port, input)
+  rescue
+    ArgumentError -> :ok
   end
 
   defp collect(port, deadline, acc) do

@@ -24,6 +24,32 @@ defmodule Beamdash.SettingsTest do
     assert_receive {:beamdash_jev, true}
   end
 
+  test "Reconnect automatically is off until switched on, and saved" do
+    on_exit(fn -> :ok = Settings.put_auto_reconnect(false) end)
+    :ok = Settings.put_auto_reconnect(false)
+    view = BeamdashWeb.SettingsLive
+    {:ok, socket} = view.mount(%{}, %{}, %Phoenix.LiveView.Socket{})
+    refute socket.assigns.auto_reconnect
+
+    {:noreply, socket} = view.handle_event("toggle_auto_reconnect", %{}, socket)
+    assert socket.assigns.auto_reconnect
+    assert %{"auto_reconnect" => true} = Settings.path() |> File.read!() |> Jason.decode!()
+    :ok = Settings.reload()
+    assert Settings.auto_reconnect?()
+
+    html =
+      socket.assigns
+      |> Map.put(:syntax, :erlang)
+      |> view.render()
+      |> Phoenix.LiveViewTest.rendered_to_string()
+
+    assert html =~ ~r/id="auto-reconnect"[^>]*role="switch"[^>]*aria-checked="true"/s
+
+    {:noreply, socket} = view.handle_event("toggle_auto_reconnect", %{}, socket)
+    refute socket.assigns.auto_reconnect
+    refute Map.has_key?(Settings.path() |> File.read!() |> Jason.decode!(), "auto_reconnect")
+  end
+
   test "until switched, Jev is on only when an API key is configured" do
     :persistent_term.erase({Settings, :jev_enabled})
     assert Settings.jev_enabled?() == Beamdash.Jev.configured?()

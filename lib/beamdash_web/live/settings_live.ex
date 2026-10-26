@@ -1,14 +1,25 @@
 defmodule BeamdashWeb.SettingsLive do
   use Phoenix.LiveView
-  alias Beamdash.{Format, Jev, Kubectl, LastConnection, Settings}
+  alias Beamdash.{Format, Jev, Kubectl, LastConnection, Settings, Target}
+  alias BeamdashWeb.PluginsSettings
 
   @impl true
-  def mount(_, _, socket) do
+  def mount(_, session, socket) do
     {:ok,
      socket
-     |> assign(jev_enabled: Settings.jev_enabled?(), saved_connection: saved(), browser: nil)
-     |> assign_kubeconfig_dir(Settings.kubeconfig_dir())}
+     |> assign(
+       jev_enabled: Settings.jev_enabled?(),
+       auto_reconnect: Settings.auto_reconnect?(),
+       saved_connection: saved(),
+       browser: nil
+     )
+     |> assign_kubeconfig_dir(Settings.kubeconfig_dir())
+     |> PluginsSettings.mount(session)}
   end
+
+  @doc false
+  # called by `BeamdashWeb.Connection` when a plugin is added, changed or removed
+  def plugins_changed(socket, _event), do: PluginsSettings.refresh(socket)
 
   @doc false
   # called by `BeamdashWeb.Connection` when the directory changes in any tab
@@ -79,6 +90,10 @@ defmodule BeamdashWeb.SettingsLive do
   end
 
   @impl true
+  def handle_event("plugin_" <> _ = event, params, socket),
+    do: PluginsSettings.handle_event(event, params, socket)
+
+  @impl true
   def handle_event("browse_kubeconfig_dir", _, socket) do
     {:noreply, browse(socket, Settings.kubeconfig_dir())}
   end
@@ -138,11 +153,23 @@ defmodule BeamdashWeb.SettingsLive do
   end
 
   @impl true
+  def handle_event("toggle_auto_reconnect", _, socket) do
+    enabled = not Settings.auto_reconnect?()
+    :ok = Settings.put_auto_reconnect(enabled)
+    unless enabled, do: Target.stop_reconnect()
+    {:noreply, assign(socket, auto_reconnect: enabled)}
+  end
+
+  @impl true
   def handle_event("toggle_jev", _, socket) do
     enabled = not Settings.jev_enabled?()
     :ok = Settings.put_jev_enabled(enabled)
     {:noreply, assign(socket, jev_enabled: enabled)}
   end
+
+  # an install's progress and a rebuild's result
+  @impl true
+  def handle_info(message, socket), do: PluginsSettings.handle_info(message, socket)
 
   @impl true
   def render(assigns) do
@@ -188,6 +215,27 @@ defmodule BeamdashWeb.SettingsLive do
         <p :if={@saved_connection} class="muted small">
           Kept in <span class="mono">{LastConnection.path()}</span>, readable only by you.
         </p>
+        <div class="settings-toggle-row">
+          <div>
+            <strong id="reconnect-setting-label">Reconnect automatically</strong>
+            <p id="reconnect-setting-help" class="muted small">
+              When the node goes down or its kubectl tunnel fails, connect again the same way:
+              after 1, 2, 5 and 10 s, then every 15 s until it works. Ending the connection
+              yourself, or connecting to another node, stops it.
+            </p>
+          </div>
+          <button
+            type="button"
+            id="auto-reconnect"
+            role="switch"
+            aria-checked={to_string(@auto_reconnect)}
+            aria-labelledby="reconnect-setting-label"
+            aria-describedby="reconnect-setting-help"
+            phx-click="toggle_auto_reconnect"
+            class={["settings-switch", @auto_reconnect && "on"]}
+          ><span class="settings-switch-knob" aria-hidden="true"></span></button>
+          <span class="small" role="status">{if @auto_reconnect, do: "On", else: "Off"}</span>
+        </div>
         <form
           id="kubeconfig-dir-form"
           class="settings-toggle-row"
@@ -339,6 +387,16 @@ defmodule BeamdashWeb.SettingsLive do
               "No API key. Set TYPESAFE_API_KEY in the environment and restart beamdash to use Jev."}
         </p>
       </section>
+      <PluginsSettings.card
+        plugins={@plugins}
+        dir={@plugins_dir}
+        spec={@plugin_spec}
+        install={@plugin_install}
+        confirm_remove={@plugin_confirm_remove}
+        rebuilding={@plugin_rebuilding}
+        notes={@plugin_notes}
+        notice={@plugin_notice}
+      />
     </main>
     """
   end
