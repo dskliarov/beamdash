@@ -151,24 +151,33 @@ defmodule BeamdashWeb.Layouts do
               class="conn-row"
             >
               <label class="field-label" for="kube-namespace">Namespace</label>
-              <input
-                id="kube-namespace"
-                name="namespace"
-                list={Map.get(@conn, :kube_namespaces, []) != [] && "kube-namespace-list"}
-                phx-hook="NamespacePick"
-                value={Map.get(@conn, :kube_namespace, "")}
-                placeholder={
-                  if Map.get(@conn, :kube_namespaces, []) != [],
-                    do: "type or pick a namespace",
-                    else: "namespace"
-                }
-                required
-                autocomplete="off"
-                spellcheck="false"
-              />
-              <datalist :if={Map.get(@conn, :kube_namespaces, []) != []} id="kube-namespace-list">
-                <option :for={ns <- @conn.kube_namespaces} value={ns} />
-              </datalist>
+              <div
+                id="namespace-combobox"
+                class="combobox"
+                phx-hook="NamespaceCombobox"
+                data-options={Jason.encode!(Map.get(@conn, :kube_namespaces, []))}
+              >
+                <input
+                  id="kube-namespace"
+                  name="namespace"
+                  value={Map.get(@conn, :kube_namespace, "")}
+                  placeholder="namespace"
+                  required
+                  autocomplete="off"
+                  role="combobox"
+                  aria-autocomplete="list"
+                  aria-expanded="false"
+                  aria-controls="namespace-options"
+                />
+                <ul
+                  id="namespace-options"
+                  class="combobox-list"
+                  role="listbox"
+                  phx-update="ignore"
+                  hidden
+                >
+                </ul>
+              </div>
               <button
                 type="submit"
                 class="secondary"

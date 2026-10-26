@@ -242,17 +242,87 @@ const NavOverflow = {
   },
 };
 
-// Namespace input backed by a <datalist> of the cluster's namespaces:
-// picking a suggestion lists that namespace's pods straight away, typing
-// waits for Enter or "List pods" (any name is accepted).
-const NamespacePick = {
+// The namespace field: a text input with a themed list of the namespaces
+// found in the cluster (data-options), filtered as you type. The list is
+// built here and marked phx-update="ignore", so server refreshes keep it open.
+// Picking a namespace lists its pods straight away; a typed name waits for
+// Enter or "List pods" (any name is accepted).
+const NamespaceCombobox = {
   mounted() {
-    this.el.addEventListener("input", (e) => {
-      // a pick arrives as a replacement or as a plain input event without an inputType
-      if (e.inputType && e.inputType !== "insertReplacementText") return;
-      const options = this.el.list ? Array.from(this.el.list.options) : [];
-      if (options.some((o) => o.value === this.el.value)) this.el.form.requestSubmit();
+    this.input = this.el.querySelector("input");
+    this.list = this.el.querySelector("ul");
+    this.filtering = false;
+    this.render();
+    this.close();
+
+    this.input.addEventListener("focus", () => { this.filtering = false; this.open(); });
+    this.input.addEventListener("input", () => { this.filtering = true; this.open(); });
+    this.input.addEventListener("blur", () => this.close());
+    this.input.addEventListener("keydown", (e) => this.key(e));
+    this.input.closest("form").addEventListener("submit", () => this.close());
+    this.list.addEventListener("mousedown", (e) => {
+      const item = e.target.closest("li");
+      if (!item) return;
+      e.preventDefault();
+      this.choose(item);
     });
+  },
+  updated() { this.render(); },
+
+  render() {
+    const options = JSON.parse(this.el.dataset.options || "[]");
+    const query = this.filtering ? this.input.value.toLowerCase() : "";
+    this.list.replaceChildren(
+      ...options
+        .filter((name) => name.toLowerCase().includes(query))
+        .map((name) => {
+          const item = document.createElement("li");
+          item.setAttribute("role", "option");
+          item.dataset.value = name;
+          item.textContent = name;
+          return item;
+        }),
+    );
+    this.active = -1;
+  },
+
+  open() {
+    this.render();
+    if (this.list.childElementCount === 0) return this.close();
+    this.list.hidden = false;
+    this.input.setAttribute("aria-expanded", "true");
+  },
+
+  close() {
+    this.list.hidden = true;
+    this.input.setAttribute("aria-expanded", "false");
+  },
+
+  choose(item) {
+    this.input.value = item.dataset.value;
+    this.close();
+    this.input.form.requestSubmit();
+  },
+
+  move(step) {
+    const items = [...this.list.children];
+    if (items.length === 0) return;
+    this.active = (this.active + step + items.length) % items.length;
+    items.forEach((item, i) => item.setAttribute("aria-selected", String(i === this.active)));
+    items[this.active].scrollIntoView({ block: "nearest" });
+  },
+
+  key(e) {
+    if (e.key === "Escape") return this.close();
+    if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+      e.preventDefault();
+      if (this.list.hidden) this.open();
+      if (!this.list.hidden) this.move(e.key === "ArrowDown" ? 1 : -1);
+    }
+    if (e.key === "Enter" && !this.list.hidden && this.active >= 0) {
+      e.preventDefault();
+      this.choose(this.list.children[this.active]);
+    }
   },
 };
 
@@ -284,7 +354,7 @@ const LogExport = {
 const csrfToken = document.querySelector("meta[name='csrf-token']").getAttribute("content");
 const liveSocket = new LiveView.LiveSocket("/live", Phoenix.Socket, {
   params: { _csrf_token: csrfToken },
-  hooks: { Resizer, DockSpacer, NavOverflow, NamespacePick, LogExport },
+  hooks: { Resizer, DockSpacer, NavOverflow, NamespaceCombobox, LogExport },
 });
 liveSocket.connect();
 window.liveSocket = liveSocket;

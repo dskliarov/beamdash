@@ -252,6 +252,27 @@ defmodule Beamdash.ConnectionBarTest do
     refute bar(socket()) =~ ~r/>\s*Kubernetes\s*</
   end
 
+  test "the namespace field suggests the namespaces found in the cluster" do
+    conn =
+      Map.merge(socket().assigns.conn, %{
+        method: :kubectl,
+        kube_clusters: [%{name: "prod", path: "/k/prod.yaml"}],
+        kube_cluster: "/k/prod.yaml",
+        kube_namespace: "",
+        kube_namespaces: ["default", "prod"]
+      })
+
+    html =
+      %{active: :gc, syntax: :erlang, conn: conn}
+      |> BeamdashWeb.Layouts.header()
+      |> rendered_to_string()
+
+    assert html =~ ~s(phx-hook="NamespaceCombobox")
+    assert html =~ ~s(data-options="[&quot;default&quot;,&quot;prod&quot;]")
+    assert html =~ ~s(role="combobox")
+    assert html =~ ~s(id="namespace-options")
+  end
+
   test "other events and messages pass through to the page" do
     assert {:cont, _} = Connection.handle_event("sort", %{}, socket())
     assert {:cont, _} = Connection.handle_info(:tick, socket())
@@ -377,17 +398,14 @@ defmodule Beamdash.ConnectionBarTest do
   test "the namespace field suggests the cluster's namespaces and still takes any name" do
     html = bar(kube_socket(["default", "pace-keeper"]))
     assert html =~ ~s(id="kube-namespace")
-    assert html =~ ~s(list="kube-namespace-list")
-    assert html =~ ~s(phx-hook="NamespacePick")
-    assert html =~ ~s(<datalist id="kube-namespace-list">)
-    assert html =~ ~s(<option value="pace-keeper">)
+    assert html =~ ~s(phx-hook="NamespaceCombobox")
+    assert html =~ ~s(data-options="[&quot;default&quot;,&quot;pace-keeper&quot;]")
     assert html =~ ~r/>\s*Cluster\s*</
     assert html =~ ~r/>\s*Namespace\s*</
 
     html = bar(kube_socket([]))
     assert html =~ ~s(id="kube-namespace")
-    refute html =~ "<datalist"
-    refute html =~ ~s(list="kube-namespace-list")
+    assert html =~ ~s(data-options="[]")
   end
 
   test "Direct shows labelled Node and Cookie fields" do

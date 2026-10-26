@@ -1,4 +1,5 @@
 :root {
+  color-scheme: light dark;
   --bg: #fafaf9;
   --fg: #1c1917;
   --muted: #78716c;
@@ -72,6 +73,17 @@ input {
   color: inherit;
   min-width: 220px;
 }
+
+select {
+  font: inherit;
+  padding: 6px 10px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: transparent;
+  color: inherit;
+}
+
+select option { background: var(--bg); color: var(--fg); }
 
 button {
   font: inherit;
@@ -834,6 +846,11 @@ table.gc-events td, table.gc-events th { padding: 3px 8px; }
 .connect-panel select:disabled { opacity: .55; }
 .connect-panel .conn-row button { box-sizing: border-box; height: 32px; padding: 0 14px; white-space: nowrap; }
 .conn-hint { margin: 0 0 0 calc(var(--conn-label-w) + 8px); }
+.combobox { position: relative; display: flex; min-width: 0; }
+.combobox-list { position: absolute; top: 100%; left: 0; z-index: 20; min-width: 100%; width: max-content; max-width: 360px; max-height: 240px; overflow-y: auto; margin: 4px 0 0; padding: 4px 0; list-style: none; background: var(--bg); color: var(--fg); border: 1px solid var(--line); border-radius: 6px; box-shadow: 0 6px 20px rgba(0,0,0,.12); }
+.combobox-list[hidden] { display: none; }
+.combobox-list li { padding: 4px 10px; cursor: pointer; white-space: nowrap; }
+.combobox-list li[aria-selected="true"], .combobox-list li:hover { background: var(--row-alt); }
 .node-info { display: flex; flex-wrap: wrap; gap: 4px 16px; justify-content: flex-end; margin-left: auto; }
 .node-info span + span::before { content: "·"; margin-right: 16px; opacity: .6; }
 .node-info span + span { margin-left: -12px; }
