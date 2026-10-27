@@ -69,21 +69,29 @@ defmodule Beamdash.LastConnection do
     end
   end
 
-  # Before the rename to beamdash the file was in the exberly folder: read
-  # it from there until a connection saves it in the new place.
+  # Before the renames to beamdash the file was in the exberly folder, and
+  # before that in elixberly: read it from there until a connection saves it
+  # in the new place.
   defp read_file(path) do
     case File.read(path) do
-      {:error, :enoent} -> if old = legacy_path(path), do: File.read(old), else: {:error, :enoent}
+      {:error, :enoent} -> read_legacy(legacy_paths(path))
+      other -> other
+    end
+  end
+
+  defp read_legacy([]), do: {:error, :enoent}
+
+  defp read_legacy([old | rest]) do
+    case File.read(old) do
+      {:error, :enoent} -> read_legacy(rest)
       other -> other
     end
   end
 
   @doc false
-  def legacy_path(path) do
-    default = Path.join(:filename.basedir(:user_config, "beamdash"), "last_connection.json")
-
-    if path == default,
-      do: Path.join(:filename.basedir(:user_config, "exberly"), "last_connection.json")
+  def legacy_paths(path) do
+    file = &Path.join(:filename.basedir(:user_config, &1), "last_connection.json")
+    if path == file.("beamdash"), do: [file.("exberly"), file.("elixberly")], else: []
   end
 
   # The cookie gives full control of the node: owner-only file and folder.

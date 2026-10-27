@@ -10,7 +10,7 @@ defmodule Beamdash.GCAdvisorTest do
     Fixture.put_jev_config(api_key: "test-key")
   end
 
-  defp response(choice, p \\ 1.0) do
+  defp response(choice, p) do
     rest = (1.0 - p) / (map_size(GCAdvisor.choices()) - 1)
 
     %{

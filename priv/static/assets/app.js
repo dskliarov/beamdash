@@ -161,12 +161,19 @@ const NavOverflow = {
       if (e.target.closest("[data-shortcuts-open]")) this.help();
     };
     document.addEventListener("click", this.onHelp);
+    // the Plugins menu closes on a pick or a click elsewhere
+    this.onMenuClick = (e) => {
+      const menu = this.el.querySelector(".tabs-plugins[open]");
+      if (menu && (!menu.contains(e.target) || e.target.closest("a"))) menu.open = false;
+    };
+    document.addEventListener("click", this.onMenuClick);
   },
   updated() { this.layout(); },
   destroyed() {
     this.resize.disconnect();
     window.removeEventListener("keydown", this.onKey);
     document.removeEventListener("click", this.onHelp);
+    document.removeEventListener("click", this.onMenuClick);
   },
 
   layout() {
@@ -238,6 +245,8 @@ const NavOverflow = {
 // The namespace field: a text input with a themed list of the namespaces
 // found in the cluster (data-options), filtered as you type. The list is
 // built here and marked phx-update="ignore", so server refreshes keep it open.
+// Picking a namespace lists its pods straight away; a typed name waits for
+// Enter or "List pods" (any name is accepted).
 const NamespaceCombobox = {
   mounted() {
     this.input = this.el.querySelector("input");
@@ -292,6 +301,7 @@ const NamespaceCombobox = {
   choose(item) {
     this.input.value = item.dataset.value;
     this.close();
+    this.input.form.requestSubmit();
   },
 
   move(step) {
@@ -316,10 +326,35 @@ const NamespaceCombobox = {
   },
 };
 
+// The Logs tab: copies or downloads log lines the page pushes as
+// "logs-export" ({name, text, mode}); the text never goes through the DOM.
+const LogExport = {
+  mounted() {
+    this.handleEvent("logs-export", ({ name, text, lines, mode }) => {
+      if (mode === "copy") {
+        const done = (ok, reason) => this.pushEvent("export_done", { ok, lines, reason });
+        // navigator.clipboard is only there in a secure context (HTTPS or localhost)
+        if (!navigator.clipboard) return done(false, "no_clipboard");
+        navigator.clipboard.writeText(text).then(() => done(true), () => done(false));
+        return;
+      }
+      const url = URL.createObjectURL(new Blob([text + "\n"], { type: "text/plain" }));
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = name;
+      document.body.append(a);
+      a.click();
+      a.remove();
+      // revoked once the click's download has started
+      setTimeout(() => URL.revokeObjectURL(url), 0);
+    });
+  },
+};
+
 const csrfToken = document.querySelector("meta[name='csrf-token']").getAttribute("content");
 const liveSocket = new LiveView.LiveSocket("/live", Phoenix.Socket, {
   params: { _csrf_token: csrfToken },
-  hooks: { Resizer, DockSpacer, NavOverflow, NamespaceCombobox },
+  hooks: { Resizer, DockSpacer, NavOverflow, NamespaceCombobox, LogExport },
 });
 liveSocket.connect();
 window.liveSocket = liveSocket;

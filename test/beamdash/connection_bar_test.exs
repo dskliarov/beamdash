@@ -8,7 +8,7 @@ defmodule Beamdash.ConnectionBarTest do
   alias Beamdash.Test.Fixture
 
   @endpoint BeamdashWeb.Endpoint
-  @tabs ~w(/ /system /load /apps /memory /gc /trace /seq /profile /crashes /settings)
+  @tabs ~w(/ /system /nodes /load /apps /memory /logs /gc /trace /seq /profile /crashes /settings)
 
   setup do
     Target.disconnect()
@@ -80,6 +80,25 @@ defmodule Beamdash.ConnectionBarTest do
     refute html =~ "Disconnect"
   end
 
+  test "connecting from the bar moves to the System tab, unless already there", %{node: node} do
+    params = %{"node" => Atom.to_string(node), "cookie" => Fixture.cookie()}
+
+    {:halt, s} = Connection.handle_event("connect", params, socket())
+    assert s.redirected == {:live, :redirect, %{kind: :push, to: "/system"}}
+
+    :ok = Target.disconnect()
+    on_system = %{socket() | view: BeamdashWeb.SystemLive}
+    {:halt, s} = Connection.handle_event("connect", params, on_system)
+    assert s.assigns.conn.status == :connected
+    assert s.redirected == nil
+
+    # a failed connect stays put
+    {:halt, s} =
+      Connection.handle_event("connect", %{"node" => "nobody@nowhere", "cookie" => "x"}, socket())
+
+    assert s.redirected == nil
+  end
+
   test "another tab's disconnect, or a lost node, updates the bar", %{node: node} do
     {:ok, _} = Target.connect(Atom.to_string(node), Fixture.cookie())
 
@@ -95,6 +114,28 @@ defmodule Beamdash.ConnectionBarTest do
              Connection.handle_info({:beamdash_target, {:disconnected, :nodedown}}, s)
 
     assert bar(s3) =~ "Lost the connection to #{node}"
+  end
+
+  test "a lost connection being tried again shows in the bar, with Stop" do
+    next_at = ~U[2026-10-26 12:00:05Z]
+
+    conn =
+      Map.put(socket().assigns.conn, :reconnecting, %{
+        node: :"kv1@127.0.0.1",
+        attempt: 3,
+        error: :connect_failed,
+        next_at: next_at
+      })
+
+    html = bar(Phoenix.Component.assign(socket(), :conn, conn))
+    assert html =~ ~s(class="reconnecting")
+    assert html =~ ~r/Reconnecting to <strong>kv1@127.0.0.1<\/strong>\s*· try 3 at 12:00:05 UTC/
+    assert html =~ "last try: Could not connect."
+    assert html =~ ~s(phx-click="stop_reconnect")
+
+    {:halt, s} = Connection.handle_event("stop_reconnect", %{}, socket())
+    assert s.assigns.conn.reconnecting == nil
+    refute bar(s) =~ ~s(class="reconnecting")
   end
 
   test "a failed connect shows the error in the bar" do
@@ -172,11 +213,11 @@ defmodule Beamdash.ConnectionBarTest do
     assert LastConnection.get() == %{node: "", cookie: ""}
   end
 
-  test "a connection saved before the rename to beamdash is still found" do
+  test "a connection saved before the renames to beamdash is still found" do
     default = Path.join(:filename.basedir(:user_config, "beamdash"), "last_connection.json")
-    old = Path.join(:filename.basedir(:user_config, "exberly"), "last_connection.json")
-    assert LastConnection.legacy_path(default) == old
-    assert LastConnection.legacy_path("/somewhere/else.json") == nil
+    old = &Path.join(:filename.basedir(:user_config, &1), "last_connection.json")
+    assert LastConnection.legacy_paths(default) == [old.("exberly"), old.("elixberly")]
+    assert LastConnection.legacy_paths("/somewhere/else.json") == []
   end
 
   test "remembering can be turned off in the configuration", %{node: node} do
@@ -243,5 +284,134 @@ defmodule Beamdash.ConnectionBarTest do
     {:ok, _} = Target.connect(Atom.to_string(node), Fixture.cookie())
     assert_receive {:beamdash_target, {:connected, ^node}}
     refute_receive {:beamdash_target, {:connected, ^node}}, 200
+  end
+
+  # an empty kubeconfig: a real kubectl, if present, fails fast instead of
+  # reaching a cluster; only the shape of its reply is asserted
+  defp empty_kubeconfig do
+    path =
+      Path.join(System.tmp_dir!(), "beamdash-empty-#{System.unique_integer([:positive])}.yaml")
+
+    File.write!(path, "")
+    on_exit(fn -> File.rm(path) end)
+    path
+  end
+
+  defp on_cluster(path, changes \\ %{}) do
+    conn =
+      socket().assigns.conn
+      |> Map.merge(%{method: :direct, kube_cluster: path, kube_namespaces: ["stale"]})
+      |> Map.merge(changes)
+
+    Phoenix.Component.assign(socket(), :conn, conn)
+  end
+
+  test "switching to Kubernetes returns at once and lists namespaces in the background" do
+    path = empty_kubeconfig()
+
+    {:halt, s} =
+      Connection.handle_event("set_conn_method", %{"method" => "kubectl"}, on_cluster(path))
+
+    assert s.assigns.conn.method == :kubectl
+    assert s.assigns.conn.kube_namespaces == []
+    assert s.assigns.conn.error == nil
+    assert_receive {:beamdash_kube_namespaces, ^path, _result}, 10_000
+
+    {:halt, s} = Connection.handle_event("set_conn_method", %{"method" => "direct"}, s)
+    assert s.assigns.conn.method == :direct
+  end
+
+  test "clicking Kubernetes while already on it does not list again" do
+    path = empty_kubeconfig()
+
+    {:halt, s} =
+      Connection.handle_event("set_conn_method", %{"method" => "kubectl"}, on_cluster(path))
+
+    assert_receive {:beamdash_kube_namespaces, ^path, _result}, 10_000
+
+    {:halt, s} = Connection.handle_event("set_conn_method", %{"method" => "kubectl"}, s)
+    assert s.assigns.conn.method == :kubectl
+    refute_receive {:beamdash_kube_namespaces, _, _}, 300
+  end
+
+  test "a namespace listing for the current cluster fills the suggestions, quietly on failure" do
+    path = "/k/prod.yaml"
+    s = on_cluster(path, %{method: :kubectl, kube_namespaces: []})
+
+    assert {:halt, ok} =
+             Connection.handle_info(
+               {:beamdash_kube_namespaces, path, {:ok, ["default", "pace-keeper"]}},
+               s
+             )
+
+    assert ok.assigns.conn.kube_namespaces == ["default", "pace-keeper"]
+
+    assert {:halt, failed} =
+             Connection.handle_info({:beamdash_kube_namespaces, path, {:error, :x}}, ok)
+
+    assert failed.assigns.conn.kube_namespaces == []
+    assert failed.assigns.conn.error == nil
+  end
+
+  test "a namespace listing for another cluster is ignored" do
+    s = on_cluster("/k/prod.yaml", %{method: :kubectl, kube_namespaces: ["default"]})
+
+    assert {:halt, s} =
+             Connection.handle_info(
+               {:beamdash_kube_namespaces, "/other.yaml", {:ok, ["kube-system"]}},
+               s
+             )
+
+    assert s.assigns.conn.kube_namespaces == ["default"]
+  end
+
+  test "picking another cluster clears the suggestions and lists the new one's" do
+    old = empty_kubeconfig()
+    new = empty_kubeconfig()
+    s = on_cluster(old, %{method: :kubectl, kube_namespaces: ["default"]})
+
+    {:halt, s} = Connection.handle_event("select_kube_cluster", %{"cluster" => new}, s)
+    assert s.assigns.conn.kube_cluster == new
+    assert s.assigns.conn.kube_namespaces == []
+    assert s.assigns.conn.error == nil
+    assert_receive {:beamdash_kube_namespaces, ^new, _result}, 10_000
+  end
+
+  test "a freshly mounted bar offers no namespaces yet" do
+    assert mounted_bar().assigns.conn.kube_namespaces == []
+  end
+
+  defp kube_socket(namespaces) do
+    Phoenix.Component.assign(
+      socket(),
+      :conn,
+      Map.merge(socket().assigns.conn, %{
+        method: :kubectl,
+        kube_clusters: [%{name: "prod", path: "/k/prod.yaml"}],
+        kube_cluster: "/k/prod.yaml",
+        kube_namespace: "",
+        kube_namespaces: namespaces
+      })
+    )
+  end
+
+  test "the namespace field suggests the cluster's namespaces and still takes any name" do
+    html = bar(kube_socket(["default", "pace-keeper"]))
+    assert html =~ ~s(id="kube-namespace")
+    assert html =~ ~s(phx-hook="NamespaceCombobox")
+    assert html =~ ~s(data-options="[&quot;default&quot;,&quot;pace-keeper&quot;]")
+    assert html =~ ~r/>\s*Cluster\s*</
+    assert html =~ ~r/>\s*Namespace\s*</
+
+    html = bar(kube_socket([]))
+    assert html =~ ~s(id="kube-namespace")
+    assert html =~ ~s(data-options="[]")
+  end
+
+  test "Direct shows labelled Node and Cookie fields" do
+    html = bar(socket())
+    assert html =~ ~r/>\s*Node\s*</
+    assert html =~ ~r/>\s*Cookie\s*</
+    assert html =~ ~s(class="seg method-switch")
   end
 end

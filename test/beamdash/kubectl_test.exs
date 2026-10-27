@@ -32,24 +32,6 @@ defmodule Beamdash.KubectlTest do
     end
   end
 
-  describe "list_namespaces/2" do
-    test "parses a jsonpath namespace list" do
-      exec = fn args ->
-        assert args == ["get", "namespaces", "-o", "jsonpath={.items[*].metadata.name}"]
-        {"default kube-system prod\n", 0}
-      end
-
-      assert {:ok, ["default", "kube-system", "prod"]} = Kubectl.list_namespaces(nil, exec)
-    end
-
-    test "reports kubectl's failure, such as a forbidden listing" do
-      exec = fn _args -> {"Error from server (Forbidden)\n", 1} end
-
-      assert {:error, {:namespace_list_failed, {1, "Error from server (Forbidden)"}}} =
-               Kubectl.list_namespaces(nil, exec)
-    end
-  end
-
   describe "list_pods/3" do
     test "parses a jsonpath pod list" do
       exec = fn args ->
@@ -91,6 +73,57 @@ defmodule Beamdash.KubectlTest do
 
       assert {:error, {:pod_list_failed, {:error, %RuntimeError{}}}} =
                Kubectl.list_pods(nil, "prod", exec)
+    end
+  end
+
+  describe "list_namespaces/2" do
+    test "parses a jsonpath namespace list" do
+      exec = fn args ->
+        assert args == [
+                 "--request-timeout=5s",
+                 "get",
+                 "namespaces",
+                 "-o",
+                 "jsonpath={.items[*].metadata.name}"
+               ]
+
+        {"default kube-system pace-keeper\n", 0}
+      end
+
+      assert {:ok, ["default", "kube-system", "pace-keeper"]} =
+               Kubectl.list_namespaces(nil, exec)
+    end
+
+    test "passes --kubeconfig when a cluster is given" do
+      exec = fn args ->
+        assert args == [
+                 "--kubeconfig",
+                 "/home/me/.kube/prod.yaml",
+                 "--request-timeout=5s",
+                 "get",
+                 "namespaces",
+                 "-o",
+                 "jsonpath={.items[*].metadata.name}"
+               ]
+
+        {"default\n", 0}
+      end
+
+      assert {:ok, ["default"]} = Kubectl.list_namespaces("/home/me/.kube/prod.yaml", exec)
+    end
+
+    test "a non-zero exit is reported" do
+      exec = fn _args -> {"namespaces is forbidden", 1} end
+
+      assert {:error, {:namespace_list_failed, {1, "namespaces is forbidden"}}} =
+               Kubectl.list_namespaces(nil, exec)
+    end
+
+    test "an exception from exec is caught and reported" do
+      exec = fn _args -> raise "boom" end
+
+      assert {:error, {:namespace_list_failed, {:error, %RuntimeError{}}}} =
+               Kubectl.list_namespaces(nil, exec)
     end
   end
 
@@ -220,6 +253,35 @@ defmodule Beamdash.KubectlTest do
 
       assert {:error, {:binary_list_failed, {:error, %RuntimeError{}}}} =
                Kubectl.list_binaries(nil, "prod", "my-pod", "", exec)
+    end
+  end
+
+  describe "logs_args/5" do
+    test "follow without kubeconfig or container" do
+      assert Kubectl.logs_args(nil, "prod", "p", nil, follow: true) ==
+               ["logs", "-n", "prod", "p", "--timestamps", "--tail=1000", "-f"]
+    end
+
+    test "kubeconfig, container and previous" do
+      assert Kubectl.logs_args("/k.yaml", "prod", "p", "app", previous: true) ==
+               [
+                 "--kubeconfig",
+                 "/k.yaml",
+                 "logs",
+                 "-n",
+                 "prod",
+                 "p",
+                 "-c",
+                 "app",
+                 "--timestamps",
+                 "--tail=1000",
+                 "--previous"
+               ]
+    end
+
+    test "an empty container is omitted and no mode adds nothing" do
+      assert Kubectl.logs_args(nil, "prod", "p", "", []) ==
+               ["logs", "-n", "prod", "p", "--timestamps", "--tail=1000"]
     end
   end
 

@@ -31,7 +31,7 @@ defmodule Beamdash.TargetTest do
   test "connects as a hidden node, loads the agent and lists processes", ctx do
     assert {:ok, info} = Target.connect(Atom.to_string(ctx.node), @cookie, ctx.server)
     assert info.node == ctx.node
-    assert info.agent_version == 14
+    assert info.agent_version == 17
 
     assert ctx.node in Node.list(:hidden)
     refute ctx.node in Node.list(:visible)
@@ -52,6 +52,14 @@ defmodule Beamdash.TargetTest do
     assert :ok = Target.disconnect(ctx.server)
     assert {:ok, _} = Target.connect(Atom.to_string(ctx.node), @cookie, ctx.server)
     assert %{status: :connected} = Target.status(ctx.server)
+  end
+
+  test "source/1 is nil, :direct once connected, and nil after disconnect", ctx do
+    assert Target.source(ctx.server) == nil
+    assert {:ok, _} = Target.connect(Atom.to_string(ctx.node), @cookie, ctx.server)
+    assert Target.source(ctx.server) == :direct
+    assert :ok = Target.disconnect(ctx.server)
+    assert Target.source(ctx.server) == nil
   end
 
   test "a wrong cookie is reported", ctx do
@@ -92,5 +100,123 @@ defmodule Beamdash.TargetTest do
     # after an earlier dotted direct connect.
     assert {:ok, _} = Target.connect(Atom.to_string(ctx.node), @cookie, ctx.server)
     assert %{name_domain: :shortnames} = :net_kernel.get_state()
+  end
+
+  defp start_named_peer(name) do
+    {:ok, peer, node} =
+      :peer.start(%{
+        name: name,
+        args: [~c"-setcookie", String.to_charlist(@cookie)],
+        connection: :standard_io
+      })
+
+    on_exit(fn ->
+      try do
+        :peer.stop(peer)
+      catch
+        _, _ -> :ok
+      end
+    end)
+
+    {peer, node}
+  end
+
+  defp reconnecting_target(opts) do
+    start_supervised!(
+      {Target,
+       [name: :"target_#{System.unique_integer([:positive])}", reconnect_delays: [100]] ++ opts},
+      id: :reconnecting
+    )
+  end
+
+  defp eventually(fun, timeout \\ 10_000) do
+    deadline = System.monotonic_time(:millisecond) + timeout
+
+    Stream.repeatedly(fn -> fun.() || (Process.sleep(50) && nil) end)
+    |> Enum.find(fn result ->
+      result || (System.monotonic_time(:millisecond) > deadline and flunk("not in time"))
+    end)
+  end
+
+  describe "auto-reconnect" do
+    test "a node that comes back is connected again" do
+      name = :peer.random_name()
+      {peer, node} = start_named_peer(name)
+      server = reconnecting_target(auto_reconnect: fn -> true end)
+      :ok = Target.subscribe(server)
+      assert {:ok, _} = Target.connect(Atom.to_string(node), @cookie, server)
+      assert_receive {:beamdash_target, {:connected, ^node}}
+
+      :peer.stop(peer)
+      assert_receive {:beamdash_target, {:disconnected, :nodedown}}, 5_000
+      assert %{node: ^node, attempt: attempt} = Target.reconnecting(server)
+      assert attempt >= 1
+
+      # tries fail while it is away
+      eventually(fn -> match?(%{attempt: n} when n >= 2, Target.reconnecting(server)) end)
+      assert %{error: error} = Target.reconnecting(server)
+      assert error != nil
+
+      {_peer, ^node} = start_named_peer(name)
+      assert_receive {:beamdash_target, {:connected, ^node}}, 10_000
+      assert %{status: :connected, node: ^node} = Target.status(server)
+      assert Target.reconnecting(server) == nil
+      assert {:ok, _} = Target.processes(server)
+    end
+
+    test "off: a lost connection stays lost", ctx do
+      server = reconnecting_target(auto_reconnect: fn -> false end)
+      :ok = Target.subscribe(server)
+      assert {:ok, _} = Target.connect(Atom.to_string(ctx.node), @cookie, server)
+
+      :peer.stop(ctx.peer)
+      assert_receive {:beamdash_target, {:disconnected, :nodedown}}, 5_000
+      assert Target.reconnecting(server) == nil
+    end
+
+    test "Stop and Disconnect end the tries", ctx do
+      server = reconnecting_target(auto_reconnect: fn -> true end)
+      :ok = Target.subscribe(server)
+      assert {:ok, _} = Target.connect(Atom.to_string(ctx.node), @cookie, server)
+
+      :peer.stop(ctx.peer)
+      assert_receive {:beamdash_target, {:disconnected, :nodedown}}, 5_000
+      assert %{} = Target.reconnecting(server)
+      assert :ok = Target.stop_reconnect(server)
+      assert Target.reconnecting(server) == nil
+
+      {peer, node} = start_named_peer(:peer.random_name())
+      assert {:ok, _} = Target.connect(Atom.to_string(node), @cookie, server)
+      :peer.stop(peer)
+      assert_receive {:beamdash_target, {:disconnected, :nodedown}}, 5_000
+      assert %{} = Target.reconnecting(server)
+      assert :ok = Target.disconnect(server)
+      assert Target.reconnecting(server) == nil
+    end
+  end
+
+  describe "cluster nodes" do
+    test "lists the attached node's connections and switches to one", ctx do
+      {_peer, other} = start_named_peer(:peer.random_name())
+      assert {:error, :not_connected} = Target.cluster_nodes(ctx.server)
+      assert {:ok, _} = Target.connect(Atom.to_string(ctx.node), @cookie, ctx.server)
+      true = :erpc.call(ctx.node, :net_kernel, :connect_node, [other])
+
+      assert {:ok, %{this: this, visible: visible, hidden: hidden}} =
+               Target.cluster_nodes(ctx.server)
+
+      assert this == ctx.node
+      assert visible == [other]
+      refute node() in hidden
+
+      assert {:ok, info} = Target.switch(other, ctx.server)
+      assert info.node == other
+      assert %{status: :connected, node: ^other} = Target.status(ctx.server)
+      assert {:ok, %{this: ^other, visible: [back]}} = Target.cluster_nodes(ctx.server)
+      assert back == ctx.node
+
+      # the attached node itself: nothing changes
+      assert {:ok, %{node: ^other}} = Target.switch(other, ctx.server)
+    end
   end
 end

@@ -11,6 +11,36 @@ defmodule Beamdash.Apps do
   def list(node), do: Target.rpc(node, :beamdash_agent, :applications, [])
 
   @doc """
+  `{:ok, [{name, vsn}]}`: every running application on `node`, from
+  `application:which_applications/0`, with its version as a string. Unlike
+  `list/1` it includes library applications (those without an application
+  master) and needs no agent. The plugins registry and
+  `Beamdash.Plugin.app_version/2` both use it, so they agree.
+  """
+  @spec running(node()) :: {:ok, [{atom(), String.t()}]} | {:error, term()}
+  def running(node) do
+    case Target.rpc(node, :application, :which_applications, []) do
+      {:ok, apps} when is_list(apps) ->
+        {:ok, for({name, _desc, vsn} <- apps, do: {name, vsn_string(vsn)})}
+
+      {:ok, other} ->
+        {:error, {:unexpected, other}}
+
+      error ->
+        error
+    end
+  end
+
+  defp vsn_string(vsn) do
+    case :unicode.characters_to_binary(vsn) do
+      bin when is_binary(bin) -> bin
+      _ -> ""
+    end
+  rescue
+    _ -> ""
+  end
+
+  @doc """
   The process tree of `app`: `%{pid, name, label, children: [node], also:
   [pid]}`, where `also` are its secondary links (shown dashed in Observer),
   plus the number of processes. `{:ok, nil}` when the application is gone.

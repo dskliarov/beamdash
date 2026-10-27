@@ -13,7 +13,7 @@ happening inside it.
   Settings is the ⚙ at the end, next to the `erl`/`ex` syntax switch.
   Hovering a tab shows its full name and shortcut. Tabs that do not fit
   move into **More ▾** (never the current one). Keyboard: `g` then a key
-  opens a tab (`g s` System, `g l` Load, `g a` Apps, `g m` Memory, `g p`
+  opens a tab (`g s` System, `g n` Nodes, `g l` Load, `g a` Apps, `g m` Memory, `g p`
   Processes, `g c` GC, `g x` Crashes, `g t` Trace, `g q` Seq, `g f`
   Profile, `g ,` Settings); `?` lists them. Not while typing in a field.
 - **Connection bar, on every tab:** on its own line under the tabs,
@@ -22,7 +22,10 @@ happening inside it.
   follow). Below it, on its own line: the node's OTP
   release, process count and memory, refreshed every 2 s. The last node and
   cookie that connected fill the form again, also after a restart (see
-  below; **Settings → Forget** clears them).
+  below; **Settings → Forget** clears them). With **Settings → Reconnect
+  automatically** on, a connection lost because the node went down (or its
+  kubectl tunnel failed) is made again the same way, after 1, 2, 5 and
+  10 s, then every 15 s; the bar shows "Reconnecting to …" with **Stop**.
 - **System:** what Observer's System tab shows, with its labels: System
   and Architecture (OTP and ERTS versions, architecture, word sizes, SMP,
   threads, async pool), Memory Usage (total, processes, atoms, binaries,
@@ -33,6 +36,12 @@ happening inside it.
   beamdash's agent with the same calls as `observer_backend:sys_info/0`,
   so the target needs no `runtime_tools`; refreshed every 10 s, as in
   Observer, or with Refresh.
+- **Nodes:** the attached node and the nodes it is connected to
+  (`nodes()`; **Show hidden** adds its hidden connections, beamdash's own
+  left out), every 5 s. Clicking another node connects to it instead, with
+  the cookie the attached node uses for it (`erlang:get_cookie/1` there).
+  Direct connections only: a pod's peers aren't reachable through its
+  kubectl tunnel.
 - **Load Charts:** Observer's Load Charts: Scheduler Utilization (%), one
   line per scheduler with dirty CPU schedulers dotted, computed as Observer
   does from `scheduler_wall_time`; Memory Usage (total, processes, atom,
@@ -232,7 +241,8 @@ needing the other mode fails with a clear error instead.
 
 To connect to a node running in a Kubernetes pod instead, switch the
 connection bar to **kubectl**, pick the **Cluster** (one entry per
-kubeconfig file under `~/.kube` — beamdash passes it to `kubectl` directly,
+kubeconfig file under `~/.kube`, or the directory set in **Settings** —
+beamdash passes it to `kubectl` directly,
 no shell-level context switch needed), enter the namespace, pick the pod,
 and List `/app/bin` to pick the release binary. beamdash reads the node
 name and cookie off the pod itself, then opens the `kubectl port-forward`
@@ -338,6 +348,43 @@ retained binaries, an idle memory hog, a blocked process, healthy ones),
 compare (`--model jev-latest`; `--only memory,seq,route,triage` to run
 some sets; `--strict` exits 1 on any miss). `TYPESAFE_ENDPOINT` points
 beamdash at a stand-in instead of TypeSafe's API, for testing only.
+
+## Plugins
+
+A plugin adds pages for one application (riak_core, say) to a **Plugins**
+menu, shown while that application runs on the attached node. Add one in
+**Settings → Plugins**: type a Mix dependency and click **Add**.
+
+```elixir
+{:riak_core_plugin, "~> 0.1"}                                 # Hex (needs `mix local.hex`)
+{:riak_core_plugin, git: "https://github.com/…", tag: "0.0.1"} # Git: tag:, branch: or ref:
+{:riak_core_plugin, path: "~/src/beamdash-riak-core-plugin"}  # a local folder
+```
+
+beamdash fetches the plugin's own source (never its deps), checks it,
+compiles it and loads it, with no restart. Plugins live in `plugins/`
+under the configuration folder (`~/Library/Application Support/beamdash`
+on macOS, `~/.config/beamdash` on Linux), listed in `plugins.json`;
+`config :beamdash, :plugins_dir` moves it. A path plugin is compiled from
+its folder, which stays where it is (it may not be inside the plugins
+folder); **Rebuild** recompiles it after you change it. Each plugin is
+**active** (a supported application runs at a matching version),
+**waiting** (none runs), or **incompatible** (one runs at another version).
+
+**Trust:** a plugin runs inside beamdash with full access to the nodes you
+connect to, and compiling it runs its code. Add only plugins you trust.
+
+**Writing one:** the entry module does `use Beamdash.Plugin` (name and
+pages), each page `use Beamdash.Plugin.Page`. The supported applications
+are `runtime: false` deps in `mix.exs`, which beamdash reads as data and
+never runs. A plugin can't have other runtime deps: it may only use what
+beamdash ships (Phoenix, LiveView, Jason…). Code on the node is called
+only with `Beamdash.Plugin.rpc/5`. All modules sit under one top-level
+prefix, which no loaded module may already use. Protocol implementations
+have no effect, because beamdash's protocols are consolidated. See the
+`Beamdash.Plugin` docs, and the riak_core plugin
+([beamdash-riak-core-plugin](https://github.com/dskliarov/beamdash-riak-core-plugin))
+as an example.
 
 ## How it works
 

@@ -19,6 +19,7 @@ Screenshots were captured on 20 October 2026 using OTP 29, Erlang syntax and a 1
 - [Profile functions](#profile-functions)
 - [Read crash reports](#read-crash-reports)
 - [Settings and Jev](#settings-and-jev)
+- [Add plugins](#add-plugins)
 - [Choose an investigation](#choose-an-investigation)
 - [Troubleshooting](#troubleshooting)
 
@@ -43,7 +44,9 @@ erl -sname foo -setcookie demo_cookie
 
 The connection bar is shared by every tab. beamdash starts distribution on first connect, matching short or long names to the target, and connects as a hidden node. Switching between a short-named and a long-named target (including across Direct and kubectl) restarts distribution with the matching mode automatically; this only fails if beamdash itself was started as a named node (`-sname`/`-name`), since Erlang cannot change that from under a running one. Disconnect ends the shared connection for all browser tabs.
 
-To connect to a node running in a Kubernetes pod, switch the bar to **kubectl** instead of **Direct**. Pick the **Cluster** from the dropdown (one entry per kubeconfig file under `~/.kube`; beamdash passes it to `kubectl` directly, so there is no need to run a context-switching shell command first), enter the namespace and click **List pods**, pick the **Pod** from the dropdown, then the **Container** and **Binary** if more than one is available, then **Connect**. beamdash reads the node name and cookie off the pod itself (via `kubectl exec ... rpc`) and opens `kubectl port-forward` tunnels for epmd and distribution, so there is no node name or cookie to type.
+With **Settings → Reconnect automatically** on, a connection lost because the node went down (or its kubectl tunnel failed) is made again the same way: after 1, 2, 5 and 10 seconds, then every 15 seconds until it works. Meanwhile the bar shows **Reconnecting to …** with the next try's time and the last error; **Stop** ends the tries, as do Disconnect and connecting elsewhere.
+
+To connect to a node running in a Kubernetes pod, switch the bar to **kubectl** instead of **Direct**. Pick the **Cluster** from the dropdown (one entry per `.yaml`/`.yml` kubeconfig file under `~/.kube`, or the directory set in **Settings → Kubeconfig directory**; beamdash passes it to `kubectl` directly, so there is no need to run a context-switching shell command first), enter the namespace and click **List pods**, pick the **Pod** from the dropdown, then the **Container** and **Binary** if more than one is available, then **Connect**. beamdash reads the node name and cookie off the pod itself (via `kubectl exec ... rpc`) and opens `kubectl port-forward` tunnels for epmd and distribution, so there is no node name or cookie to type.
 
 ![Connection form with a local demo node and masked cookie](screenshots/00-connect.jpg)
 
@@ -80,6 +83,7 @@ The demo consumes the marker, crashes `demo_shop`, and its supervisor restarts t
 | Group | Tab | Use it for | Shortcut |
 | --- | --- | --- | --- |
 | Node | System | Versions, capacity, limits and totals | `g s` |
+| Node | Nodes | The node's cluster; click a node to connect to it | `g n` |
 | Node | Load | Scheduler, memory and IO trends | `g l` |
 | Node | Apps | Application process trees | `g a` |
 | Node | Memory | Process, binary and ETS investigations | `g m` |
@@ -89,7 +93,7 @@ The demo consumes the marker, crashes `demo_shop`, and its supervisor restarts t
 | Tracing | Trace | Function arguments, results and duration | `g t` |
 | Tracing | Seq | Messages caused by traced calls | `g q` |
 | Tracing | Profile | Function time, call counts or allocations | `g f` |
-| Settings | ⚙ | Saved connection and optional Jev switch | `g ,` |
+| Settings | ⚙ | Saved connection, auto-reconnect, kubeconfig directory and optional Jev switch | `g ,` |
 
 Press `g`, then the second key; shortcuts do not fire while typing in a field. **?** lists them. Tabs that do not fit are under **More ▾**. Use **erl / ex** to change the displayed syntax for terms, functions and PIDs.
 
@@ -98,6 +102,8 @@ Press `g`, then the second key; shortcuts do not fire while typing in a field. *
 Open **System** to establish the runtime version, scheduler capacity, memory totals and resource limits. Check the run queue and the proportion of atoms, processes, ports and ETS tables used. The screen refreshes every ten seconds; **Refresh** reads it immediately.
 
 ![System overview showing runtime, memory, CPU and resource limits](screenshots/01-system.jpg)
+
+Open **Nodes** to see which nodes the attached one is connected to (`nodes()`, refreshed every five seconds; **Show hidden** adds hidden connections such as remote shells). Click another node to move the connection there; beamdash uses the cookie the attached node has for it, so there is nothing to type. This works for direct connections only: the other nodes of a pod's cluster are not reachable through its kubectl tunnel. Plugins can link node names the same way (the riak_core plugin does for owners and members): clicking one switches the connection and returns to the plugin page.
 
 Open **Load** and leave it visible while reproducing the symptom. It samples twice per second and shows the last 60 seconds. Hover or focus a scheduler legend item to highlight its line; dotted lines represent dirty CPU schedulers. In a lightly loaded demo, low scheduler percentages are expected.
 
@@ -224,7 +230,7 @@ The demo's deliberate error is `demo_checkout_failed` in `demo_shop:handle_cast/
 
 ## Settings and Jev
 
-Open **⚙ Settings**. A normal successful connection saves the last node and cookie in your user configuration directory; **Forget** clears them. The cookie is stored as plain JSON in a file readable only by your user. The demo disables remembering, which is why its Settings page shows this message:
+Open **⚙ Settings**. A normal successful connection saves the last node and cookie in your user configuration directory; **Forget** clears them. **Reconnect automatically** (off by default, saved across restarts) makes a lost connection again, as described in [Start and connect](#start-and-connect). **Kubeconfig directory** (default `~/.kube`) sets where the kubectl connection looks for cluster kubeconfig files; **Save** applies it to the connection bar in every open tab until restart, and the line below the field says how many clusters it found. The cookie is stored as plain JSON in a file readable only by your user. The demo disables remembering, which is why its Settings page shows this message:
 
 ![Settings with connection remembering disabled for the demo](screenshots/12-settings.jpg)
 
@@ -240,6 +246,33 @@ With a configured key, **Settings → Enable Jev analysis** toggles Jev for all 
 For process or GC analysis, keep a process selected through at least 15 seconds of representative work. When **Jev: next step** is ready, click **Analyze**, review the suggestion and **What is sent to TypeSafe**, then verify the suggestion with a trace, state inspection or profile. The GC analysis also considers recorded GC statistics. Jev suggests an investigation; it does not change the target.
 
 Other optional entry points are **Ask beamdash**, **Jev: triage busiest processes**, Memory's health check and Seq's message-flow analysis. Process/GC requests use derived anonymous metrics, not process names, PIDs, messages, state or stacks. **Ask** sends the question you type. The API key remains on the beamdash host. Requests can incur service charges; TypeSafe's documented retention is unspecified. The default model is `jev-1.13.0`; `TYPESAFE_MODEL` overrides it.
+
+## Add plugins
+
+Plugins add pages for one application, such as riak_core, under a **Plugins** menu. The menu shows a plugin's pages only while the application it supports runs on the attached node.
+
+Open **⚙ Settings → Plugins**, type the plugin as a Mix dependency and click **Add**:
+
+```elixir
+{:riak_core_plugin, "~> 0.1"}
+{:riak_core_plugin, git: "https://github.com/dskliarov/beamdash-riak-core-plugin", tag: "0.0.1"}
+{:riak_core_plugin, path: "~/src/beamdash-riak-core-plugin"}
+```
+
+A Hex requirement resolves to the highest matching release that `mix hex.info` lists; Hex lists only recent releases, so give an exact version (`"== 0.1.0"`) for an older one. Hex plugins need Hex (`mix local.hex`). Git takes `tag:`, `branch:` or `ref:`. beamdash fetches only the plugin's own source, checks and compiles it, and loads it without a restart. Installed plugins are kept in the `plugins` folder of your user configuration directory; the card shows the path. A path plugin is compiled from its own folder, which must not be inside that `plugins` folder; after changing its code, click **Rebuild**. **Remove** unloads a plugin and deletes its installed files, never a path plugin's folder.
+
+Each plugin shows its status: **active** when a supported application runs at a matching version, **waiting** when none runs, and **incompatible** when one runs at a version the plugin doesn't support. A plugin that fails to build shows the error and never stops beamdash.
+
+A plugin runs inside beamdash with full access to the nodes you connect to, and compiling it runs its code inside beamdash. Add only plugins you trust.
+
+To write a plugin, start from the riak_core plugin ([beamdash-riak-core-plugin](https://github.com/dskliarov/beamdash-riak-core-plugin)) and the `Beamdash.Plugin` docs. The rules the install checks:
+
+- The entry module does `use Beamdash.Plugin`, with a name and pages; each page does `use Beamdash.Plugin.Page`.
+- The supported applications are `runtime: false` deps in `mix.exs`. beamdash reads `mix.exs` as data and never runs it.
+- No other runtime deps: a plugin can use only what beamdash ships (Elixir, Phoenix, LiveView, Jason…).
+- Code on the attached node is called only through `Beamdash.Plugin.rpc/5`.
+- Every module sits under one top-level prefix, which no module beamdash, OTP or another plugin has loaded may already use.
+- Protocol implementations have no effect: beamdash's protocols are consolidated.
 
 ## Choose an investigation
 
@@ -265,6 +298,7 @@ Other optional entry points are **Ask beamdash**, **Jev: triage busiest processe
 | Profile unavailable | The target needs OTP 27+ and `tprof`; select a compatible target. |
 | Jev switch or Analyze is missing | Check the server's `TYPESAFE_API_KEY`, environment/config disable flags and the Settings switch. Restart after changing environment variables. |
 | Jev Analyze is disabled | Keep the same process selected long enough to collect the required history, during representative work. |
+| A Hex plugin says "Hex is not installed" | Run `mix local.hex` as the user who runs beamdash, then add it again. |
 | PID disappears after a crash | Find the replacement by registered name in Processes or Apps; the old PID is no longer the worker. |
 | `observer:start()` fails with `wx` / `No driver found` | Observer's desktop GUI needs a working Erlang wx driver. beamdash's browser UI can inspect the node without starting `observer_wx`; repairing the GUI requires a wx-enabled Erlang installation. |
 

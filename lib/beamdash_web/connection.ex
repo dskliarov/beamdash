@@ -10,14 +10,25 @@ defmodule BeamdashWeb.Connection do
   lets `{:beamdash_target, _}` messages continue to the page's own
   `handle_info/2`.
 
+  `@conn.plugins` holds the active plugins (`Beamdash.Plugins.active/1`)
+  for the nav's Plugins menu, updated on `{:beamdash_plugins, :changed}`.
+  A page that shows plugins can define `plugins_changed/2`: it gets the
+  socket and the event (`:changed` or `{:removed, app}`) and returns the
+  socket. Other `{:beamdash_plugins, _}` messages (an install's progress)
+  go on to the page.
+
+  `@conn.reconnecting` is `Beamdash.Target.reconnecting/1` while a lost
+  connection is being tried again: the bar says so, with a Stop button
+  (`stop_reconnect`).
+
   The form starts with the last node and cookie that connected
   (`Beamdash.LastConnection`, kept across restarts); a node typed in this
   session that failed to connect is offered instead until one succeeds.
   """
   import Phoenix.Component, only: [assign: 3]
-  import Phoenix.LiveView, only: [attach_hook: 4, connected?: 1, start_async: 3]
+  import Phoenix.LiveView, only: [attach_hook: 4, connected?: 1, push_navigate: 2]
 
-  alias Beamdash.{Format, Kubectl, LastConnection, Target}
+  alias Beamdash.{Format, Kubectl, LastConnection, Settings, Target}
 
   @refresh_ms 2_000
   @last_node {__MODULE__, :last_node}
@@ -25,44 +36,41 @@ defmodule BeamdashWeb.Connection do
   def on_mount(:default, _params, _session, socket) do
     %{status: status, node: node} = Target.status()
     saved = LastConnection.get()
-    {kube_clusters, kube_cluster_error} = list_kube_clusters()
 
     socket =
       socket
-      |> assign(:conn, %{
-        status: status,
-        node: node,
-        info: nil,
-        node_input: if(node, do: Atom.to_string(node), else: last_node(saved.node)),
-        cookie_input: saved.cookie,
-        error: nil,
-        method: :direct,
-        kube_clusters: kube_clusters,
-        kube_cluster: kube_clusters |> List.first() |> then(&(&1 && &1.path)),
-        kube_cluster_error: kube_cluster_error,
-        kube_namespace: "",
-        kube_namespaces: [],
-        kube_pod: "",
-        kube_pods: nil,
-        kube_pods_listing: false,
-        kube_containers: nil,
-        kube_container: nil,
-        kube_binaries: nil,
-        kube_binary: nil,
-        kube_listing: false
-      })
+      |> assign(
+        :conn,
+        Map.merge(kube_clusters(Settings.kubeconfig_dir()), %{
+          status: status,
+          node: node,
+          info: nil,
+          node_input: if(node, do: Atom.to_string(node), else: last_node(saved.node)),
+          cookie_input: saved.cookie,
+          error: nil,
+          method: :direct,
+          kube_namespace: "",
+          kube_namespaces: [],
+          kube_pod: "",
+          kube_pods: nil,
+          kube_pods_listing: false,
+          kube_containers: nil,
+          kube_container: nil,
+          kube_binaries: nil,
+          kube_binary: nil,
+          kube_listing: false,
+          reconnecting: if(status == :connected, do: nil, else: Target.reconnecting()),
+          plugins: active_plugins()
+        })
+      )
       |> attach_hook(:conn_event, :handle_event, &handle_event/3)
       |> attach_hook(:conn_info, :handle_info, &handle_info/2)
-      |> attach_hook(:conn_namespaces, :handle_async, &handle_async/3)
 
-    socket =
-      if connected?(socket) do
-        :ok = Target.subscribe()
-        send(self(), :beamdash_conn_tick)
-        list_namespaces(socket)
-      else
-        socket
-      end
+    if connected?(socket) do
+      :ok = Target.subscribe()
+      :ok = Phoenix.PubSub.subscribe(Beamdash.PubSub, "plugins")
+      send(self(), :beamdash_conn_tick)
+    end
 
     {:cont, socket}
   end
@@ -81,13 +89,15 @@ defmodule BeamdashWeb.Connection do
 
         # the page hears {:connected, node} from Target as well
         {:halt,
-         update(socket,
+         socket
+         |> update(
            status: :connected,
            node: info.node,
            info: info,
            error: nil,
            cookie_input: cookie
-         )}
+         )
+         |> to_system()}
 
       {:error, reason} ->
         {:halt,
@@ -97,32 +107,40 @@ defmodule BeamdashWeb.Connection do
 
   def handle_event("disconnect", _params, socket) do
     :ok = Target.disconnect()
-    {:halt, update(socket, status: :disconnected, node: nil, info: nil)}
+    {:halt, update(socket, status: :disconnected, node: nil, info: nil, reconnecting: nil)}
   end
 
+  def handle_event("stop_reconnect", _params, socket) do
+    :ok = Target.stop_reconnect()
+    {:halt, update(socket, reconnecting: nil)}
+  end
+
+  # namespaces are re-listed each time Kubernetes is picked from another
+  # method, so ones created meanwhile show up too
   def handle_event("set_conn_method", %{"method" => method}, socket) do
-    {:halt, update(socket, method: String.to_existing_atom(method), error: nil)}
+    method = String.to_existing_atom(method)
+    switched? = socket.assigns.conn[:method] != method
+    socket = update(socket, method: method, error: nil)
+    {:halt, if(method == :kubectl and switched?, do: list_namespaces(socket), else: socket)}
   end
 
   # picking a different cluster invalidates everything listed under the old
   # one, same reset `"select_kube_pod"` does for a different pod.
   def handle_event("select_kube_cluster", %{"cluster" => cluster}, socket) do
-    socket =
-      socket
-      |> update(
-        kube_cluster: cluster,
-        kube_namespaces: [],
-        kube_pods: nil,
-        kube_pod: "",
-        kube_containers: nil,
-        kube_container: nil,
-        kube_binaries: nil,
-        kube_binary: nil,
-        error: nil
-      )
-      |> list_namespaces()
-
-    {:halt, socket}
+    {:halt,
+     socket
+     |> update(
+       kube_cluster: cluster,
+       kube_namespaces: [],
+       kube_pods: nil,
+       kube_pod: "",
+       kube_containers: nil,
+       kube_container: nil,
+       kube_binaries: nil,
+       kube_binary: nil,
+       error: nil
+     )
+     |> list_namespaces()}
   end
 
   def handle_event("list_kube_pods", %{"namespace" => namespace}, socket) do
@@ -214,7 +232,8 @@ defmodule BeamdashWeb.Connection do
       {:ok, info} ->
         # the page hears {:connected, node} from Target as well
         {:halt,
-         update(socket,
+         socket
+         |> update(
            status: :connected,
            node: info.node,
            info: info,
@@ -223,7 +242,8 @@ defmodule BeamdashWeb.Connection do
            kube_pod: pod,
            kube_container: container,
            kube_binary: binary
-         )}
+         )
+         |> to_system()}
 
       {:error, reason} ->
         {:halt,
@@ -249,30 +269,92 @@ defmodule BeamdashWeb.Connection do
     do:
       {:cont,
        socket
-       |> update(status: :connected, node: node, error: nil, node_input: Atom.to_string(node))
+       |> update(
+         status: :connected,
+         node: node,
+         error: nil,
+         node_input: Atom.to_string(node),
+         reconnecting: nil
+       )
        |> refresh()}
 
   def handle_info({:beamdash_target, {:disconnected, reason}}, socket) do
     error = if reason == :nodedown, do: "Lost the connection to #{socket.assigns.conn.node}."
-    {:cont, update(socket, status: :disconnected, node: nil, info: nil, error: error)}
+
+    {:cont,
+     update(socket,
+       status: :disconnected,
+       node: nil,
+       info: nil,
+       error: error,
+       reconnecting: Target.reconnecting()
+     )}
+  end
+
+  # Broadcast on the "settings" topic, which `BeamdashWeb.Syntax` (mounted
+  # before this hook) subscribes to. A new directory re-lists the clusters
+  # and drops everything listed under the old ones, same as
+  # "select_kube_cluster". A page can define `kubeconfig_dir_changed/2` to
+  # follow the change as well.
+  def handle_info({:beamdash_kubeconfig_dir, dir}, socket) do
+    socket =
+      if function_exported?(socket.view, :kubeconfig_dir_changed, 2),
+        do: socket.view.kubeconfig_dir_changed(socket, dir),
+        else: socket
+
+    socket =
+      socket
+      |> update(
+        kube_namespaces: [],
+        kube_pods: nil,
+        kube_pod: "",
+        kube_containers: nil,
+        kube_container: nil,
+        kube_binaries: nil,
+        kube_binary: nil,
+        error: nil
+      )
+      |> update(kube_clusters(dir))
+
+    {:halt,
+     if(socket.assigns.conn[:method] == :kubectl, do: list_namespaces(socket), else: socket)}
+  end
+
+  # the background listing started by `list_namespaces/1`; a reply for a
+  # cluster no longer picked is dropped
+  def handle_info({:beamdash_kube_namespaces, cluster, result}, socket) do
+    if cluster == socket.assigns.conn.kube_cluster do
+      namespaces =
+        case result do
+          {:ok, names} -> names
+          {:error, _} -> []
+        end
+
+      {:halt, update(socket, kube_namespaces: namespaces)}
+    else
+      {:halt, socket}
+    end
+  end
+
+  def handle_info({:beamdash_plugins, event}, socket)
+      when event == :changed or (is_tuple(event) and elem(event, 0) == :removed) do
+    socket = update(socket, plugins: active_plugins())
+
+    socket =
+      if function_exported?(socket.view, :plugins_changed, 2),
+        do: socket.view.plugins_changed(socket, event),
+        else: socket
+
+    {:halt, socket}
   end
 
   def handle_info(_message, socket), do: {:cont, socket}
 
-  defp handle_async(:kube_namespaces, {:ok, {:ok, namespaces}}, socket),
-    do: {:halt, update(socket, kube_namespaces: namespaces)}
-
-  defp handle_async(:kube_namespaces, _result, socket), do: {:halt, socket}
-
-  defp handle_async(_name, _result, socket), do: {:cont, socket}
-
-  # Runs async so a slow or unreachable cluster never delays the page; a
-  # failed listing (often RBAC forbids it) just leaves the suggestions empty.
-  defp list_namespaces(%{assigns: %{conn: %{kube_cluster: nil}}} = socket), do: socket
-
-  defp list_namespaces(socket) do
-    cluster = socket.assigns.conn.kube_cluster
-    start_async(socket, :kube_namespaces, fn -> Kubectl.list_namespaces(cluster) end)
+  # [] when the registry isn't there (it never breaks the bar)
+  defp active_plugins do
+    Beamdash.Plugins.active()
+  catch
+    :exit, _ -> []
   end
 
   defp refresh(%{assigns: %{conn: %{status: :connected}}} = socket) do
@@ -282,7 +364,30 @@ defmodule BeamdashWeb.Connection do
     end
   end
 
+  defp refresh(%{assigns: %{conn: %{status: :disconnected}}} = socket),
+    do: update(socket, reconnecting: Target.reconnecting())
+
   defp refresh(socket), do: socket
+
+  # Suggestions for the namespace field, listed in the background so a slow
+  # kubectl doesn't block the page; the reply arrives as
+  # `{:beamdash_kube_namespaces, cluster, result}`. A cluster that forbids
+  # listing namespaces (RBAC) just offers none, without an error: the field
+  # still takes whatever name is typed.
+  defp list_namespaces(%{assigns: %{conn: %{kube_cluster: nil}}} = socket),
+    do: update(socket, kube_namespaces: [])
+
+  defp list_namespaces(socket) do
+    cluster = socket.assigns.conn.kube_cluster
+    pid = self()
+
+    {:ok, _} =
+      Task.start(fn ->
+        send(pid, {:beamdash_kube_namespaces, cluster, Kubectl.list_namespaces(cluster)})
+      end)
+
+    update(socket, kube_namespaces: [])
+  end
 
   # Lists `pod`'s containers and then `/app/bin` in the first one, storing
   # `pod` itself (shared by the initial pod listing and picking a different
@@ -318,14 +423,27 @@ defmodule BeamdashWeb.Connection do
     end
   end
 
-  # Read once at mount, not re-listed on every render: the set of
-  # kubeconfig files under ~/.kube rarely changes mid-session.
-  defp list_kube_clusters do
-    case Kubectl.list_kubeconfigs() do
-      {:ok, clusters} -> {clusters, nil}
-      {:error, reason} -> {[], Format.error(reason)}
-    end
+  # Read at mount and when the directory changes in Settings, not re-listed
+  # on every render: the set of kubeconfig files rarely changes mid-session.
+  defp kube_clusters(dir) do
+    {clusters, error} =
+      case Kubectl.list_kubeconfigs(dir) do
+        {:ok, clusters} -> {clusters, nil}
+        {:error, reason} -> {[], Format.error(reason)}
+      end
+
+    %{
+      kube_dir: dir,
+      kube_clusters: clusters,
+      kube_cluster: clusters |> List.first() |> then(&(&1 && &1.path)),
+      kube_cluster_error: error
+    }
   end
+
+  # A connect from the bar lands on the System tab, the node's overview
+  # (staying put when already there).
+  defp to_system(%{view: BeamdashWeb.SystemLive} = socket), do: socket
+  defp to_system(socket), do: push_navigate(socket, to: "/system")
 
   defp update(socket, changes),
     do: assign(socket, :conn, Map.merge(socket.assigns.conn, Map.new(changes)))

@@ -30,7 +30,7 @@ defmodule BeamdashWeb.Layouts do
     if Application.get_env(:beamdash, :has_k8s, false), do: "Kubernetes", else: "kubectl"
   end
 
-  attr :active, :atom, required: true
+  attr :active, :any, required: true, doc: "a tab's key, or {:plugin, app, slug}"
   attr :syntax, :atom, required: true
   attr :conn, :map, default: nil, doc: "from BeamdashWeb.Connection; nil hides the bar"
   attr :ask, :map, default: nil, doc: "from BeamdashWeb.Ask; nil hides the box"
@@ -46,14 +46,32 @@ defmodule BeamdashWeb.Layouts do
     ~H"""
     <header class="bar">
       <h1>beamdash</h1>
-      <.nav active={@active} syntax={@syntax} />
+      <.nav active={@active} syntax={@syntax} plugins={(@conn && @conn[:plugins]) || []} />
 
       <div :if={@conn} class="conn-line">
-        <div :if={@conn && @conn.status != :connected} class="connect-methods">
-          <div class="method-switch" role="group" aria-label="Connection method">
+        <div
+          :if={@conn.status != :connected && @conn[:reconnecting]}
+          class="reconnecting"
+          role="status"
+        >
+          <span class="dot dot-wait" aria-hidden="true"></span>
+          <span>
+            Reconnecting to <strong>{@conn.reconnecting.node}</strong>
+            · try {@conn.reconnecting.attempt} at {Calendar.strftime(
+              @conn.reconnecting.next_at,
+              "%H:%M:%S"
+            )} UTC<span :if={@conn.reconnecting.error} class="muted small">
+              · last try: {Beamdash.Format.error(@conn.reconnecting.error)}
+            </span>
+          </span>
+          <button type="button" class="secondary small-btn" phx-click="stop_reconnect">Stop</button>
+        </div>
+        <div :if={@conn.status != :connected} class="connect-panel">
+          <div class="seg method-switch" role="group" aria-label="Connection method">
             <button
               type="button"
-              class={Map.get(@conn, :method, :direct) == :direct && "active"}
+              class={["seg-btn", Map.get(@conn, :method, :direct) == :direct && "active"]}
+              aria-pressed={to_string(Map.get(@conn, :method, :direct) == :direct)}
               phx-click="set_conn_method"
               phx-value-method="direct"
             >
@@ -61,7 +79,8 @@ defmodule BeamdashWeb.Layouts do
             </button>
             <button
               type="button"
-              class={Map.get(@conn, :method, :direct) == :kubectl && "active"}
+              class={["seg-btn", Map.get(@conn, :method, :direct) == :kubectl && "active"]}
+              aria-pressed={to_string(Map.get(@conn, :method, :direct) == :kubectl)}
               phx-click="set_conn_method"
               phx-value-method="kubectl"
             >
@@ -73,36 +92,43 @@ defmodule BeamdashWeb.Layouts do
             :if={Map.get(@conn, :method, :direct) == :direct}
             id="connect-form"
             phx-submit="connect"
-            class="connect"
+            class="conn-rows"
           >
-            <input
-              name="node"
-              value={@conn.node_input}
-              placeholder="node@host"
-              required
-              autocomplete="off"
-              aria-label="Node"
-            />
-            <input
-              name="cookie"
-              type="password"
-              value={Map.get(@conn, :cookie_input, "")}
-              placeholder="cookie (optional)"
-              autocomplete="off"
-              aria-label="Cookie"
-            />
-            <button type="submit" phx-disable-with="Connecting…">Connect</button>
+            <div class="conn-row">
+              <label class="field-label" for="conn-node">Node</label>
+              <input
+                id="conn-node"
+                class="wide"
+                name="node"
+                value={@conn.node_input}
+                placeholder="node@host"
+                required
+                autocomplete="off"
+              />
+            </div>
+            <div class="conn-row">
+              <label class="field-label" for="conn-cookie">Cookie</label>
+              <input
+                id="conn-cookie"
+                name="cookie"
+                type="password"
+                value={Map.get(@conn, :cookie_input, "")}
+                placeholder="optional"
+                autocomplete="off"
+              />
+              <button type="submit" phx-disable-with="Connecting…">Connect</button>
+            </div>
           </form>
 
-          <div :if={Map.get(@conn, :method, :direct) == :kubectl} class="connect-kubectl">
+          <div :if={Map.get(@conn, :method, :direct) == :kubectl} class="conn-rows">
             <form
               :if={Map.get(@conn, :kube_clusters, []) != []}
               id="select-kube-cluster-form"
               phx-change="select_kube_cluster"
-              class="connect"
+              class="conn-row"
             >
-              <span class="field-label small muted">Cluster</span>
-              <select name="cluster" aria-label="Cluster">
+              <label class="field-label" for="kube-cluster">Cluster</label>
+              <select id="kube-cluster" class="wide" name="cluster">
                 <option
                   :for={c <- @conn.kube_clusters}
                   value={c.path}
@@ -112,32 +138,33 @@ defmodule BeamdashWeb.Layouts do
                 </option>
               </select>
             </form>
-            <p :if={Map.get(@conn, :kube_clusters, []) == []} class="muted small">
-              No kubeconfig files found under ~/.kube{if @conn[:kube_cluster_error],
-                do: " (#{@conn.kube_cluster_error})"}.
+            <p :if={Map.get(@conn, :kube_clusters, []) == []} class="conn-hint muted small">
+              No kubeconfig files found under <span class="mono">{Map.get(@conn, :kube_dir, "~/.kube")}</span>.
+              <span :if={@conn[:kube_cluster_error]}>{@conn.kube_cluster_error}.</span>
+              The directory can be changed in <a href="/settings">Settings</a>.
             </p>
 
             <form
               :if={Map.get(@conn, :kube_clusters, []) != []}
               id="list-kube-pods-form"
               phx-submit="list_kube_pods"
-              class="connect"
+              class="conn-row"
             >
-              <span class="field-label small muted">Namespace</span>
+              <label class="field-label" for="kube-namespace">Namespace</label>
               <div
                 id="namespace-combobox"
                 class="combobox"
                 phx-hook="NamespaceCombobox"
-                data-options={Jason.encode!(@conn.kube_namespaces)}
+                data-options={Jason.encode!(Map.get(@conn, :kube_namespaces, []))}
               >
                 <input
+                  id="kube-namespace"
                   name="namespace"
                   value={Map.get(@conn, :kube_namespace, "")}
                   placeholder="namespace"
                   required
                   autocomplete="off"
                   role="combobox"
-                  aria-label="Namespace"
                   aria-autocomplete="list"
                   aria-expanded="false"
                   aria-controls="namespace-options"
@@ -165,17 +192,22 @@ defmodule BeamdashWeb.Layouts do
               :if={Map.get(@conn, :kube_pods)}
               id="select-kube-pod-form"
               phx-change="select_kube_pod"
-              class="connect"
+              class="conn-row"
             >
               <input type="hidden" name="namespace" value={Map.get(@conn, :kube_namespace, "")} />
-              <span class="field-label small muted">Pod</span>
-              <select name="pod" class="pod-select" aria-label="Pod" disabled={@conn.kube_pods == []}>
+              <label class="field-label" for="kube-pod">Pod</label>
+              <select
+                id="kube-pod"
+                name="pod"
+                class="wide"
+                disabled={@conn.kube_pods == []}
+              >
                 <option :for={p <- @conn.kube_pods} value={p} selected={p == @conn.kube_pod}>
                   {p}
                 </option>
               </select>
             </form>
-            <p :if={@conn[:kube_pods] == []} class="muted small">
+            <p :if={@conn[:kube_pods] == []} class="conn-hint muted small">
               No pods found in this namespace.
             </p>
 
@@ -183,12 +215,12 @@ defmodule BeamdashWeb.Layouts do
               :if={Map.get(@conn, :kube_containers) && length(@conn.kube_containers) > 1}
               id="select-kube-container-form"
               phx-change="select_kube_container"
-              class="connect"
+              class="conn-row"
             >
               <input type="hidden" name="namespace" value={Map.get(@conn, :kube_namespace, "")} />
               <input type="hidden" name="pod" value={Map.get(@conn, :kube_pod, "")} />
-              <span class="field-label small muted">Container</span>
-              <select name="container" aria-label="Container">
+              <label class="field-label" for="kube-container">Container</label>
+              <select id="kube-container" class="wide" name="container">
                 <option
                   :for={c <- @conn.kube_containers}
                   value={c}
@@ -203,13 +235,13 @@ defmodule BeamdashWeb.Layouts do
               :if={Map.get(@conn, :kube_binaries)}
               id="connect-kubectl-form"
               phx-submit="connect_kubectl"
-              class="connect"
+              class="conn-row"
             >
               <input type="hidden" name="namespace" value={Map.get(@conn, :kube_namespace, "")} />
               <input type="hidden" name="pod" value={Map.get(@conn, :kube_pod, "")} />
               <input type="hidden" name="container" value={Map.get(@conn, :kube_container, "")} />
-              <span class="field-label small muted">Binary</span>
-              <select name="binary" aria-label="Release binary" disabled={@conn.kube_binaries == []}>
+              <label class="field-label" for="kube-binary">Binary</label>
+              <select id="kube-binary" name="binary" disabled={@conn.kube_binaries == []}>
                 <option
                   :for={bin <- @conn.kube_binaries}
                   value={bin}
@@ -226,14 +258,14 @@ defmodule BeamdashWeb.Layouts do
                 Connect
               </button>
             </form>
-            <p :if={@conn[:kube_binaries] == []} class="muted small">
+            <p :if={@conn[:kube_binaries] == []} class="conn-hint muted small">
               No binaries found under /app/bin in this pod{if @conn[:kube_container],
                 do: " (container #{@conn.kube_container})"}.
             </p>
           </div>
         </div>
 
-        <div :if={@conn && @conn.status == :connected} class="connected">
+        <div :if={@conn.status == :connected} class="connected">
           <span class="dot" aria-hidden="true"></span>
           <strong>{@conn.node}</strong>
           <button phx-click="disconnect" class="secondary">Disconnect</button>
@@ -288,9 +320,11 @@ defmodule BeamdashWeb.Layouts do
     {"Node",
      [
        {"/system", :system, "System", "System", "s"},
+       {"/nodes", :nodes, "Nodes", "Nodes", "n"},
        {"/load", :load, "Load", "Load Charts", "l"},
        {"/apps", :apps, "Apps", "Applications", "a"},
-       {"/memory", :memory, "Memory", "Memory", "m"}
+       {"/memory", :memory, "Memory", "Memory", "m"},
+       {"/logs", :logs, "Logs", "Logs", "o"}
      ]},
     {"Processes",
      [
@@ -309,8 +343,12 @@ defmodule BeamdashWeb.Layouts do
   @doc "The tab groups: `[{group, [{path, key, label, title, shortcut}]}]`."
   def tab_groups, do: @groups
 
-  attr :active, :atom, required: true
+  attr :active, :any, required: true, doc: "a tab's key, or {:plugin, app, slug}"
   attr :syntax, :atom, required: true
+
+  attr :plugins, :list,
+    default: [],
+    doc: "the active plugins, `Beamdash.Plugins.active/1`: `[%{app, name, pages}]`"
 
   @doc """
   The tabs, grouped (node, processes, tracing) with short labels; the full
@@ -318,6 +356,10 @@ defmodule BeamdashWeb.Layouts do
   "More" menu (the NavOverflow hook, never the current one). `g` then a
   key opens a tab; `?` lists the keys. Settings is the gear at the end,
   next to the Erlang/Elixir switch.
+
+  With active plugins, a Plugins menu follows the tabs: one group per
+  plugin, linking to its pages. It is not a tab, so it is never moved into
+  More and has no shortcut.
   """
   def nav(assigns) do
     assigns = assign(assigns, groups: @groups)
@@ -337,6 +379,38 @@ defmodule BeamdashWeb.Layouts do
           {label}
         </.link>
       <% end %>
+      <details
+        :if={@plugins != []}
+        class="tabs-plugins"
+        phx-mounted={Phoenix.LiveView.JS.ignore_attributes(["open"])}
+      >
+        <summary
+          class={match?({:plugin, _, _}, @active) && "active"}
+          title="Plugins"
+          aria-current={match?({:plugin, _, _}, @active) && "page"}
+        >
+          Plugins ▾
+        </summary>
+        <div class="tabs-plugins-menu" role="menu">
+          <div
+            :for={plugin <- @plugins}
+            class="plugin-group"
+            role="group"
+            aria-labelledby={"plugin-group-#{plugin.app}"}
+          >
+            <span class="plugin-group-name" id={"plugin-group-#{plugin.app}"}>{plugin.name}</span>
+            <.link
+              :for={page <- plugin.pages}
+              navigate={"/plugins/#{plugin.app}/#{page.slug}"}
+              class={@active == {:plugin, to_string(plugin.app), page.slug} && "active"}
+              role="menuitem"
+              aria-current={@active == {:plugin, to_string(plugin.app), page.slug} && "page"}
+            >
+              {page.label}
+            </.link>
+          </div>
+        </div>
+      </details>
       <details class="tabs-more" hidden>
         <summary title="More tabs">More ▾</summary>
         <div class="tabs-more-menu" role="menu"></div>

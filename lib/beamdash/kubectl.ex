@@ -47,13 +47,14 @@ defmodule Beamdash.Kubectl do
   end
 
   @doc """
-  Kubeconfig files under `dir` (default `~/.kube`), one per cluster, so the
-  UI can offer a cluster picker instead of relying on an externally-set
+  Kubeconfig files under `dir` (default `Beamdash.Settings.kubeconfig_dir/0`,
+  `~/.kube` unless changed in Settings), one per cluster, so the UI can
+  offer a cluster picker instead of relying on an externally-set
   KUBECONFIG/current-context.
   """
   @spec list_kubeconfigs(String.t()) ::
           {:ok, [%{name: String.t(), path: String.t()}]} | {:error, term()}
-  def list_kubeconfigs(dir \\ kubeconfig_dir()) do
+  def list_kubeconfigs(dir \\ Beamdash.Settings.kubeconfig_dir()) do
     case File.ls(dir) do
       {:ok, files} ->
         {:ok,
@@ -66,8 +67,6 @@ defmodule Beamdash.Kubectl do
         {:error, {:kubeconfig_list_failed, reason}}
     end
   end
-
-  defp kubeconfig_dir, do: Application.get_env(:beamdash, :kubeconfig_dir, Path.expand("~/.kube"))
 
   @doc """
   Pods in `namespace`, so the user can pick one from a list instead of
@@ -91,13 +90,23 @@ defmodule Beamdash.Kubectl do
     kind, reason -> {:error, {:pod_list_failed, {kind, reason}}}
   end
 
-  @doc "Namespaces in the cluster, suggested in the namespace field."
+  @doc """
+  Namespaces in the cluster `kubeconfig` points at, offered as suggestions
+  in the namespace field (a cluster whose RBAC forbids listing them gives
+  an error; the field then just takes the typed name).
+  """
   @spec list_namespaces(String.t() | nil, (list(String.t()) -> {binary(), integer()})) ::
           {:ok, [String.t()]} | {:error, term()}
   def list_namespaces(kubeconfig, exec \\ &run_kubectl/1) do
     args =
       kubeconfig_args(kubeconfig) ++
-        ["get", "namespaces", "-o", "jsonpath={.items[*].metadata.name}"]
+        [
+          "--request-timeout=5s",
+          "get",
+          "namespaces",
+          "-o",
+          "jsonpath={.items[*].metadata.name}"
+        ]
 
     case exec.(args) do
       {output, 0} ->
@@ -168,6 +177,28 @@ defmodule Beamdash.Kubectl do
     end
   catch
     kind, reason -> {:error, {:binary_list_failed, {kind, reason}}}
+  end
+
+  @doc """
+  The `kubectl logs` arguments for `pod`'s `container` in `namespace`: the last
+  1000 timestamped lines, plus `-f` when `opts[:follow]` or `--previous` when
+  `opts[:previous]` (the previous container instance's log).
+  """
+  @spec logs_args(String.t() | nil, String.t(), String.t(), String.t() | nil, keyword()) ::
+          [String.t()]
+  def logs_args(kubeconfig, namespace, pod, container, opts) do
+    container_args = if container in [nil, ""], do: [], else: ["-c", container]
+
+    mode =
+      cond do
+        opts[:follow] -> ["-f"]
+        opts[:previous] -> ["--previous"]
+        true -> []
+      end
+
+    kubeconfig_args(kubeconfig) ++
+      ["logs", "-n", namespace, pod] ++
+      container_args ++ ["--timestamps", "--tail=1000"] ++ mode
   end
 
   @doc """

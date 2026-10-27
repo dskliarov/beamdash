@@ -185,6 +185,10 @@ defmodule Beamdash.Format do
 
   def error(:not_distributed), do: "This VM is not running distribution."
 
+  def error(:switch_needs_direct),
+    do:
+      "Switching needs a direct connection: the other nodes of a pod's cluster can't be reached through its kubectl tunnel. Connect to their pod from the bar."
+
   def error({:distribution_failed, reason}),
     do:
       "Could not start distribution here (is epmd running? try `epmd -daemon`): #{inspect(reason)}"
@@ -218,7 +222,7 @@ defmodule Beamdash.Format do
     do: "kubectl is not on PATH."
 
   def error({:kubeconfig_list_failed, reason}),
-    do: "Could not list kubeconfig files under ~/.kube: #{inspect(reason)}"
+    do: "Could not list kubeconfig files: #{inspect(reason)}"
 
   def error({:pod_list_failed, reason}),
     do: "Could not list pods in that namespace: #{inspect(reason)}"

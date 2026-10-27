@@ -29,17 +29,42 @@ defmodule Beamdash.Test.Fixture do
   handle_cast(_Msg, S) -> {noreply, S}.
   """
 
+  # Logs from a process whose group leader is on the peer itself. An erpc
+  # call runs with the caller's group leader (on this node), and the
+  # agent's handler drops such events (remote_gl), as the node's own
+  # console handler does.
+  @log_source """
+  -module(beamdash_log_helper).
+  -export([log/4]).
+
+  log(Level, Format, Args, Meta) ->
+      group_leader(whereis(user), self()),
+      logger:log(Level, Format, Args, Meta).
+  """
+
   def cookie, do: @cookie
 
-  def start_peer do
+  @doc "Starts a peer node; `extra_args` are added to its command line."
+  def start_peer(extra_args \\ []) do
     {:ok, peer, node} =
       :peer.start(%{
         name: :peer.random_name(),
-        args: [~c"-setcookie", String.to_charlist(@cookie)],
+        args: [~c"-setcookie", String.to_charlist(@cookie) | extra_args],
         connection: :standard_io
       })
 
     {peer, node}
+  end
+
+  @doc """
+  Logs on `node` from a process whose group leader is local there, as an
+  application's own processes are. `format` is an Erlang format string.
+  """
+  def log(node, level, format, args \\ [], meta \\ %{}) do
+    if :erpc.call(node, :code, :is_loaded, [:beamdash_log_helper]) == false,
+      do: :ok = load_module(node, :beamdash_log_helper, @log_source)
+
+    :erpc.call(node, :beamdash_log_helper, :log, [level, to_charlist(format), args, meta])
   end
 
   def stop_peer(peer) do

@@ -89,7 +89,7 @@ defmodule BeamdashWeb.FunctionList do
 
     case name_needle != "" && :binary.match(String.downcase(text), name_needle) do
       {start, len} ->
-        <<pre::binary-size(start), hit::binary-size(len), post::binary>> = text
+        <<pre::binary-size(^start), hit::binary-size(^len), post::binary>> = text
         Enum.reject([{:text, pre}, {:match, hit}, {:text, post}], &(elem(&1, 1) == ""))
 
       _ ->

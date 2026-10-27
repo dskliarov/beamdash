@@ -11,6 +11,8 @@
 -export([applications/0, app_tree/1]).
 -export([process_details/2, garbage_collect/1]).
 -export([sys_trace/3, sys_trace_stop_all/0, sys_event/3]).
+-export([log_attach/1, log_detach/0, log/2, log_send/3]).
+-export([log_levels/0, log_set_app_level/2, log_set_primary_level/1]).
 -export([tprof_available/0, tprof_start/4, tprof_collect/1, tprof_stop/0]).
 -export([recon_available/0, memory_snapshot/0, top_processes/2, gc_all/0,
          binary_leaks/1, ets_tables/0, process_state/2]).
@@ -24,7 +26,7 @@
 %% dictionary key in the same process_info call as everything else.
 -define(INITIAL_CALL_KEY, {dictionary, '$initial_call'}).
 
-version() -> 14.
+version() -> 17.
 
 node_info() ->
     {WallClockMs, _} = erlang:statistics(wall_clock),
@@ -122,8 +124,11 @@ applications() ->
     Str = fun(V) -> try unicode:characters_to_binary(V) catch _:_ -> <<>> end end,
     [#{name => Name, description => Str(Desc), vsn => Str(Vsn), master => Master}
      || {Name, Desc, Vsn} <- application:which_applications(),
-        Master <- [catch application_controller:get_master(Name)],
+        Master <- [app_master(Name)],
         is_pid(Master)].
+
+app_master(Name) ->
+    try application_controller:get_master(Name) catch _:_ -> undefined end.
 
 %% The process tree of an application, found as appmon_info's default
 %% "link" mode does (calc_app_tree/2): from the application master, follow
@@ -133,7 +138,7 @@ applications() ->
 %% links are secondary. Ports, other nodes' processes and the runtime's
 %% own processes are left out. At most 5000 processes.
 app_tree(Name) ->
-    case catch application_controller:get_master(Name) of
+    case app_master(Name) of
         Root when is_pid(Root) ->
             Avoid = [P || N <- [application_controller, init, erl_prim_loader],
                           P <- [whereis(N)], is_pid(P)],
@@ -589,7 +594,7 @@ sys_off(Pid, Timeout) ->
     ok = sys:trace(Pid, false, Timeout).
 
 sys_off_later(Pid) ->
-    spawn(fun() -> catch sys_off(Pid, infinity) end),
+    spawn(fun() -> try sys_off(Pid, infinity) catch _:_ -> ok end end),
     ok.
 
 %% Called by sys inside the traced process for every event. Returning
@@ -622,7 +627,9 @@ sys_collector(Owner) ->
         undefined ->
             Self = self(),
             Pid = spawn(fun() ->
-                                case catch register(?SYS_COLLECTOR, self()) of
+                                case try register(?SYS_COLLECTOR, self())
+                                     catch _:_ -> false
+                                     end of
                                     true ->
                                         Self ! {self(), registered},
                                         collector_loop(collector_owner(#{watched => #{},
@@ -707,6 +714,317 @@ collector_stop(Watched) ->
     exit(normal).
 
 %%% ============================================================================
+%%% Streaming the node's log events (logger handler)
+%%% ============================================================================
+%%
+%% log_attach(Owner) adds a logger handler, beamdash_logs, whose callback
+%% log/2 below runs in every process that logs. It formats the event here
+%% (so beamdash gets text, not terms it may not be able to decode) and
+%% hands it to a collector process, which sends batches on to Owner (an
+%% beamdash process), like the sys:trace collector above but separate from
+%% it: either can be running without the other.
+%%
+%% The collector watches Owner: if beamdash goes away it removes the
+%% handler, so a node is never left formatting log events for nobody.
+%%
+%% Nothing here may block the node or grow without bound when beamdash is
+%% slow to read (a kubectl port-forward, say): the collector sends with
+%% nosuspend and counts a batch the busy link would not take as dropped,
+%% and while its buffer is full log/2 only bumps a counter (an atomics
+%% array shared through the handler config) instead of formatting and
+%% sending events that would be dropped anyway.
+
+-define(LOG_COLLECTOR, beamdash_log_collector).
+-define(LOG_HANDLER, beamdash_logs).
+-define(LOG_TIMEOUT, 5000).
+%% Entries are sent on at most every ?LOG_FLUSH_MS, at most
+%% ?LOG_MAX_PER_FLUSH at a time (2,500 a second); the rest are counted as
+%% dropped.
+-define(LOG_FLUSH_MS, 200).
+-define(LOG_MAX_PER_FLUSH, 500).
+%% Bytes of message text kept per entry, and characters per metadata value.
+-define(LOG_MAX_MSG, 8192).
+-define(LOG_MAX_META, 256).
+%% Indexes in the handler's atomics array: 1 when the collector's buffer
+%% is full, and the events log/2 skipped meanwhile.
+-define(LOG_FULL, 1).
+-define(LOG_SKIPPED, 2).
+%% Metadata sent as entry fields of their own, or of no use to a reader.
+-define(LOG_SKIP_META, [time, pid, mfa, file, line, gl, domain, report_cb]).
+
+log_attach(Owner) when is_pid(Owner) ->
+    %% replace a handler left by an earlier session
+    _ = logger:remove_handler(?LOG_HANDLER),
+    Full = atomics:new(2, []),
+    Collector = log_collector(Owner, Full),
+    %% The default console handler's filters, so the tab shows what the
+    %% node's own console does: no events whose group leader is on another
+    %% node (an rpc from a remote shell; logger hands those to that node),
+    %% and no supervisor/application progress reports (the default handler
+    %% drops those at its default level). Crash and supervisor error
+    %% reports (proc_lib CRASH REPORT, child_terminated, start_error) are
+    %% kept, though they share the [otp, sasl] domain with progress reports.
+    Filters = [{remote_gl, {fun logger_filters:remote_gl/2, stop}},
+               {progress, {fun logger_filters:progress/2, stop}}],
+    ok = logger:add_handler(?LOG_HANDLER, ?MODULE,
+                            #{config => #{collector => Collector, full => Full},
+                              level => all,
+                              filters => Filters,
+                              filter_default => log}),
+    {ok, maps:get(level, logger:get_primary_config())}.
+
+%% Stops streaming (beamdash disconnecting); fine to call when not attached.
+log_detach() ->
+    _ = logger:remove_handler(?LOG_HANDLER),
+    case whereis(?LOG_COLLECTOR) of
+        undefined ->
+            ok;
+        Collector ->
+            Ref = erlang:monitor(process, Collector),
+            Collector ! stop,
+            receive {'DOWN', Ref, process, Collector, _} -> ok
+            after ?LOG_TIMEOUT -> erlang:demonitor(Ref, [flush]), ok
+            end
+    end.
+
+%% The node's primary logger level, and for each running application the
+%% level its modules are set to: default (no module level set, so the
+%% primary level applies), one level when every module has it, or mixed.
+log_levels() ->
+    Apps = lists:sort([App || {App, _, _} <- application:which_applications()]),
+    #{primary => maps:get(level, logger:get_primary_config()),
+      apps => [{App, log_app_level(App)} || App <- Apps]}.
+
+log_app_level(App) ->
+    Mods = case application:get_key(App, modules) of
+               {ok, M} -> M;
+               undefined -> []
+           end,
+    Set = logger:get_module_level(Mods),
+    case lists:usort([L || {_, L} <- Set]) of
+        [] -> default;
+        [Level] when length(Set) =:= length(Mods) -> Level;
+        _ -> mixed
+    end.
+
+%% Sets the level of every module of App (logger:set_application_level/2),
+%% or removes those module levels again with default. Module levels apply
+%% only to the ?LOG_* macros (which add mfa to the metadata): a plain
+%% logger:debug(...) call is checked against the primary level alone.
+log_set_app_level(App, default) when is_atom(App) ->
+    logger:unset_application_level(App);
+log_set_app_level(App, Level) when is_atom(App) ->
+    case log_level_name(Level) of
+        true -> logger:set_application_level(App, Level);
+        false -> {error, {invalid_level, Level}}
+    end.
+
+%% Sets the node's primary level, which every log event is checked against
+%% (a module level, when set, replaces it for that module's macro calls).
+log_set_primary_level(Level) ->
+    case log_level_name(Level) of
+        true -> logger:set_primary_config(level, Level);
+        false -> {error, {invalid_level, Level}}
+    end.
+
+log_level_name(Level) ->
+    lists:member(Level, [none, emergency, alert, critical, error, warning,
+                         notice, info, debug, all]).
+
+%% The logger callback. It runs in the process that logged, so it must be
+%% cheap and must never raise: logger removes a handler that crashes. With
+%% the collector gone (it removes the handler itself, but a log call may
+%% be under way) it does nothing; with its buffer full it only counts.
+log(#{level := Level, meta := Meta} = Event,
+    #{config := #{collector := Collector, full := Full}}) ->
+    try
+        case atomics:get(Full, ?LOG_FULL) =:= 1 of
+            true ->
+                %% would be dropped anyway: count it, without formatting
+                atomics:add(Full, ?LOG_SKIPPED, 1);
+            false ->
+                log_send_event(Collector, Level, Meta, Event)
+        end
+    catch
+        _:_ -> ok
+    end;
+log(_Event, _Config) ->
+    ok.
+
+log_send_event(Collector, Level, Meta, Event) ->
+    case erlang:is_process_alive(Collector) of
+        true ->
+            Collector ! {log, #{at => log_time(Meta),
+                                level => Level,
+                                pid => maps:get(pid, Meta, undefined),
+                                mfa => maps:get(mfa, Meta, undefined),
+                                file => maps:get(file, Meta, undefined),
+                                line => maps:get(line, Meta, undefined),
+                                msg => log_msg(Event),
+                                meta => log_meta(Meta)}},
+            ok;
+        false ->
+            ok
+    end.
+
+%% logger sets time (logger:timestamp(), microseconds) on every event.
+log_time(#{time := Time}) -> Time;
+log_time(_) -> erlang:system_time(microsecond).
+
+log_msg(Event) ->
+    Text = try unicode:characters_to_binary(
+                 logger_formatter:format(Event, #{template => [msg],
+                                                  single_line => false,
+                                                  chars_limit => ?LOG_MAX_MSG})) of
+               Bin when is_binary(Bin) -> Bin;
+               _ -> log_msg_raw(Event)
+           catch
+               _:_ -> log_msg_raw(Event)
+           end,
+    utf8_prefix(Text, ?LOG_MAX_MSG).
+
+%% The formatter failed (or gave invalid text): show the message term.
+%% characters_to_binary, not list_to_binary: ~tp may print characters
+%% above 255.
+log_msg_raw(Event) ->
+    Msg = maps:get(msg, Event, undefined),
+    case unicode:characters_to_binary(
+           io_lib:format("~0tp", [Msg], [{chars_limit, ?LOG_MAX_MSG}])) of
+        Bin when is_binary(Bin) -> Bin;
+        _ -> <<"(unprintable message)">>
+    end.
+
+%% A list comprehension over maps:to_list, not a map comprehension: those
+%% are OTP 26+, and the agent is compiled on the target, which may be older.
+log_meta(Meta) ->
+    lists:keysort(1, [{log_text(K), log_text(V)}
+                      || {K, V} <- maps:to_list(maps:without(?LOG_SKIP_META, Meta))]).
+
+log_text(Atom) when is_atom(Atom) ->
+    atom_to_binary(Atom, utf8);
+log_text(Term) ->
+    case unicode:characters_to_binary(
+           io_lib:format("~0tp", [Term], [{chars_limit, ?LOG_MAX_META}])) of
+        Bin when is_binary(Bin) -> Bin;
+        _ -> <<"?">>
+    end.
+
+%% At most Max bytes of Bin, without cutting a UTF-8 sequence in half
+%% (characters_to_binary reports the cut-off tail as incomplete).
+utf8_prefix(Bin, Max) when byte_size(Bin) =< Max ->
+    Bin;
+utf8_prefix(Bin, Max) ->
+    case unicode:characters_to_binary(binary:part(Bin, 0, Max)) of
+        Prefix when is_binary(Prefix) -> Prefix;
+        {_, Prefix, _} -> Prefix
+    end.
+
+log_collector(Owner, Full) ->
+    case whereis(?LOG_COLLECTOR) of
+        undefined ->
+            Self = self(),
+            Pid = spawn(fun() ->
+                                case try register(?LOG_COLLECTOR, self())
+                                     catch _:_ -> false
+                                     end of
+                                    true ->
+                                        Self ! {self(), registered},
+                                        log_loop(collector_owner(#{buf => [],
+                                                                   n => 0,
+                                                                   dropped => 0,
+                                                                   armed => false,
+                                                                   full => Full},
+                                                                 Owner));
+                                    _ ->
+                                        Self ! {self(), taken}
+                                end
+                        end),
+            receive
+                {Pid, registered} -> Pid;
+                {Pid, taken} -> log_collector(Owner, Full)
+            end;
+        Pid ->
+            Pid ! {owner, Owner, Full},
+            Pid
+    end.
+
+log_loop(#{owner := Owner, owner_ref := OwnerRef} = S) ->
+    receive
+        {log, Entry} ->
+            log_loop(log_buffer(Entry, S));
+        flush ->
+            log_loop(log_flush(S));
+        {owner, Owner, Full} ->
+            log_loop(S#{full := Full});
+        {owner, NewOwner, Full} ->
+            log_loop(collector_owner(S#{full := Full}, NewOwner));
+        {'DOWN', OwnerRef, process, Owner, _} ->
+            log_stop();
+        stop ->
+            log_stop();
+        _Other ->
+            log_loop(S)
+    end.
+
+log_buffer(_Entry, #{n := N, dropped := D, full := Full} = S) when N >= ?LOG_MAX_PER_FLUSH ->
+    %% (again: a re-attach may have brought a fresh atomics array)
+    atomics:put(Full, ?LOG_FULL, 1),
+    S#{dropped := D + 1};
+log_buffer(Entry, #{buf := Buf, n := N, full := Full} = S) ->
+    %% full: from now until the flush log/2 only counts
+    N + 1 =:= ?LOG_MAX_PER_FLUSH andalso atomics:put(Full, ?LOG_FULL, 1),
+    log_arm(S#{buf := [Entry | Buf], n := N + 1}).
+
+log_arm(#{armed := false} = S) ->
+    erlang:send_after(?LOG_FLUSH_MS, self(), flush),
+    S#{armed := true};
+log_arm(S) ->
+    S.
+
+%% Clears the full flag first, then takes what log/2 skipped. A log/2 that
+%% saw the flag just before it was cleared may count after that: a flush
+%% that cleared the flag arms one more, which picks such counts up. A
+%% batch the link would not take is counted as dropped and that count is
+%% sent again on the next tick, until the link takes it.
+log_flush(#{owner := Owner, buf := Buf, n := N, dropped := D, full := Full} = S0) ->
+    S = S0#{armed := false},
+    WasFull = atomics:exchange(Full, ?LOG_FULL, 0) =:= 1,
+    Dropped = D + atomics:exchange(Full, ?LOG_SKIPPED, 0),
+    Sent = case {Buf, Dropped} of
+               {[], 0} -> ok;
+               _ -> log_send(Owner, lists:reverse(Buf), Dropped)
+           end,
+    S1 = case Sent of
+             ok -> S#{buf := [], n := 0, dropped := 0};
+             dropped -> S#{buf := [], n := 0, dropped := Dropped + N}
+         end,
+    case WasFull orelse Sent =:= dropped of
+        true -> log_arm(S1);
+        false -> S1
+    end.
+
+%% Sends a batch (oldest first) to Owner without ever blocking: noconnect,
+%% so this node never dials beamdash's, and nosuspend, so a busy
+%% distribution link (beamdash reading slowly) does not suspend the
+%% collector while log/2 keeps queueing to it. dropped: the batch was not
+%% sent.
+log_send(Owner, Entries, Dropped) ->
+    case erlang:send(Owner, {beamdash_logs, Entries, Dropped}, [noconnect, nosuspend]) of
+        ok -> ok;
+        _NosuspendOrNoconnect -> dropped
+    end.
+
+%% Removes the handler only if it still points here: a log_attach racing
+%% with this collector's exit has already added one for its successor.
+log_stop() ->
+    Self = self(),
+    case logger:get_handler_config(?LOG_HANDLER) of
+        {ok, #{config := #{collector := Self}}} -> _ = logger:remove_handler(?LOG_HANDLER);
+        _ -> ok
+    end,
+    exit(normal).
+
+%%% ============================================================================
 %%% Profiling with tprof (OTP 27+)
 %%% ============================================================================
 %%
@@ -740,8 +1058,8 @@ tprof_start(Type, Patterns, Procs, Owner) when is_list(Patterns), is_pid(Owner) 
             %% set_pattern returns how many functions it matched
             Unmatched =
                 [{M, F, A} || {M, F, A} <- Patterns,
-                              not is_integer(N = tprof:set_pattern(Server, M, F, A))
-                                  orelse N =:= 0],
+                              N <- [tprof:set_pattern(Server, M, F, A)],
+                              not is_integer(N) orelse N =:= 0],
             %% call_count counts calls from every process; the others
             %% measure only the traced processes
             Traced = case Type of
@@ -813,14 +1131,15 @@ tprof_stop() ->
     end,
     case whereis(?TPROF) of
         undefined -> ok;
-        Server -> catch tprof:stop(Server), ok
+        Server -> try tprof:stop(Server) catch _:_ -> ok end, ok
     end.
 
 tprof_guard(Owner, Server) ->
     OwnerRef = erlang:monitor(process, Owner),
     ServerRef = erlang:monitor(process, Server),
     receive
-        {'DOWN', OwnerRef, process, _, _} -> catch tprof:stop(Server), ok;
+        {'DOWN', OwnerRef, process, _, _} ->
+            try tprof:stop(Server) catch _:_ -> ok end, ok;
         {'DOWN', ServerRef, process, _, _} -> ok
     end.
 
@@ -936,7 +1255,7 @@ binary_leaks(N) ->
                 Before = [{P, bin_count(P)} || P <- erlang:processes()],
                 _ = [erlang:garbage_collect(P) || {P, _} <- Before],
                 Deltas = [{B - A, P} || {P, B} <- Before, B =/= undefined,
-                                         (A = bin_count(P)) =/= undefined],
+                                         A <- [bin_count(P)], A =/= undefined],
                 Top = lists:sublist(lists:reverse(lists:sort(Deltas)), N),
                 {builtin, [proc_entry(P, D, proc_info(P)) || {D, P} <- Top]}
         end,
@@ -1068,16 +1387,19 @@ sup_node(Pid, Id, Modules, Depth, Count) ->
         Depth >= ?TREE_MAX_DEPTH; Count >= ?TREE_MAX_NODES ->
             {Base#{children => more}, Count + 1};
         true ->
-            case catch gen_server:call(Pid, which_children, ?SYS_STATE_TIMEOUT) of
+            try gen_server:call(Pid, which_children, ?SYS_STATE_TIMEOUT) of
                 Kids when is_list(Kids) ->
                     {Children, Count1} =
                         lists:mapfoldl(fun(K, C) -> child_node(K, Depth, C) end,
                                        Count + 1, Kids),
                     {Base#{children => Children}, Count1};
-                {'EXIT', {Reason, _}} ->
-                    {Base#{children => {error, short_reason(Reason)}}, Count + 1};
                 Other ->
                     {Base#{children => {error, Other}}, Count + 1}
+            catch
+                exit:{Reason, _} ->
+                    {Base#{children => {error, short_reason(Reason)}}, Count + 1};
+                _:Reason ->
+                    {Base#{children => {error, short_reason(Reason)}}, Count + 1}
             end
     end.
 

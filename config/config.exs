@@ -27,4 +27,10 @@ config :beamdash, Beamdash.Jev,
 if config_env() == :test do
   config :beamdash, BeamdashWeb.Endpoint, server: false
   config :logger, level: :warning
+
+  # Set here, not in test_helper.exs: Beamdash.Plugins loads the plugins
+  # when the app starts, before the helper runs. Removed after the suite.
+  config :beamdash,
+         :plugins_dir,
+         Path.join(System.tmp_dir!(), "beamdash_test_plugins_#{System.pid()}")
 end
