@@ -244,7 +244,8 @@ connection bar to **kubectl**, pick the **Cluster** (one entry per
 kubeconfig file under `~/.kube`, or the directory set in **Settings** —
 beamdash passes it to `kubectl` directly,
 no shell-level context switch needed), enter the namespace, pick the pod,
-and List `/app/bin` to pick the release binary. beamdash reads the node
+and pick the release binary (found from the running BEAM's release root,
+so Mix releases in `/app` and relx releases in e.g. `/opt/<name>` both work). beamdash reads the node
 name and cookie off the pod itself, then opens the `kubectl port-forward`
 tunnels distribution needs to reach it; no `node@host` or cookie to type.
 
@@ -374,8 +375,10 @@ folder); **Rebuild** recompiles it after you change it. Each plugin is
 **Trust:** a plugin runs inside beamdash with full access to the nodes you
 connect to, and compiling it runs its code. Add only plugins you trust.
 
-**Writing one:** the entry module does `use Beamdash.Plugin` (name and
-pages), each page `use Beamdash.Plugin.Page`. The supported applications
+**Writing one:** the entry module does `use Beamdash.Plugin` (name, pages
+and, optionally, `main:`, the page the Apps tab also shows for the
+applications it supports; the first page by default), each page
+`use Beamdash.Plugin.Page`. The supported applications
 are `runtime: false` deps in `mix.exs`, which beamdash reads as data and
 never runs. A plugin can't have other runtime deps: it may only use what
 beamdash ships (Phoenix, LiveView, Jason…). Code on the node is called

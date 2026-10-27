@@ -848,8 +848,16 @@ defmodule Beamdash.PluginsTest do
       assert_receive {:beamdash_plugins, :changed}, 2_000
       assert entry(server, :hello_plugin).status == :active
 
-      assert [%{app: :hello_plugin, name: "Hello", pages: [%{slug: "hello"}]}] =
-               Plugins.active(server)
+      assert [
+               %{
+                 app: :hello_plugin,
+                 name: "Hello",
+                 pages: [%{slug: "hello"}],
+                 module: HelloPlugin,
+                 main: %{slug: "hello", module: HelloPlugin.HelloLive},
+                 supports: [:hello_app]
+               }
+             ] = Plugins.active(server)
 
       assert {:ok, %{app: :hello_plugin, page: %{module: HelloPlugin.HelloLive}}} =
                Plugins.page(server, "hello_plugin", "hello")

@@ -16,6 +16,25 @@ defmodule Beamdash.LogsParseTest do
     assert e.meta == []
   end
 
+  test "erlang logger_formatter default line: its timestamp replaces kubectl's" do
+    text =
+      "2026-10-27T18:28:37.874790052Z 2026-10-27T18:28:37.873901+00:00 notice: handoff starting 0: {hinted,{0,'a@b'}}"
+
+    e = Parse.line(text)
+
+    assert e.at == ~U[2026-10-27 18:28:37.873901Z]
+    assert e.level == :notice
+    assert e.message == "handoff starting 0: {hinted,{0,'a@b'}}"
+    assert e.raw == text
+  end
+
+  test "erlang logger_formatter line with an unknown level stays plain text" do
+    e = Parse.line("2026-10-27T18:28:37.874790052Z 2026-10-27T18:28:37.873901+00:00 chatty: hi")
+    assert e.level == nil
+    assert e.at == ~U[2026-10-27 18:28:37.874790Z]
+    assert e.message == "2026-10-27T18:28:37.873901+00:00 chatty: hi"
+  end
+
   test "elixir logger line with a time prefix" do
     e = Parse.line("12:04:01.233 [info] QUERY OK db=1.2ms")
     assert e.level == :info

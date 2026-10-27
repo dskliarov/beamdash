@@ -16,6 +16,13 @@ defmodule BeamdashWeb.Layouts do
         </script>
         <script defer src="/deps/phoenix_live_view/phoenix_live_view.js">
         </script>
+        <%!-- Highlight.js 11.9.0 (BSD-3-Clause), vendored: the module source view --%>
+        <script defer src="/assets/vendor/highlight/highlight.min.js">
+        </script>
+        <script defer src="/assets/vendor/highlight/erlang.min.js">
+        </script>
+        <script defer src="/assets/vendor/highlight/elixir.min.js">
+        </script>
         <script defer src="/assets/app.js">
         </script>
       </head>
@@ -259,7 +266,7 @@ defmodule BeamdashWeb.Layouts do
               </button>
             </form>
             <p :if={@conn[:kube_binaries] == []} class="conn-hint muted small">
-              No binaries found under /app/bin in this pod{if @conn[:kube_container],
+              No release binaries found in this pod{if @conn[:kube_container],
                 do: " (container #{@conn.kube_container})"}.
             </p>
           </div>

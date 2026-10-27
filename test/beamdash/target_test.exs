@@ -31,7 +31,7 @@ defmodule Beamdash.TargetTest do
   test "connects as a hidden node, loads the agent and lists processes", ctx do
     assert {:ok, info} = Target.connect(Atom.to_string(ctx.node), @cookie, ctx.server)
     assert info.node == ctx.node
-    assert info.agent_version == 17
+    assert info.agent_version == 21
 
     assert ctx.node in Node.list(:hidden)
     refute ctx.node in Node.list(:visible)
@@ -136,6 +136,27 @@ defmodule Beamdash.TargetTest do
     |> Enum.find(fn result ->
       result || (System.monotonic_time(:millisecond) > deadline and flunk("not in time"))
     end)
+  end
+
+  test "parse_pid: a pid's text, also one from before a reconnect", ctx do
+    {:ok, _} = Target.connect(Atom.to_string(ctx.node), @cookie, ctx.server)
+    {:ok, server} = Target.rpc(ctx.node, :erlang, :whereis, [:code_server])
+    text = server |> :erlang.pid_to_list() |> List.to_string()
+
+    assert Target.parse_pid(text, ctx.node) == server
+
+    # the same process under a node index this VM no longer has, as in a
+    # link made before the node was reconnected: list_to_pid refuses it
+    [_, id, serial] = Regex.run(~r/^<\d+\.(\d+)\.(\d+)>$/, text)
+    stale = "<99999.#{id}.#{serial}>"
+    assert_raise ArgumentError, fn -> :erlang.list_to_pid(String.to_charlist(stale)) end
+    assert Target.parse_pid(stale, ctx.node) == server
+
+    # without an attached node it can't be rebuilt; other text isn't a pid
+    assert Target.parse_pid(stale, nil) == nil
+
+    for bad <- ["", "code_server", "<1.2>", "<a.b.c>", nil],
+        do: assert(Target.parse_pid(bad, ctx.node) == nil)
   end
 
   describe "auto-reconnect" do

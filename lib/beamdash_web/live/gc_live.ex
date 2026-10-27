@@ -216,7 +216,7 @@ defmodule BeamdashWeb.GCLive do
   end
 
   def handle_event("select", %{"pid" => value}, %{assigns: %{status: :connected}} = socket) do
-    case parse_pid(value) do
+    case Target.parse_pid(value, socket.assigns.node) do
       nil ->
         {:noreply, socket}
 
@@ -693,13 +693,6 @@ defmodule BeamdashWeb.GCLive do
   end
 
   defp parse_duration(_), do: nil
-
-  defp parse_pid(text) when is_binary(text) do
-    if Regex.match?(~r/^<\d+\.\d+\.\d+>$/, text),
-      do: :erlang.list_to_pid(String.to_charlist(text))
-  end
-
-  defp parse_pid(_), do: nil
 
   defp kind_of(nil, _pid), do: nil
 

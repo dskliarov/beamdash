@@ -175,7 +175,7 @@ defmodule BeamdashWeb.Connection do
   end
 
   # picking a different pod from the dropdown re-lists its containers and
-  # `/app/bin`, same as the initial pod listing does for the first pod.
+  # the release binaries, same as the initial pod listing does for the first pod.
   def handle_event("select_kube_pod", %{"namespace" => namespace, "pod" => pod}, socket) do
     namespace = String.trim(namespace)
     pod = String.trim(pod)
@@ -194,7 +194,7 @@ defmodule BeamdashWeb.Connection do
 
   # the container dropdown only shows for a pod with more than one
   # container (see `Beamdash.Kubectl.list_containers/4`'s doc); picking a
-  # different one re-lists `/app/bin` there.
+  # different one re-lists the release binaries there.
   def handle_event(
         "select_kube_container",
         %{"namespace" => namespace, "pod" => pod, "container" => container},
@@ -389,7 +389,7 @@ defmodule BeamdashWeb.Connection do
     update(socket, kube_namespaces: [])
   end
 
-  # Lists `pod`'s containers and then `/app/bin` in the first one, storing
+  # Lists `pod`'s containers and then the release binaries in the first one, storing
   # `pod` itself (shared by the initial pod listing and picking a different
   # pod from the dropdown).
   defp list_containers(socket, cluster, namespace, pod) do
@@ -404,7 +404,7 @@ defmodule BeamdashWeb.Connection do
     end
   end
 
-  # Lists `/app/bin` in `container` and fills `kube_binaries`/`kube_binary`,
+  # Lists the release binaries in `container` and fills `kube_binaries`/`kube_binary`,
   # also storing the full container list and the one picked (shared by
   # `list_containers/4` and "select_kube_container").
   defp list_binaries(socket, cluster, namespace, pod, container, containers) do

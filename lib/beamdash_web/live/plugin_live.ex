@@ -77,9 +77,7 @@ defmodule BeamdashWeb.PluginLive do
 
     case result do
       {:ok, %{app: app, module: module, plugin: plugin, page: page}} ->
-        session =
-          %{"plugin_app" => app, "plugin_module" => module, "syntax" => a[:syntax] || :erlang}
-          |> then(&if(a.target, do: Map.put(&1, "target", a.target), else: &1))
+        session = page_session(app, module, a[:syntax], a.target)
 
         css? = match?({:ok, _}, call(fn -> Plugins.css_path(a.plugins_server, app) end, :error))
 
@@ -104,6 +102,14 @@ defmodule BeamdashWeb.PluginLive do
           page_module: nil
         )
     end
+  end
+
+  @doc false
+  # The session a plugin page is mounted with (see `Beamdash.Plugin.Page`):
+  # here and on the Apps tab, which shows a plugin's main page.
+  def page_session(app, module, syntax, target \\ nil) do
+    session = %{"plugin_app" => app, "plugin_module" => module, "syntax" => syntax || :erlang}
+    if target, do: Map.put(session, "target", target), else: session
   end
 
   defp call(fun, default) do

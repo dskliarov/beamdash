@@ -15,6 +15,7 @@ defmodule BeamdashWeb.ProcessDetails do
   attr :history, :list, required: true
   attr :syntax, :atom, required: true
   attr :gc_result, :map, default: nil
+  attr :module_info, :map, default: nil, doc: "`Beamdash.Apps.module_summary/2` of its module"
   attr :kind, :atom, default: nil
   attr :sys_traced, :boolean, default: false
   attr :sys_error, :string, default: nil
@@ -135,6 +136,8 @@ defmodule BeamdashWeb.ProcessDetails do
         <dt>Priority</dt>
         <dd>{@details.priority}{if @details.trap_exit, do: " · traps exits"}</dd>
       </dl>
+
+      <BeamdashWeb.ModuleInfo.section :if={@module_info} module={@module_info} syntax={@syntax} />
 
       <section>
         <h4>Reductions</h4>

@@ -9,10 +9,15 @@ defmodule Beamdash.Logs do
       (`beamdash_agent:log_attach/1`); it sends batches of formatted events
       as `{beamdash_logs, entries, dropped}`. `Beamdash.Target` removes the
       handler again on disconnect.
-    * a Kubernetes connection runs `kubectl logs -f --timestamps` on the
-      pod through a Port; each line is parsed with `Beamdash.Logs.Parse`,
-      indented lines are folded into the entry before them, and new entries
-      go to subscribers at most every 100 ms.
+    * a Kubernetes connection starts with the pod's recent output
+      (`kubectl logs --timestamps`, parsed with `Beamdash.Logs.Parse`,
+      indented lines folded into the entry before them), so it includes
+      what was logged before connecting and stdout that bypasses logger.
+      New events then come from the same logger handler as Direct, which
+      carries the pid and MFA that `kubectl logs` text does not. If the
+      handler cannot be added, it falls back to following `kubectl logs -f`
+      through a Port, sending new entries to subscribers at most every
+      100 ms (also the only kubectl mode with `kubectl_logger: false`).
 
   The last 2,000 entries are kept (newest first) across connections, as
   `Beamdash.Crashes` keeps its reports. A broken source never crashes this
@@ -34,10 +39,13 @@ defmodule Beamdash.Logs do
   # kubectl output without a newline is joined up to this many bytes; the
   # rest of such a line is dropped
   @max_line 256 * 1024
+  # how long connecting waits for a kubectl source's recent output
+  @history_timeout 10_000
 
   defstruct target: Target,
             source_fun: nil,
             logs_cmd: nil,
+            kubectl_logger: true,
             node: nil,
             source: nil,
             kubectl: nil,
@@ -105,7 +113,8 @@ defmodule Beamdash.Logs do
       target: target,
       source_fun: Keyword.get(opts, :source_fun, &Target.source/1),
       logs_cmd:
-        Keyword.get(opts, :logs_cmd, fn args -> {System.find_executable("kubectl"), args} end)
+        Keyword.get(opts, :logs_cmd, fn args -> {System.find_executable("kubectl"), args} end),
+      kubectl_logger: Keyword.get(opts, :kubectl_logger, true)
     }
 
     {:ok, state, {:continue, :init}}
@@ -178,9 +187,10 @@ defmodule Beamdash.Logs do
     {:noreply, changed(state, %{stop(state) | node: nil})}
   end
 
-  # Direct: a batch from the node's collector, oldest first
-  def handle_info({:beamdash_logs, list, dropped}, %{source: :direct} = state)
-      when is_list(list) do
+  # a batch from the node's collector (Direct, or kubectl after its
+  # history), oldest first
+  def handle_info({:beamdash_logs, list, dropped}, %{source: source, port: nil} = state)
+      when is_list(list) and source in [:direct, :kubectl] do
     {entries, next_id} =
       Enum.map_reduce(list, state.next_id, fn m, id ->
         {Map.put(from_agent(m), :id, id), id + 1}
@@ -249,14 +259,58 @@ defmodule Beamdash.Logs do
   defp start_direct(state) do
     state = %{state | source: :direct}
 
-    case Target.rpc(state.node, :beamdash_agent, :log_attach, [self()]) do
-      {:ok, {:ok, level}} -> %{state | status: :streaming, level: level}
-      {:ok, other} -> %{state | status: {:ended, other}}
+    case attach_handler(state) do
+      {:ok, level} -> %{state | status: :streaming, level: level}
       {:error, reason} -> %{state | status: {:ended, reason}}
     end
   end
 
+  defp attach_handler(state) do
+    case Target.rpc(state.node, :beamdash_agent, :log_attach, [self()]) do
+      {:ok, {:ok, level}} -> {:ok, level}
+      {:ok, other} -> {:error, other}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp start_kubectl(%{kubectl_logger: false} = state), do: start_kubectl_stream(state)
+
+  # The node's clock is read before the handler is attached, and only
+  # history lines older than that are kept. The handler's first batches
+  # wait in this process's mailbox while the history is read, so they land
+  # after it, and neither source repeats the other.
   defp start_kubectl(state) do
+    with {:ok, since} when is_integer(since) <-
+           Target.rpc(state.node, :os, :system_time, [:microsecond]),
+         {:ok, level} <- attach_handler(state) do
+      %{state | status: :streaming, level: level}
+      |> add_history(DateTime.from_unix!(since, :microsecond))
+    else
+      _ -> start_kubectl_stream(state)
+    end
+  end
+
+  # A history that cannot be read leaves just the handler's events.
+  defp add_history(state, since) do
+    task =
+      Task.async(fn ->
+        with {:ok, {exe, args}} <- kubectl_cmd(state, []), do: history(exe, args)
+      end)
+
+    case Task.yield(task, @history_timeout) || Task.shutdown(task, :brutal_kill) do
+      {:ok, {:ok, oldest_first}} ->
+        oldest_first
+        |> Enum.filter(&(&1.at == nil or DateTime.before?(&1.at, since)))
+        |> Enum.reduce(state, &add_entry(&2, &1))
+        |> Map.put(:fold_id, nil)
+        |> flush()
+
+      _ ->
+        state
+    end
+  end
+
+  defp start_kubectl_stream(state) do
     result =
       safe(fn ->
         case kubectl_cmd(state, follow: true) do
@@ -316,6 +370,19 @@ defmodule Beamdash.Logs do
   defp previous_cmd(_state), do: {:error, :not_kubectl}
 
   defp run_previous(exe, args) do
+    with {:ok, oldest_first} <- history(exe, args) do
+      entries =
+        oldest_first
+        |> Enum.with_index(1)
+        |> Enum.map(fn {entry, id} -> Map.put(entry, :id, id) end)
+        |> Enum.reverse()
+
+      {:ok, entries}
+    end
+  end
+
+  # `kubectl logs` output (no -f) as entries without ids, oldest first.
+  defp history(exe, args) do
     case System.cmd(exe, args, stderr_to_stdout: true) do
       {output, 0} ->
         entries =
@@ -324,9 +391,6 @@ defmodule Beamdash.Logs do
           |> String.split("\n")
           |> drop_trailing_empty()
           |> Enum.reduce([], &fold_line/2)
-          |> Enum.reverse()
-          |> Enum.with_index(1)
-          |> Enum.map(fn {entry, id} -> Map.put(entry, :id, id) end)
           |> Enum.reverse()
 
         {:ok, entries}

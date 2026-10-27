@@ -68,7 +68,8 @@ defmodule BeamdashWeb.LogsTable do
       kubectl logs <code>{kubectl_target(@info.kubectl)}</code>
       <span :if={@info.kubectl[:namespace]} class="muted small">
         in {@info.kubectl[:namespace]}
-      </span>
+      </span><span :if={@info.level}>, then logger on <code>{@node}</code>, level
+      <code>{@info.level}</code></span>
     </span>
     """
   end

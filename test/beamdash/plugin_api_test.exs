@@ -102,7 +102,8 @@ defmodule Beamdash.PluginApiTest do
     test "__beamdash_plugin__/0 is its declaration" do
       assert HelloPlugin.__beamdash_plugin__() == %{
                name: "Hello",
-               pages: [%{slug: "hello", label: "Hello", module: HelloPlugin.HelloLive}]
+               pages: [%{slug: "hello", label: "Hello", module: HelloPlugin.HelloLive}],
+               main: "hello"
              }
     end
 
@@ -120,7 +121,9 @@ defmodule Beamdash.PluginApiTest do
           {"a missing :name", ~s|pages: [{"ok", "OK", Some.Page}]|, ~r/missing :name/},
           {"missing :pages", ~s|name: "x"|, ~r/missing :pages/},
           {"an unknown key", ~s|name: "x", #{@pages}, colour: :red|,
-           ~r/unknown option :colour\. The supported options are :name and :pages$/},
+           ~r/unknown option :colour\. The supported options are :name, :pages and :main$/},
+          {"a main page that isn't one of the pages", ~s|name: "x", #{@pages}, main: "nope"|,
+           ~r/:main must be the slug of one of the pages \("ok"\), got: "nope"/},
           {":apps", ~s|name: "x", #{@pages}, apps: [riak_core: "~> 1.0"]|,
            ~r/mix\.exs.*runtime: false/s},
           {":beamdash", ~s|name: "x", #{@pages}, beamdash: "~> 0.1"|,
@@ -180,7 +183,9 @@ defmodule Beamdash.PluginApiTest do
                    %{slug: "one", label: "One", module: Not.Compiled.Yet},
                    %{slug: "two-2_x", label: "Two", module: :some_erlang_page},
                    %{slug: "three", label: "Three", module: Module.concat(mod, Three)}
-                 ]
+                 ],
+                 # the first page, as none is named
+                 main: "one"
                }
       after
         :code.purge(mod)
@@ -188,6 +193,13 @@ defmodule Beamdash.PluginApiTest do
         :code.purge(mod)
       end
     end
+  end
+
+  test "main_page/1: the page main names, else the first (older plugins have no main)" do
+    pages = [%{slug: "a", label: "A", module: P.A}, %{slug: "b", label: "B", module: P.B}]
+    assert Plugin.main_page(%{name: "x", pages: pages, main: "b"}).slug == "b"
+    assert Plugin.main_page(%{name: "x", pages: pages}).slug == "a"
+    assert Plugin.main_page(%{name: "x", pages: pages, main: "gone"}).slug == "a"
   end
 
   describe "rpc, app_running?, app_version" do

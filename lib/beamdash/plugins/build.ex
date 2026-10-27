@@ -1059,7 +1059,9 @@ defmodule Beamdash.Plugins.Build do
 
   defp run_compile(files, ebin) do
     with :ok <- File.mkdir_p(ebin) |> mkdir_result(ebin) do
-      case Kernel.ParallelCompiler.compile_to_path(files, ebin, return_diagnostics: true) do
+      case without_conflict_warnings(fn ->
+             Kernel.ParallelCompiler.compile_to_path(files, ebin, return_diagnostics: true)
+           end) do
         {:ok, modules, _info} -> {:ok, modules}
         {:error, errors, _info} -> {:error, format_errors(errors)}
       end
@@ -1068,6 +1070,20 @@ defmodule Beamdash.Plugins.Build do
     error -> {:error, Exception.message(error)}
   catch
     kind, reason -> {:error, "compilation failed: #{inspect({kind, reason})}"}
+  end
+
+  # A rebuild compiles while the running version stays loaded (it is put
+  # back if the build fails), so redefining its modules is expected: no
+  # "redefining module" warning for them.
+  defp without_conflict_warnings(fun) do
+    previous = Code.get_compiler_option(:ignore_module_conflict)
+    Code.put_compiler_option(:ignore_module_conflict, true)
+
+    try do
+      fun.()
+    after
+      Code.put_compiler_option(:ignore_module_conflict, previous)
+    end
   end
 
   defp mkdir_result(:ok, _), do: :ok
@@ -1316,10 +1332,20 @@ defmodule Beamdash.Plugins.Build do
 
   # `use Beamdash.Plugin` checks the pages at compile time, but a
   # hand-written __beamdash_plugin__/0 skips that.
-  defp page_shapes(%{pages: pages}, prefix) do
+  defp page_shapes(%{pages: pages} = plugin, prefix) do
+    main = Map.get(plugin, :main)
+
     case Enum.find(pages, &(not page_shape?(&1))) do
-      nil ->
+      nil when main == nil ->
         :ok
+
+      nil ->
+        if Enum.any?(pages, &(&1.slug == main)),
+          do: :ok,
+          else:
+            {:error,
+             "the plugin declaration of #{inspect(prefix)} names a main page that isn't one " <>
+               "of its pages: #{inspect(main)}"}
 
       page ->
         {:error,

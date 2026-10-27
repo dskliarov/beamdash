@@ -31,8 +31,15 @@ defmodule Beamdash.LogsTest do
 
   defp sh(script), do: fn _args -> {System.find_executable("sh"), ["-c", script]} end
 
+  # the `kubectl logs -f` stream (the fallback when no handler can be added)
   defp kubectl_logs(ctx, script) do
-    logs = start_logs(ctx, source_fun: fn _ -> @kubectl end, logs_cmd: sh(script))
+    logs =
+      start_logs(ctx,
+        source_fun: fn _ -> @kubectl end,
+        logs_cmd: sh(script),
+        kubectl_logger: false
+      )
+
     :ok = Logs.subscribe(logs)
     :ok = connect(ctx)
     logs
@@ -142,6 +149,46 @@ defmodule Beamdash.LogsTest do
       :ok = connect(ctx)
       eventually(fn -> Logs.info(logs).status == :streaming end)
       assert {:error, :not_kubectl} = Logs.previous(logs)
+    end
+  end
+
+  describe "kubectl source with the logger handler" do
+    @history "printf '2026-10-23T12:00:00Z [info] one\\n2026-10-23T12:00:01Z [error] two\\n" <>
+               "2026-10-23T12:00:01Z     at line 1\\n2099-01-01T00:00:00Z [info] after attach\\n'"
+
+    test "recent output first, minus lines from after attaching, then handler events", ctx do
+      logs =
+        start_logs(ctx, source_fun: fn _ -> @kubectl end, logs_cmd: sh(@history))
+
+      :ok = Logs.subscribe(logs)
+      :ok = connect(ctx)
+      eventually(fn -> Logs.info(logs).status == :streaming end)
+
+      assert [two, one] = Logs.entries(logs)
+      assert two.message == "two\n    at line 1"
+      assert one.message == "one"
+      assert %{source: :kubectl, kubectl: %{pod: "p"}, level: level} = Logs.info(logs)
+      assert is_atom(level)
+
+      :ok = Fixture.log(ctx.node, :warning, "from the handler")
+      eventually(fn -> length(Logs.entries(logs)) == 3 end)
+
+      assert [event, ^two, ^one] = Logs.entries(logs)
+      assert event.level == :warning
+      assert event.message == "from the handler"
+      assert event.pid =~ ~r/^<\d+\.\d+\.\d+>$/
+      assert event.id > two.id
+    end
+
+    test "unreadable history leaves just the handler's events", ctx do
+      logs = start_logs(ctx, source_fun: fn _ -> @kubectl end, logs_cmd: sh("echo nope; exit 1"))
+      :ok = connect(ctx)
+      eventually(fn -> Logs.info(logs).status == :streaming end)
+      assert [] = Logs.entries(logs)
+
+      :ok = Fixture.log(ctx.node, :error, "boom")
+      eventually(fn -> match?([%{message: "boom"}], Logs.entries(logs)) end)
+      assert {:error, {1, "nope\n"}} = Logs.previous(logs)
     end
   end
 
@@ -286,7 +333,11 @@ defmodule Beamdash.LogsTest do
 
     test "a missing kubectl ends the stream without crashing", ctx do
       logs =
-        start_logs(ctx, source_fun: fn _ -> @kubectl end, logs_cmd: fn args -> {nil, args} end)
+        start_logs(ctx,
+          source_fun: fn _ -> @kubectl end,
+          logs_cmd: fn args -> {nil, args} end,
+          kubectl_logger: false
+        )
 
       :ok = connect(ctx)
       eventually(fn -> Logs.info(logs).status == {:ended, :kubectl_not_found} end)

@@ -22,7 +22,7 @@ defmodule Beamdash.Profiler do
 
   use GenServer
 
-  alias Beamdash.Target
+  alias Beamdash.{AgentLoader, Target}
 
   @refresh_ms 2_000
   # above this many traced functions, results are only collected on request
@@ -49,7 +49,11 @@ defmodule Beamdash.Profiler do
     GenServer.start_link(__MODULE__, opts, name: name)
   end
 
-  @doc "`{:ok, true}` if the target has tprof, `{:ok, {false, otp_release}}` if not."
+  @doc """
+  `{:ok, true}` if the target has tprof, `{:ok, {false, otp_release}}` if
+  not. A release without OTP's tools application (where tprof lives) has
+  no tprof even on OTP 27+; then this machine's tprof is loaded there first.
+  """
   def available(server \\ __MODULE__), do: GenServer.call(server, :available, @rpc_timeout)
 
   @doc """
@@ -175,8 +179,7 @@ defmodule Beamdash.Profiler do
   def handle_call(:available, _from, %{node: nil} = state),
     do: {:reply, {:error, :not_connected}, state}
 
-  def handle_call(:available, _from, state),
-    do: {:reply, unwrap(Target.rpc(state.node, :beamdash_agent, :tprof_available, [])), state}
+  def handle_call(:available, _from, state), do: {:reply, tprof_available(state.node), state}
 
   def handle_call({:start, _config}, _from, %{node: nil} = state),
     do: {:reply, {:error, :not_connected}, state}
@@ -303,6 +306,30 @@ defmodule Beamdash.Profiler do
   defp cancel_timer(state) do
     Process.cancel_timer(state.timer)
     %{state | timer: nil}
+  end
+
+  defp tprof_available(node) do
+    case unwrap(Target.rpc(node, :beamdash_agent, :tprof_available, [])) do
+      {:ok, {false, otp}} -> load_tprof(node, otp)
+      other -> other
+    end
+  end
+
+  # tprof needs only kernel, stdlib and erts, but kernel's trace module
+  # (its tracing sessions) first came with OTP 27: older nodes go without.
+  defp load_tprof(node, otp) do
+    if otp_release(otp) >= 27 and AgentLoader.ensure_loaded(node, &Target.rpc/4, :tprof) == :ok,
+      do: unwrap(Target.rpc(node, :beamdash_agent, :tprof_available, [])),
+      else: {:ok, {false, otp}}
+  end
+
+  @doc "The major OTP release in `otp` (`\"28\"`) as an integer, 0 if it isn't one."
+  @spec otp_release(String.t()) :: non_neg_integer()
+  def otp_release(otp) do
+    case Integer.parse(to_string(otp)) do
+      {n, _} -> n
+      :error -> 0
+    end
   end
 
   defp unwrap({:ok, value}), do: {:ok, value}

@@ -267,7 +267,7 @@ A plugin runs inside beamdash with full access to the nodes you connect to, and 
 
 To write a plugin, start from the riak_core plugin ([beamdash-riak-core-plugin](https://github.com/dskliarov/beamdash-riak-core-plugin)) and the `Beamdash.Plugin` docs. The rules the install checks:
 
-- The entry module does `use Beamdash.Plugin`, with a name and pages; each page does `use Beamdash.Plugin.Page`.
+- The entry module does `use Beamdash.Plugin`, with a name and pages; each page does `use Beamdash.Plugin.Page`. `main:` names the main page (the first page by default): the **Apps** tab shows it as a tab of each application the plugin supports.
 - The supported applications are `runtime: false` deps in `mix.exs`. beamdash reads `mix.exs` as data and never runs it.
 - No other runtime deps: a plugin can use only what beamdash ships (Elixir, Phoenix, LiveView, Jason…).
 - Code on the attached node is called only through `Beamdash.Plugin.rpc/5`.

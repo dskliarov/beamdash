@@ -48,7 +48,8 @@ defmodule Beamdash.LogsLiveTest do
          name: :"lv_logs_#{id}",
          target: target,
          source_fun: fn _ -> @kubectl end,
-         logs_cmd: fn _args -> {System.find_executable("sh"), ["-c", @script]} end},
+         logs_cmd: fn _args -> {System.find_executable("sh"), ["-c", @script]} end,
+         kubectl_logger: false},
         id: :logs
       )
 
@@ -335,7 +336,8 @@ defmodule Beamdash.LogsLiveTest do
          name: :"lv_empty_logs_#{id}",
          target: ctx.target,
          source_fun: fn _ -> @kubectl end,
-         logs_cmd: fn _args -> {System.find_executable("sh"), ["-c", "true"]} end},
+         logs_cmd: fn _args -> {System.find_executable("sh"), ["-c", "true"]} end,
+         kubectl_logger: false},
         id: :empty_logs
       )
 

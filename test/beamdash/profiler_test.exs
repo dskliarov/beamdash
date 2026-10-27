@@ -27,6 +27,12 @@ defmodule Beamdash.ProfilerTest do
     end
   end
 
+  test "otp_release/1: the major release as an integer" do
+    assert Profiler.otp_release("28") == 28
+    assert Profiler.otp_release("26.2") == 26
+    assert Profiler.otp_release("R16B") == 0
+  end
+
   describe "on a node" do
     setup do
       {peer, node} = Fixture.start_peer()
@@ -46,6 +52,31 @@ defmodule Beamdash.ProfilerTest do
       if ctx.otp >= 27,
         do: assert({:ok, true} = Profiler.available(ctx.prof)),
         else: assert({:ok, {false, _release}} = Profiler.available(ctx.prof))
+    end
+
+    test "a release without OTP's tools gets this machine's tprof, then profiles", ctx do
+      if ctx.otp < 27, do: throw(:skip_needs_otp_27)
+
+      # as in a release that leaves tools out: tprof can't be found there
+      tools = :erpc.call(ctx.node, :code, :lib_dir, [:tools])
+      :erpc.call(ctx.node, :code, :purge, [:tprof])
+      :erpc.call(ctx.node, :code, :delete, [:tprof])
+      true = :erpc.call(ctx.node, :code, :del_path, [String.to_charlist("#{tools}/ebin")])
+      assert {:error, _} = :erpc.call(ctx.node, :code, :ensure_loaded, [:tprof])
+
+      assert {:ok, true} = Profiler.available(ctx.prof)
+
+      assert {:ok, _info} =
+               Profiler.start(
+                 %{type: :call_count, patterns: [{:lists, :seq, 2}], processes: :all, seconds: 5},
+                 ctx.prof
+               )
+
+      :erpc.call(ctx.node, :lists, :seq, [1, 3])
+      :ok = Profiler.stop(ctx.prof)
+      assert %{status: :done, error: nil} = Profiler.state(ctx.prof)
+    catch
+      :skip_needs_otp_27 -> :ok
     end
 
     test "call_time profile of a function, then it stops by itself", ctx do

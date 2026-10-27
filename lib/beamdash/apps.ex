@@ -41,6 +41,93 @@ defmodule Beamdash.Apps do
   end
 
   @doc """
+  What `app` is: `%{description, vsn, id, mod, applications,
+  included_applications, optional_applications, registered, modules,
+  start_phases, start_type, path, env, needed_by}`, from
+  `application:get_all_key/1` (`modules` is their number), `get_all_env/1`
+  (`env`, sorted), its start type (`:permanent`, `:transient`,
+  `:temporary`; `nil` if not started), its folder (`code:lib_dir/1`; `nil`
+  if there is none) and the running applications that need it
+  (`needed_by`). `{:ok, nil}` when it isn't loaded.
+  """
+  def info(node, app) do
+    case Target.rpc(node, :beamdash_agent, :app_info, [app]) do
+      {:ok, :undefined} ->
+        {:ok, nil}
+
+      {:ok, info} ->
+        {:ok, Map.new(info, fn {k, v} -> {k, if(v == :undefined, do: nil, else: v)} end)}
+
+      error ->
+        error
+    end
+  end
+
+  @doc """
+  A process of an application's tree, for the Apps tab: `%{process,
+  module}`. `process` is `beamdash_agent:process_details/2` without its
+  queued messages; `module` is `beamdash_agent:module_summary/1` of the
+  module that implements it (see `process_module/1`), or `nil`.
+  `{:ok, nil}` when the process has exited.
+  """
+  def process(node, pid) when is_pid(pid) do
+    case Target.rpc(node, :beamdash_agent, :process_details, [pid, -1]) do
+      {:ok, :undefined} ->
+        {:ok, nil}
+
+      {:ok, details} ->
+        {:ok, %{process: details, module: module_summary(node, process_module(details))}}
+
+      error ->
+        error
+    end
+  end
+
+  @doc """
+  `beamdash_agent:module_summary/1` of `mod` on `node`: `%{module, file,
+  source, vsn, behaviours, exports, application}` (`source` and
+  `application` are `nil` when unknown) and `has_source` (on the node, or
+  in a local source folder, see `Beamdash.LocalSource`), or `nil` when it
+  isn't loaded or can't be asked.
+  """
+  def module_summary(node, mod, find_local \\ &Beamdash.LocalSource.find/2)
+
+  def module_summary(_node, nil, _find_local), do: nil
+
+  def module_summary(node, mod, find_local) when is_atom(mod) do
+    case Target.rpc(node, :beamdash_agent, :module_summary, [mod]) do
+      {:ok, summary} when is_map(summary) ->
+        summary
+        |> Map.new(fn {k, v} -> {k, if(v == :undefined, do: nil, else: v)} end)
+        |> local_source(node, mod, find_local)
+
+      _ ->
+        nil
+    end
+  end
+
+  # no source on the node: a local source folder may have it
+  defp local_source(%{has_source: false} = summary, node, mod, find_local),
+    do: %{summary | has_source: match?({:ok, _}, find_local.(node, mod))}
+
+  defp local_source(summary, _node, _mod, _find_local), do: summary
+
+  @doc """
+  The module that implements a process (`details` from
+  `beamdash_agent:process_details/2`): its initial call's module, which for
+  a gen_server and the like is the callback module, else (a spawned fun,
+  started with `erlang:apply/2`) the module of the function it runs now.
+  A supervisor's initial call is `{supervisor, callback_module, 1}`.
+  """
+  def process_module(%{initial_call: {:supervisor, mod, 1}}) when is_atom(mod), do: mod
+
+  def process_module(%{initial_call: {mod, _, _}}) when mod not in [:erlang, :proc_lib],
+    do: mod
+
+  def process_module(%{current_function: {mod, _, _}}), do: mod
+  def process_module(_details), do: nil
+
+  @doc """
   The process tree of `app`: `%{pid, name, label, children: [node], also:
   [pid]}`, where `also` are its secondary links (shown dashed in Observer),
   plus the number of processes. `{:ok, nil}` when the application is gone.

@@ -13,7 +13,7 @@ defmodule Beamdash.Plugin do
       lib/my_plugin/*.ex         the pages: use Beamdash.Plugin.Page
       priv/static/plugin.css     optional
 
-  The entry module declares the plugin's name and pages:
+  The entry module declares the plugin's name, pages and main page:
 
       defmodule MyPlugin do
         use Beamdash.Plugin,
@@ -21,7 +21,8 @@ defmodule Beamdash.Plugin do
           pages: [
             {"overview", "Overview", MyPlugin.OverviewLive},
             {"workers", "Workers", MyPlugin.WorkersLive}
-          ]
+          ],
+          main: "overview"
       end
 
   Each page is `{slug, label, module}`:
@@ -30,6 +31,10 @@ defmodule Beamdash.Plugin do
       `\\A[a-z][a-z0-9_-]{0,31}\\z`, and it must be unique within the plugin.
     * `label` is a string. It is shown in the Plugins menu.
     * `module` is the page's LiveView, which uses `Beamdash.Plugin.Page`.
+
+  The main page (`main`, a slug of `pages`; the first page by default) is
+  also shown on the Apps tab, as a tab of each application the plugin
+  supports.
 
   The applications the plugin supports, with their versions, are not
   options here. List them in `mix.exs` as `runtime: false` deps. beamdash
@@ -62,18 +67,22 @@ defmodule Beamdash.Plugin do
 
   alias Beamdash.{Apps, Target}
 
-  @options [:name, :pages]
+  @options [:name, :pages, :main]
+  @required [:name, :pages]
 
   @doc """
   Declares the calling module as a plugin's entry module.
 
-  Options, both required:
+  Options:
 
-    * `:name`: the plugin's display name, a string.
-    * `:pages`: a list of `{slug, label, module}` tuples.
+    * `:name` (required): the plugin's display name, a string.
+    * `:pages` (required): a list of `{slug, label, module}` tuples.
+    * `:main`: the slug of the main page, one of `:pages`. Defaults to the
+      first page.
 
   Defines `__beamdash_plugin__/0`, which returns
-  `%{name: name, pages: [%{slug: slug, label: label, module: module}]}`.
+  `%{name: name, pages: [%{slug: slug, label: label, module: module}],
+  main: slug}`.
 
   The options are checked at compile time. They must be literals, apart from
   aliases for the page modules. The page modules don't need to be compiled
@@ -82,7 +91,8 @@ defmodule Beamdash.Plugin do
 
       use Beamdash.Plugin,
         name: "riak_core",
-        pages: [{"ring", "Ring", RiakCorePlugin.RingLive}]
+        pages: [{"ring", "Ring", RiakCorePlugin.RingLive}],
+        main: "ring"
   """
   defmacro __using__(opts) do
     declaration = declaration!(opts, __CALLER__)
@@ -202,13 +212,13 @@ defmodule Beamdash.Plugin do
 
       [key | _] when key in [:apps, :beamdash, :versions] ->
         fail.(
-          "unknown option #{inspect(key)}. The supported options are :name and :pages. " <>
+          "unknown option #{inspect(key)}. The supported options are :name, :pages and :main. " <>
             "Supported applications, and the beamdash version, go in mix.exs as " <>
             "`runtime: false` deps, for example {:riak_core, \"~> 0.10\", runtime: false}"
         )
 
       [key | _] ->
-        fail.("unknown option #{inspect(key)}. The supported options are :name and :pages")
+        fail.("unknown option #{inspect(key)}. The supported options are :name, :pages and :main")
     end
 
     case keys -- Enum.uniq(keys) do
@@ -216,7 +226,7 @@ defmodule Beamdash.Plugin do
       [key | _] -> fail.("option #{inspect(key)} is given more than once")
     end
 
-    for key <- @options, not Keyword.has_key?(opts, key), do: fail.("missing #{inspect(key)}")
+    for key <- @required, not Keyword.has_key?(opts, key), do: fail.("missing #{inspect(key)}")
 
     name = Keyword.fetch!(opts, :name)
 
@@ -224,8 +234,31 @@ defmodule Beamdash.Plugin do
       fail.(":name must be a non-empty string, got: #{Macro.to_string(name)}")
     end
 
-    %{name: name, pages: pages!(Keyword.fetch!(opts, :pages), env, fail)}
+    pages = pages!(Keyword.fetch!(opts, :pages), env, fail)
+    %{name: name, pages: pages, main: main!(Keyword.get(opts, :main), pages, fail)}
   end
+
+  defp main!(nil, [first | _], _fail), do: first.slug
+
+  defp main!(slug, pages, fail) do
+    unless Enum.any?(pages, &(&1.slug == slug)) do
+      fail.(
+        ":main must be the slug of one of the pages (" <>
+          Enum.map_join(pages, ", ", &inspect(&1.slug)) <> "), got: #{Macro.to_string(slug)}"
+      )
+    end
+
+    slug
+  end
+
+  @doc """
+  The main page of `plugin`, a declaration from `__beamdash_plugin__/0`:
+  the page `main` names, or the first page (a plugin built before `main`
+  existed has none).
+  """
+  @spec main_page(map()) :: map()
+  def main_page(%{pages: [first | _] = pages} = plugin),
+    do: Enum.find(pages, first, &(&1.slug == Map.get(plugin, :main)))
 
   defp pages!(pages, env, fail) do
     unless is_list(pages) and pages != [] do

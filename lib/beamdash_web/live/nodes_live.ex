@@ -3,8 +3,9 @@ defmodule BeamdashWeb.NodesLive do
   The attached node's cluster: the node itself and the nodes it is
   connected to (`nodes()`; with Show hidden also its hidden connections,
   beamdash's own left out). Refreshed every 5 s. Clicking another node
-  moves the connection there (`Beamdash.Target.switch/2`), with the cookie
-  the attached node uses for it.
+  moves the connection there (`Beamdash.Target.switch/2`): with the cookie
+  the attached node uses for it, or through a tunnel to its pod when
+  attached through kubectl.
 
   `/nodes?switch=<node>` does the same from a link elsewhere (a plugin's
   node names, `Beamdash.Plugin.switch_path/2`), also to a hidden node;

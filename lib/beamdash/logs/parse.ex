@@ -6,6 +6,9 @@ defmodule Beamdash.Logs.Parse do
   removed) is read as:
 
     * a JSON log object (`level`/`severity`/`lvl`/`log.level`, `msg`/`message`);
+    * an Erlang `logger_formatter` line (OTP's default handler, so relx
+      releases): `2026-10-27T18:28:37.873901+00:00 notice: msg`, whose own
+      timestamp (the event's) replaces kubectl's;
     * an Elixir `Logger` line: `12:04:01.233 [info] msg`, optionally with a
       date (`$date $time`) and Phoenix's metadata
       (`12:04:01.233 request_id=F1 [info] msg`, the pairs become `meta`);
@@ -24,6 +27,8 @@ defmodule Beamdash.Logs.Parse do
   @logger_line ~r/^(?:(?:\d{4}-\d{2}-\d{2}[ T])?\d{2}:\d{2}:\d{2}(?:\.\d+)? )?((?:[^\s=]+=\S+ )*)\[(\w+)\] ?(.*)$/s
   # logfmt: `key=value` or `key="quoted value"` pairs
   @logfmt_pair ~r/([^\s=]+)=("(?:[^"\\]|\\.)*"|\S*)/
+  # logger_formatter's default template: `$time $level: $msg`, time in RFC 3339
+  @otp_line ~r/^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})) (\w+): (.*)$/s
   # an upper-case level word first, then a space or `:` (`INFO ...`, `ERROR: ...`)
   @level_first ~r/^([A-Z]+):? (.*)$/s
 
@@ -87,10 +92,24 @@ defmodule Beamdash.Logs.Parse do
 
   # Each format in turn; the first that yields a known level wins.
   defp parse_logger_line(rest) do
-    with nil <- logger_line(rest),
+    with nil <- otp_line(rest),
+         nil <- logger_line(rest),
          nil <- logfmt(rest),
          nil <- level_first(rest) do
       %{}
+    end
+  end
+
+  defp otp_line(rest) do
+    with [_, stamp, level, message] <- Regex.run(@otp_line, rest),
+         level when level != nil <- level_atom(level) do
+      at = parse_datetime(stamp)
+
+      if at,
+        do: %{at: at, level: level, message: message},
+        else: %{level: level, message: message}
+    else
+      _ -> nil
     end
   end
 

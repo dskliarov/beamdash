@@ -6,6 +6,7 @@ defmodule BeamdashWeb.HomeLive do
   use Phoenix.LiveView
 
   alias Beamdash.{
+    Apps,
     Format,
     ProcessAdvisor,
     ProcessStats,
@@ -15,7 +16,7 @@ defmodule BeamdashWeb.HomeLive do
     TriageAdvisor
   }
 
-  alias BeamdashWeb.ProcessDetails
+  alias BeamdashWeb.{ProcessDetails, SourceTabs}
 
   @refresh_ms 2_000
   @detail_refresh_ms 1_000
@@ -71,8 +72,11 @@ defmodule BeamdashWeb.HomeLive do
         # {kind, pid} of the maximized dock panel
         dock_active: nil,
         # state and supervisor-tree panels opened, [{:state | :tree, pid}]
-        dock_extra: []
+        dock_extra: [],
+        # the module that runs the selected process (Apps.module_summary/2)
+        module_info: nil
       )
+      |> SourceTabs.init()
 
     if connected?(socket) do
       :ok = Target.subscribe()
@@ -150,6 +154,19 @@ defmodule BeamdashWeb.HomeLive do
     {:noreply, assign(socket, sort_by: col, sort_dir: dir)}
   end
 
+  # the selected process's module: its Source button opens it in a tab (see
+  # BeamdashWeb.SourceTabs); only that module is taken from the browser
+  def handle_event(event, params, socket)
+      when event in ~w(open_source source_tab close_source) do
+    modules =
+      case socket.assigns.module_info do
+        %{module: mod} -> [mod]
+        nil -> []
+      end
+
+    {:noreply, SourceTabs.event(event, params, socket, modules)}
+  end
+
   def handle_event("filter", %{"q" => q}, socket) do
     {:noreply, assign(socket, filter: q)}
   end
@@ -163,7 +180,7 @@ defmodule BeamdashWeb.HomeLive do
   end
 
   def handle_event("select", %{"pid" => pid_string}, socket) do
-    case parse_pid(pid_string) do
+    case Target.parse_pid(pid_string, socket.assigns.node) do
       nil ->
         {:noreply, socket}
 
@@ -178,7 +195,8 @@ defmodule BeamdashWeb.HomeLive do
             gc_result: nil,
             detail_note: nil,
             message_limit: @message_limit,
-            sys_error: nil
+            sys_error: nil,
+            module_info: nil
           )
 
         send(self(), {:detail_tick, pid})
@@ -201,7 +219,8 @@ defmodule BeamdashWeb.HomeLive do
          details: nil,
          history: [],
          gc_result: nil,
-         sys_error: nil
+         sys_error: nil,
+         module_info: nil
        )}
 
   # sys:trace(Pid, true | false) on the selected process.
@@ -221,7 +240,7 @@ defmodule BeamdashWeb.HomeLive do
   # Makes a minimized panel the maximized one.
   def handle_event("dock_activate", %{"kind" => kind, "pid" => pid_string}, socket)
       when kind in ~w(trace state tree) do
-    case parse_pid(pid_string) do
+    case Target.parse_pid(pid_string, socket.assigns.node) do
       nil ->
         {:noreply, socket}
 
@@ -248,7 +267,7 @@ defmodule BeamdashWeb.HomeLive do
 
   def handle_event("dock_close", %{"kind" => kind, "pid" => pid_string}, socket)
       when kind in ~w(state tree) do
-    entry = {String.to_existing_atom(kind), parse_pid(pid_string)}
+    entry = {String.to_existing_atom(kind), Target.parse_pid(pid_string, socket.assigns.node)}
     {:noreply, assign(socket, dock_extra: List.delete(socket.assigns.dock_extra, entry))}
   end
 
@@ -444,12 +463,6 @@ defmodule BeamdashWeb.HomeLive do
         }
   end
 
-  defp parse_pid(string) do
-    if Regex.match?(~r/^<\d+\.\d+\.\d+>$/, string),
-      do: :erlang.list_to_pid(String.to_charlist(string)),
-      else: nil
-  end
-
   ## Messages
 
   @impl true
@@ -471,11 +484,13 @@ defmodule BeamdashWeb.HomeLive do
         Process.send_after(self(), {:detail_tick, pid}, @detail_refresh_ms)
 
         {:noreply,
-         assign(socket,
+         socket
+         |> assign(
            details: details,
            history: ProcessStats.push(socket.assigns.history, details),
            detail_note: nil
-         )}
+         )
+         |> module_info(details)}
 
       {:error, reason} ->
         Process.send_after(self(), {:detail_tick, pid}, @detail_refresh_ms)
@@ -505,7 +520,8 @@ defmodule BeamdashWeb.HomeLive do
      socket
      |> reset_process_advisor()
      |> reset_triage()
-     |> assign(triage_history: nil, prev_sample: %{}, prev_at: nil, rates: %{})
+     |> SourceTabs.init()
+     |> assign(triage_history: nil, prev_sample: %{}, prev_at: nil, rates: %{}, module_info: nil)
      |> assign(
        status: :connected,
        node: node,
@@ -522,7 +538,8 @@ defmodule BeamdashWeb.HomeLive do
      socket
      |> reset_process_advisor()
      |> reset_triage()
-     |> assign(triage_history: nil, prev_sample: %{}, prev_at: nil, rates: %{})
+     |> SourceTabs.init()
+     |> assign(triage_history: nil, prev_sample: %{}, prev_at: nil, rates: %{}, module_info: nil)
      |> assign(
        selected: nil,
        details: nil,
@@ -540,7 +557,8 @@ defmodule BeamdashWeb.HomeLive do
      socket
      |> reset_process_advisor()
      |> reset_triage()
-     |> assign(triage_history: nil, prev_sample: %{}, prev_at: nil, rates: %{})
+     |> SourceTabs.init()
+     |> assign(triage_history: nil, prev_sample: %{}, prev_at: nil, rates: %{}, module_info: nil)
      |> assign(
        status: :disconnected,
        info: nil,
@@ -623,175 +641,189 @@ defmodule BeamdashWeb.HomeLive do
         ask_on={BeamdashWeb.JevSection.show?(assigns[:jev_enabled])}
       />
 
-      <p :if={@error} class="error">{@error}</p>
+      <SourceTabs.tabs
+        sources={@sources}
+        current={@source_tab}
+        main_label="Processes"
+        syntax={@syntax}
+      />
+      <SourceTabs.panel sources={@sources} current={@source_tab} syntax={@syntax} />
 
-      <section :if={@status != :connected} class="help">
-        <p>Start a node to inspect, for example:</p>
-        <pre>erl -sname foo -setcookie abc</pre>
-        <p>
-          then connect to <code>foo</code>
-          (or <code>foo@yourhost</code>) with cookie <code>abc</code>.
-          beamdash joins as a hidden node, so it does not appear in the target's <code>nodes()</code>.
-        </p>
-      </section>
+      <%!-- hidden, not removed, while a source is shown: the panels keep their state --%>
+      <div hidden={@source_tab != nil}>
+        <p :if={@error} class="error">{@error}</p>
 
-      <div :if={@status == :connected} class={["proc-layout", @selected && "with-panel"]}>
-        <section class="proc-table">
-          <form phx-change="filter" phx-submit="filter" class="filter">
-            <input
-              name="q"
-              value={@filter}
-              placeholder="Filter by name, pid or function"
-              phx-debounce="200"
-              autocomplete="off"
-            />
-            <span class="legend small" aria-label="Legend">
-              <button
-                :for={kind <- BeamdashWeb.Icons.marked_kinds()}
-                type="button"
-                class={["legend-item", kind_filter(@filter) == kind && "active"]}
-                phx-click="filter_kind"
-                phx-value-kind={kind}
-                title={
-                  if kind_filter(@filter) == kind,
-                    do: "Show all processes",
-                    else: "Show only #{kind} processes"
-                }
-              >
-                <BeamdashWeb.Icons.kind kind={kind} />
-                {kind}
-                <span class="muted">{Format.number(Enum.count(@procs, &(Map.get(&1, :kind) == kind)))}</span>
-              </button>
-              <button
-                :if={MapSet.size(@sys_traced) > 0 or kind_filter(@filter) == :tracing}
-                type="button"
-                class={["legend-item", kind_filter(@filter) == :tracing && "active"]}
-                phx-click="filter_kind"
-                phx-value-kind="tracing"
-                title={
-                  if kind_filter(@filter) == :tracing,
-                    do: "Show all processes",
-                    else: "Show only processes with sys:trace on"
-                }
-              >
-                <span class="swatch-traced" aria-hidden="true"></span>
-                tracing
-                <span class="muted">{Format.number(
-                  Enum.count(@procs, &MapSet.member?(@sys_traced, &1.pid))
-                )}</span>
-              </button>
-            </span>
-            <span class="muted">
-              {Format.number(@match_count)} of {Format.number(length(@procs))}{if @match_count >
-                                                                                    length(@rows),
-                                                                                  do:
-                                                                                    " · showing first #{length(@rows)}"}
-            </span>
-          </form>
-
-          <.triage_bar
-            triage={@triage}
-            readiness={TriageAdvisor.readiness(@triage_history)}
-            enabled={@jev_enabled}
-            configured={Beamdash.Jev.available?()}
-          />
-
-          <table>
-            <thead>
-              <tr>
-                <th>Pid</th>
-                <th class="sortable" phx-click="sort" phx-value-col="name">
-                  Name / initial call{arrow(@sort_by, @sort_dir, :name)}
-                </th>
-                <th>Current function</th>
-                <th>Status</th>
-                <th class="num sortable" phx-click="sort" phx-value-col="mq">
-                  Msg queue{arrow(@sort_by, @sort_dir, :message_queue_len)}
-                </th>
-                <th class="num sortable" phx-click="sort" phx-value-col="memory">
-                  Memory{arrow(@sort_by, @sort_dir, :memory)}
-                </th>
-                <th class="num sortable" phx-click="sort" phx-value-col="reductions">
-                  Reductions{arrow(@sort_by, @sort_dir, :reductions)}
-                </th>
-                <th
-                  class="num sortable"
-                  phx-click="sort"
-                  phx-value-col="rate"
-                  title="Reductions per second since the last refresh"
-                >
-                  Reds/s{arrow(@sort_by, @sort_dir, :reds_per_sec)}
-                </th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr
-                :for={p <- @rows}
-                class={[
-                  "clickable",
-                  p.message_queue_len > 0 && "queued",
-                  p.pid == @selected && "selected",
-                  MapSet.member?(@sys_traced, p.pid) && "traced"
-                ]}
-                phx-click="select"
-                phx-value-pid={Format.pid(p.pid, :erlang)}
-              >
-                <td class="mono">{Format.pid(p.pid, @syntax)}</td>
-                <td class={if p.registered_name, do: "named"}>
-                  <BeamdashWeb.Icons.kind kind={Map.get(p, :kind)} />
-                  {Format.label(p, @syntax)}
-                  <span
-                    :if={MapSet.member?(@sys_traced, p.pid)}
-                    class="badge-trace"
-                    title="sys:trace is on"
-                  >
-                    tracing
-                  </span>
-                  <span
-                    :if={v = flag(@triage, p.pid)}
-                    class="jev-flag"
-                    title={"Jev: #{v.label} (#{round(v.worth * 100)}% worth a look)#{if v.alternative, do: " or #{v.alternative.label}"}. Open the process for its own analysis."}
-                  >
-                    ⚑ {v.label}
-                  </span>
-                </td>
-                <td class="mono muted">{Format.mfa(p.current_function, @syntax)}</td>
-                <td>{p.status}</td>
-                <td class="num">{Format.number(p.message_queue_len)}</td>
-                <td class="num">{Format.bytes(p.memory)}</td>
-                <td class="num">{Format.number(p.reductions)}</td>
-                <td class="num">{Format.number(@rates[p.pid])}</td>
-              </tr>
-            </tbody>
-          </table>
+        <section :if={@status != :connected} class="help">
+          <p>Start a node to inspect, for example:</p>
+          <pre>erl -sname foo -setcookie abc</pre>
+          <p>
+            then connect to <code>foo</code>
+            (or <code>foo@yourhost</code>) with cookie <code>abc</code>.
+            beamdash joins as a hidden node, so it does not appear in the target's <code>nodes()</code>.
+          </p>
         </section>
 
-        <div :if={@selected} class="proc-side">
-          <p :if={@detail_note} class="notice small">{@detail_note}</p>
-          <p :if={!@details and !@detail_note} class="muted">Loading…</p>
-          <ProcessDetails.panel
-            :if={@details}
-            details={@details}
-            history={@history}
-            syntax={@syntax}
-            gc_result={@gc_result}
-            kind={kind_of(@procs, @selected)}
-            sys_traced={MapSet.member?(@sys_traced, @selected)}
-            names={proc_names(@procs)}
-            sys_error={@sys_error}
-            flag={BeamdashWeb.JevSection.show?(@jev_enabled) && flag(@triage, @selected)}
-            jev={
-              %{
-                enabled: @jev_enabled,
-                configured: Beamdash.Jev.configured?(),
-                busy: @process_advice_request != nil,
-                readiness: ProcessAdvisor.readiness(@history),
-                advice: @process_advice,
-                error: @process_advice_error,
-                evidence: @process_evidence
+        <div :if={@status == :connected} class={["proc-layout", @selected && "with-panel"]}>
+          <section class="proc-table">
+            <form phx-change="filter" phx-submit="filter" class="filter">
+              <input
+                name="q"
+                value={@filter}
+                placeholder="Filter by name, pid or function"
+                phx-debounce="200"
+                autocomplete="off"
+              />
+              <span class="legend small" aria-label="Legend">
+                <button
+                  :for={kind <- BeamdashWeb.Icons.marked_kinds()}
+                  type="button"
+                  class={["legend-item", kind_filter(@filter) == kind && "active"]}
+                  phx-click="filter_kind"
+                  phx-value-kind={kind}
+                  title={
+                    if kind_filter(@filter) == kind,
+                      do: "Show all processes",
+                      else: "Show only #{kind} processes"
+                  }
+                >
+                  <BeamdashWeb.Icons.kind kind={kind} />
+                  {kind}
+                  <span class="muted">{Format.number(
+                    Enum.count(@procs, &(Map.get(&1, :kind) == kind))
+                  )}</span>
+                </button>
+                <button
+                  :if={MapSet.size(@sys_traced) > 0 or kind_filter(@filter) == :tracing}
+                  type="button"
+                  class={["legend-item", kind_filter(@filter) == :tracing && "active"]}
+                  phx-click="filter_kind"
+                  phx-value-kind="tracing"
+                  title={
+                    if kind_filter(@filter) == :tracing,
+                      do: "Show all processes",
+                      else: "Show only processes with sys:trace on"
+                  }
+                >
+                  <span class="swatch-traced" aria-hidden="true"></span>
+                  tracing
+                  <span class="muted">{Format.number(
+                    Enum.count(@procs, &MapSet.member?(@sys_traced, &1.pid))
+                  )}</span>
+                </button>
+              </span>
+              <span class="muted">
+                {Format.number(@match_count)} of {Format.number(length(@procs))}{if @match_count >
+                                                                                      length(@rows),
+                                                                                    do:
+                                                                                      " · showing first #{length(@rows)}"}
+              </span>
+            </form>
+
+            <.triage_bar
+              triage={@triage}
+              readiness={TriageAdvisor.readiness(@triage_history)}
+              enabled={@jev_enabled}
+              configured={Beamdash.Jev.available?()}
+            />
+
+            <table>
+              <thead>
+                <tr>
+                  <th>Pid</th>
+                  <th class="sortable" phx-click="sort" phx-value-col="name">
+                    Name / initial call{arrow(@sort_by, @sort_dir, :name)}
+                  </th>
+                  <th>Current function</th>
+                  <th>Status</th>
+                  <th class="num sortable" phx-click="sort" phx-value-col="mq">
+                    Msg queue{arrow(@sort_by, @sort_dir, :message_queue_len)}
+                  </th>
+                  <th class="num sortable" phx-click="sort" phx-value-col="memory">
+                    Memory{arrow(@sort_by, @sort_dir, :memory)}
+                  </th>
+                  <th class="num sortable" phx-click="sort" phx-value-col="reductions">
+                    Reductions{arrow(@sort_by, @sort_dir, :reductions)}
+                  </th>
+                  <th
+                    class="num sortable"
+                    phx-click="sort"
+                    phx-value-col="rate"
+                    title="Reductions per second since the last refresh"
+                  >
+                    Reds/s{arrow(@sort_by, @sort_dir, :reds_per_sec)}
+                  </th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr
+                  :for={p <- @rows}
+                  class={[
+                    "clickable",
+                    p.message_queue_len > 0 && "queued",
+                    p.pid == @selected && "selected",
+                    MapSet.member?(@sys_traced, p.pid) && "traced"
+                  ]}
+                  phx-click="select"
+                  phx-value-pid={Format.pid(p.pid, :erlang)}
+                >
+                  <td class="mono">{Format.pid(p.pid, @syntax)}</td>
+                  <td class={if p.registered_name, do: "named"}>
+                    <BeamdashWeb.Icons.kind kind={Map.get(p, :kind)} />
+                    {Format.label(p, @syntax)}
+                    <span
+                      :if={MapSet.member?(@sys_traced, p.pid)}
+                      class="badge-trace"
+                      title="sys:trace is on"
+                    >
+                      tracing
+                    </span>
+                    <span
+                      :if={v = flag(@triage, p.pid)}
+                      class="jev-flag"
+                      title={"Jev: #{v.label} (#{round(v.worth * 100)}% worth a look)#{if v.alternative, do: " or #{v.alternative.label}"}. Open the process for its own analysis."}
+                    >
+                      ⚑ {v.label}
+                    </span>
+                  </td>
+                  <td class="mono muted">{Format.mfa(p.current_function, @syntax)}</td>
+                  <td>{p.status}</td>
+                  <td class="num">{Format.number(p.message_queue_len)}</td>
+                  <td class="num">{Format.bytes(p.memory)}</td>
+                  <td class="num">{Format.number(p.reductions)}</td>
+                  <td class="num">{Format.number(@rates[p.pid])}</td>
+                </tr>
+              </tbody>
+            </table>
+          </section>
+
+          <div :if={@selected} class="proc-side">
+            <p :if={@detail_note} class="notice small">{@detail_note}</p>
+            <p :if={!@details and !@detail_note} class="muted">Loading…</p>
+            <ProcessDetails.panel
+              :if={@details}
+              details={@details}
+              history={@history}
+              syntax={@syntax}
+              gc_result={@gc_result}
+              module_info={@module_info}
+              kind={kind_of(@procs, @selected)}
+              sys_traced={MapSet.member?(@sys_traced, @selected)}
+              names={proc_names(@procs)}
+              sys_error={@sys_error}
+              flag={BeamdashWeb.JevSection.show?(@jev_enabled) && flag(@triage, @selected)}
+              jev={
+                %{
+                  enabled: @jev_enabled,
+                  configured: Beamdash.Jev.configured?(),
+                  busy: @process_advice_request != nil,
+                  readiness: ProcessAdvisor.readiness(@history),
+                  advice: @process_advice,
+                  error: @process_advice_error,
+                  evidence: @process_evidence
+                }
               }
-            }
-          />
+            />
+          </div>
         </div>
       </div>
       <BeamdashWeb.SysDock.dock
@@ -803,6 +835,17 @@ defmodule BeamdashWeb.HomeLive do
       />
     </main>
     """
+  end
+
+  # The module that runs the process, asked again only when it changes
+  # (the details are refreshed every second).
+  defp module_info(socket, details) do
+    mod = Apps.process_module(details)
+
+    case socket.assigns.module_info do
+      %{module: ^mod} -> socket
+      _ -> assign(socket, module_info: Apps.module_summary(socket.assigns.node, mod))
+    end
   end
 
   # The kind a filter selects, or nil when it is not a kind name.

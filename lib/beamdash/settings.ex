@@ -6,7 +6,7 @@ defmodule Beamdash.Settings do
   `{:beamdash_jev, enabled}` or `{:beamdash_kubeconfig_dir, dir}`.
 
   The syntax and Jev switch last for this VM's lifetime. The kubeconfig
-  directory and auto-reconnect are also saved, as JSON in `<user config dir>/beamdash/settings.json`
+  directory, auto-reconnect and the local source folders are also saved, as JSON in `<user config dir>/beamdash/settings.json`
   (next to `Beamdash.LastConnection`'s file), so it is still chosen after a
   restart; `config :beamdash, :settings_file` points elsewhere, `false`
   turns saving off.
@@ -16,6 +16,7 @@ defmodule Beamdash.Settings do
   @jev_key {__MODULE__, :jev_enabled}
   @kube_key {__MODULE__, :kubeconfig_dir}
   @reconnect_key {__MODULE__, :auto_reconnect}
+  @source_dirs_key {__MODULE__, :source_dirs}
   @syntaxes [:erlang, :elixir]
 
   def syntaxes, do: @syntaxes
@@ -105,6 +106,44 @@ defmodule Beamdash.Settings do
     :ok
   end
 
+  @doc """
+  Local folders holding applications' source code, `%{app_name => dir}`, for
+  modules whose source isn't on the node (a release in a Kubernetes pod,
+  say; see `Beamdash.LocalSource`). Saved for the next start.
+  """
+  def source_dirs do
+    case :persistent_term.get(@source_dirs_key, nil) do
+      nil ->
+        dirs =
+          case read()["source_dirs"] do
+            %{} = saved -> for {app, dir} when is_binary(dir) <- saved, into: %{}, do: {app, dir}
+            _ -> %{}
+          end
+
+        :persistent_term.put(@source_dirs_key, dirs)
+        dirs
+
+      dirs ->
+        dirs
+    end
+  end
+
+  @doc "Sets `app`'s source folder to `dir` (`~` expanded) and saves it."
+  def put_source_dir(app, dir) when is_binary(app) and is_binary(dir) do
+    put_source_dirs(Map.put(source_dirs(), app, Path.expand(dir)))
+  end
+
+  @doc "Forgets `app`'s source folder."
+  def delete_source_dir(app) when is_binary(app) do
+    put_source_dirs(Map.delete(source_dirs(), app))
+  end
+
+  defp put_source_dirs(dirs) do
+    :persistent_term.put(@source_dirs_key, dirs)
+    save("source_dirs", if(dirs != %{}, do: dirs))
+    :ok
+  end
+
   @doc "The file the settings are saved in, or `nil` when saving is off."
   def path do
     case Application.get_env(:beamdash, :settings_file) do
@@ -119,6 +158,7 @@ defmodule Beamdash.Settings do
   def reload do
     :persistent_term.erase(@kube_key)
     :persistent_term.erase(@reconnect_key)
+    :persistent_term.erase(@source_dirs_key)
     :ok
   end
 

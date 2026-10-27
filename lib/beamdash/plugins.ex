@@ -84,7 +84,12 @@ defmodule Beamdash.Plugins do
   """
   def list(server \\ __MODULE__), do: GenServer.call(server, :list)
 
-  @doc "The active plugins, sorted by name: `%{app, name, pages: [%{slug, label, module}]}`."
+  @doc """
+  The active plugins, sorted by name: `%{app, name, pages: [%{slug, label,
+  module}], module, main, supports}`. `module` is the entry module, `main`
+  the main page (one of `pages`, see `Beamdash.Plugin.main_page/1`),
+  `supports` the applications the plugin supports.
+  """
   def active(server \\ __MODULE__), do: GenServer.call(server, :active)
 
   @doc """
@@ -188,7 +193,14 @@ defmodule Beamdash.Plugins do
   def handle_call(:active, _from, state) do
     active =
       for {app, entry} <- state.plugins, status(entry, state) == :active do
-        %{app: app, name: entry.plugin.name, pages: entry.plugin.pages}
+        %{
+          app: app,
+          name: entry.plugin.name,
+          pages: entry.plugin.pages,
+          module: entry.prefix,
+          main: Beamdash.Plugin.main_page(entry.plugin),
+          supports: for({supported, _req} <- entry.supports, do: supported)
+        }
       end
 
     {:reply, Enum.sort_by(active, & &1.name), state}

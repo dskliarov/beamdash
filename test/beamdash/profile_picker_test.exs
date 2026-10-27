@@ -27,6 +27,16 @@ defmodule Beamdash.ProfilePickerTest do
     socket
   end
 
+  test "?mod= opens that module in the picker (a link from the Apps tab)" do
+    {:noreply, socket} = ProfileLive.handle_params(%{"mod" => "door"}, "", socket())
+    assert socket.assigns.pick_mod == :door
+    assert html(socket) =~ ~s(phx-value-fun="open")
+
+    # a module that isn't loaded changes nothing
+    {:noreply, socket} = ProfileLive.handle_params(%{"mod" => "gone"}, "", socket())
+    assert socket.assigns.pick_mod == nil
+  end
+
   test "a whole module replaces its single functions, and covers new ones" do
     picks = ProfileLive.toggle_pick([], {:shop, :price, 2})
     picks = ProfileLive.toggle_pick(picks, {:door, :open, 0})
