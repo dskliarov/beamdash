@@ -35,6 +35,23 @@ defmodule Beamdash.TracePickerTest do
   defp pick(socket, fun, arity),
     do: event(socket, "select_function", %{"fun" => fun, "arity" => to_string(arity)})
 
+  test "?mod= opens that module (a link from the Apps tab)" do
+    socket = %Phoenix.LiveView.Socket{
+      private: %{lifecycle: %Phoenix.LiveView.Lifecycle{}, live_temp: %{}}
+    }
+
+    {:ok, socket} = TraceLive.mount(%{}, %{}, socket)
+    socket = Phoenix.Component.assign(socket, modules: [{:door, [open: 0], []}])
+
+    {:noreply, opened} = TraceLive.handle_params(%{"mod" => "door"}, "", socket)
+    assert opened.assigns.selected == :door
+    assert opened.assigns.module_filter == "door"
+
+    # a module that isn't loaded changes nothing
+    {:noreply, same} = TraceLive.handle_params(%{"mod" => "gone"}, "", socket)
+    assert same.assigns.selected == nil
+  end
+
   test "clicking functions picks and unpicks them" do
     assert TraceLive.toggle_pick([], {:m, :a, 1}) == [{:m, :a, 1}]
     assert TraceLive.toggle_pick([{:m, :a, 1}, {:m, :b, 0}], {:m, :a, 1}) == [{:m, :b, 0}]

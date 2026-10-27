@@ -39,6 +39,66 @@ defmodule Beamdash.ProcessDetailsTest do
              2
   end
 
+  test "the module that runs it, with trace, profile and source buttons" do
+    detail =
+      Map.merge(Beamdash.Test.Fixture.gc_detail(), %{
+        reductions: 1,
+        links: [],
+        monitors: [],
+        monitored_by: [],
+        current_stacktrace: [],
+        trap_exit: false,
+        priority: :normal
+      })
+
+    module = %{
+      module: :my_server,
+      file: "/app/lib/my_app/ebin/my_server.beam",
+      source: "/build/src/my_server.erl",
+      vsn: [1234],
+      behaviours: [:gen_server],
+      exports: 12,
+      application: :my_app,
+      has_source: true
+    }
+
+    html =
+      render_component(&ProcessDetails.panel/1,
+        details: detail,
+        history: [],
+        syntax: :erlang,
+        module_info: module
+      )
+
+    assert html =~ ~s(<div class="module-info">)
+    assert html =~ ~r/<strong class="mono">my_server<\/strong>/
+    assert html =~ ~s(href="/trace?mod=my_server")
+    assert html =~ ~s(href="/profile?mod=my_server")
+    assert html =~ ~r/<button[^>]*phx-click="open_source"[^>]*phx-value-mod="my_server"/
+    assert html =~ "gen_server"
+    assert html =~ "/build/src/my_server.erl"
+
+    # no source on the node (a release): no Source button, the rest stays
+    html =
+      render_component(&ProcessDetails.panel/1,
+        details: detail,
+        history: [],
+        syntax: :erlang,
+        module_info: %{module | has_source: false}
+      )
+
+    refute html =~ ~s(phx-click="open_source")
+    assert html =~ ~s(href="/trace?mod=my_server")
+
+    # no module known: no section
+    refute render_component(&ProcessDetails.panel/1,
+             details: detail,
+             history: [],
+             syntax: :erlang
+           ) =~
+             "module-info"
+  end
+
   test "links are drawn as on the Applications tab" do
     linked = spawn(fn -> Process.sleep(:infinity) end)
     port = Port.open({:spawn, "cat"}, [])

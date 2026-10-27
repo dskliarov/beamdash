@@ -199,7 +199,7 @@ defmodule BeamdashWeb.MemoryLive do
   end
 
   def handle_event("inspect", %{"pid" => pid_text}, socket) do
-    with pid when is_pid(pid) <- parse_pid(pid_text),
+    with pid when is_pid(pid) <- Target.parse_pid(pid_text, socket.assigns.node),
          {:ok, %{} = state} <- Memory.process_state(socket.assigns.node, pid, false) do
       {:noreply, assign(socket, inspect: Map.put(state, :pid, pid))}
     else
@@ -341,11 +341,6 @@ defmodule BeamdashWeb.MemoryLive do
 
   def handle_info({:beamdash_target, {:disconnected, _}}, socket),
     do: {:noreply, assign(socket, status: :disconnected, snap: nil, top: nil, ets: nil)}
-
-  defp parse_pid(text) do
-    if Regex.match?(~r/^<\d+\.\d+\.\d+>$/, text),
-      do: :erlang.list_to_pid(String.to_charlist(text))
-  end
 
   ## Rendering
 

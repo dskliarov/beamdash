@@ -16,6 +16,13 @@ defmodule BeamdashWeb.Layouts do
         </script>
         <script defer src="/deps/phoenix_live_view/phoenix_live_view.js">
         </script>
+        <%!-- Highlight.js 11.9.0 (BSD-3-Clause), vendored: the module source view --%>
+        <script defer src="/assets/vendor/highlight/highlight.min.js">
+        </script>
+        <script defer src="/assets/vendor/highlight/erlang.min.js">
+        </script>
+        <script defer src="/assets/vendor/highlight/elixir.min.js">
+        </script>
         <script defer src="/assets/app.js">
         </script>
       </head>

@@ -351,10 +351,21 @@ const LogExport = {
   },
 };
 
+// A module's source (the Trace and Profile tabs' source tabs): highlighted
+// once with Highlight.js, whose language is the code element's
+// language-* class. The element is phx-update="ignore", so it stays so.
+// Very large sources are left plain: highlighting them would stall the page.
+const Highlight = {
+  mounted() {
+    if (!window.hljs || this.el.textContent.length > 500000) return;
+    window.hljs.highlightElement(this.el);
+  },
+};
+
 const csrfToken = document.querySelector("meta[name='csrf-token']").getAttribute("content");
 const liveSocket = new LiveView.LiveSocket("/live", Phoenix.Socket, {
   params: { _csrf_token: csrfToken },
-  hooks: { Resizer, DockSpacer, NavOverflow, NamespaceCombobox, LogExport },
+  hooks: { Resizer, DockSpacer, NavOverflow, NamespaceCombobox, LogExport, Highlight },
 });
 liveSocket.connect();
 window.liveSocket = liveSocket;

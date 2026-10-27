@@ -12,6 +12,7 @@ defmodule BeamdashWeb.ProfileLive do
   use Phoenix.LiveView
 
   alias Beamdash.{Format, Profiler, Target, Tracer}
+  alias BeamdashWeb.SourceTabs
 
   import BeamdashWeb.FunctionList,
     only: [matching_modules: 3, functions_of: 2, needle: 1, matches?: 3, fn_name: 2, highlight: 1]
@@ -53,6 +54,7 @@ defmodule BeamdashWeb.ProfileLive do
         filter: "",
         now: System.monotonic_time(:millisecond)
       )
+      |> SourceTabs.init()
 
     if connected?(socket) do
       :ok = Target.subscribe()
@@ -87,8 +89,11 @@ defmodule BeamdashWeb.ProfileLive do
   @impl true
   def handle_params(%{"mod" => mod}, _uri, socket) do
     case Enum.find(socket.assigns.modules, fn {m, _, _} -> Atom.to_string(m) == mod end) do
-      {m, _, _} -> {:noreply, assign(socket, pick_mod: m, pick_q: mod)}
-      nil -> {:noreply, socket}
+      {m, _, _} ->
+        {:noreply, socket |> assign(pick_mod: m, pick_q: mod) |> SourceTabs.check(m)}
+
+      nil ->
+        {:noreply, socket}
     end
   end
 
@@ -97,6 +102,11 @@ defmodule BeamdashWeb.ProfileLive do
   ## Events
 
   @impl true
+  # the Source button and the source tabs (see BeamdashWeb.SourceTabs)
+  def handle_event(event, params, socket)
+      when event in ~w(open_source source_tab close_source),
+      do: {:noreply, SourceTabs.event(event, params, socket)}
+
   def handle_event("form", %{"profile" => params}, socket),
     do: {:noreply, assign(socket, form: Map.merge(socket.assigns.form, params), form_error: nil)}
 
@@ -110,8 +120,10 @@ defmodule BeamdashWeb.ProfileLive do
          fq: Map.get(params, "fq", socket.assigns.fq)
        )}
 
-  def handle_event("pick_module", %{"mod" => mod}, socket),
-    do: {:noreply, assign(socket, pick_mod: String.to_existing_atom(mod), fq: "")}
+  def handle_event("pick_module", %{"mod" => mod}, socket) do
+    mod = String.to_existing_atom(mod)
+    {:noreply, socket |> assign(pick_mod: mod, fq: "") |> SourceTabs.check(mod)}
+  end
 
   def handle_event("pick_ff", %{"f" => f}, socket) when f in ~w(all exported local picked),
     do: {:noreply, assign(socket, ff: String.to_existing_atom(f))}
@@ -195,11 +207,12 @@ defmodule BeamdashWeb.ProfileLive do
       {:noreply,
        socket
        |> assign(status: :connected, node: node, picked: [], pick_mod: nil)
+       |> SourceTabs.init()
        |> check_available()
        |> load_modules()}
 
   def handle_info({:beamdash_target, {:disconnected, _}}, socket),
-    do: {:noreply, assign(socket, status: :disconnected, available: nil)}
+    do: {:noreply, socket |> assign(status: :disconnected, available: nil) |> SourceTabs.init()}
 
   ## Parsing
 
@@ -257,8 +270,10 @@ defmodule BeamdashWeb.ProfileLive do
         cond do
           Regex.match?(~r/^<\d+\.\d+\.\d+>$/, item) ->
             # pids as the target prints them (<0.85.0>) or as shown here
-            local = Target.localize_pid(item, node)
-            {:cont, {:ok, acc ++ [:erlang.list_to_pid(String.to_charlist(local))]}}
+            case item |> Target.localize_pid(node) |> Target.parse_pid(node) do
+              nil -> {:halt, {:error, "“#{item}” is not a process on #{node}."}}
+              pid -> {:cont, {:ok, acc ++ [pid]}}
+            end
 
           Regex.match?(~r/^[a-zA-Z][\w.@]*$/, item) ->
             {:cont, {:ok, acc ++ [String.to_atom(item)]}}
@@ -297,297 +312,318 @@ defmodule BeamdashWeb.ProfileLive do
         Not connected: enter a node above and click Connect.
       </p>
 
-      <div :if={@status == :connected and match?({:no, _}, @available)} class="notice">
-        Profiling uses tprof, which comes with OTP 27 and later; {@node} runs OTP {elem(
-          @available,
-          1
-        )}.
-      </div>
-      <p :if={match?({:error, _}, @available)} class="error">{elem(@available, 1)}</p>
+      <SourceTabs.tabs
+        sources={@sources}
+        current={@source_tab}
+        main_label="Profiling"
+        syntax={@syntax}
+      />
+      <SourceTabs.panel sources={@sources} current={@source_tab} syntax={@syntax} />
 
-      <section :if={@status == :connected and @available == true} class="profile">
-        <%!-- the picker's search boxes belong to this form (form="pick-form"),
+      <%!-- hidden, not removed, while a source is shown: forms keep what was typed --%>
+      <div hidden={@source_tab != nil}>
+        <div :if={@status == :connected and match?({:no, _}, @available)} class="notice">
+          <%= if Profiler.otp_release(elem(@available, 1)) >= 27 do %>
+            Profiling uses tprof, from OTP's tools application. {@node} runs OTP {elem(
+              @available,
+              1
+            )}, but its release doesn't include tools, and beamdash couldn't load its own tprof there.
+            Add <code>tools</code>
+            to the release's applications to profile it.
+          <% else %>
+            Profiling uses tprof, which comes with OTP 27 and later; {@node} runs OTP {elem(
+              @available,
+              1
+            )}.
+          <% end %>
+        </div>
+        <p :if={match?({:error, _}, @available)} class="error">{elem(@available, 1)}</p>
+
+        <section :if={@status == :connected and @available == true} class="profile">
+          <%!-- the picker's search boxes belong to this form (form="pick-form"),
              so typing in them, or Enter, never submits the profile --%>
-        <form
-          :if={@profile.status != :running}
-          id="pick-form"
-          phx-change="pick_search"
-          phx-submit="pick_search"
-        >
-        </form>
-        <form
-          :if={@profile.status != :running}
-          id="profile-form"
-          class="profile-form"
-          phx-change="form"
-          phx-submit="start"
-        >
-          <fieldset class="measure">
-            <legend>Measure</legend>
-            <label
-              :for={{value, {label, hint}} <- @types}
-              class={["measure-opt", @form["type"] == to_string(value) && "active"]}
-            >
-              <input
-                type="radio"
-                name="profile[type]"
-                value={value}
-                checked={@form["type"] == to_string(value)}
-              />
-              <strong>{label}</strong> <span class="muted small">{hint}</span>
-            </label>
-          </fieldset>
-
-          <div class="field">
-            <span>Functions</span>
-            <div class="picked" aria-live="polite">
-              <span :if={@picked == []} class="muted small">
-                Pick a module or functions below, or type patterns.
-              </span>
-              <span :for={{m, f, a} <- @picked} class="chip">
-                {pick_text({m, f, a}, @syntax)}
-                <a
-                  href="#"
-                  phx-click="pick"
-                  phx-value-mod={m}
-                  phx-value-fun={f}
-                  phx-value-arity={a}
-                  title="Remove"
-                  aria-label={"Remove #{pick_text({m, f, a}, @syntax)}"}
-                >
-                  ×
-                </a>
-              </span>
-              <button
-                :if={length(@picked) > 1}
-                type="button"
-                class="secondary small-btn"
-                phx-click="unpick_all"
+          <form
+            :if={@profile.status != :running}
+            id="pick-form"
+            phx-change="pick_search"
+            phx-submit="pick_search"
+          >
+          </form>
+          <form
+            :if={@profile.status != :running}
+            id="profile-form"
+            class="profile-form"
+            phx-change="form"
+            phx-submit="start"
+          >
+            <fieldset class="measure">
+              <legend>Measure</legend>
+              <label
+                :for={{value, {label, hint}} <- @types}
+                class={["measure-opt", @form["type"] == to_string(value) && "active"]}
               >
-                Clear
-              </button>
+                <input
+                  type="radio"
+                  name="profile[type]"
+                  value={value}
+                  checked={@form["type"] == to_string(value)}
+                />
+                <strong>{label}</strong> <span class="muted small">{hint}</span>
+              </label>
+            </fieldset>
+
+            <div class="field">
+              <span>Functions</span>
+              <div class="picked" aria-live="polite">
+                <span :if={@picked == []} class="muted small">
+                  Pick a module or functions below, or type patterns.
+                </span>
+                <span :for={{m, f, a} <- @picked} class="chip">
+                  {pick_text({m, f, a}, @syntax)}
+                  <a
+                    href="#"
+                    phx-click="pick"
+                    phx-value-mod={m}
+                    phx-value-fun={f}
+                    phx-value-arity={a}
+                    title="Remove"
+                    aria-label={"Remove #{pick_text({m, f, a}, @syntax)}"}
+                  >
+                    ×
+                  </a>
+                </span>
+                <button
+                  :if={length(@picked) > 1}
+                  type="button"
+                  class="secondary small-btn"
+                  phx-click="unpick_all"
+                >
+                  Clear
+                </button>
+              </div>
+              <.picker
+                modules={@modules}
+                shown_modules={matching_modules(@modules, @pick_q, @syntax)}
+                pick_q={@pick_q}
+                pick_mod={@pick_mod}
+                fq={@fq}
+                ff={@ff}
+                picked={@picked}
+                syntax={@syntax}
+                has_source={SourceTabs.available?(@source_known, @pick_mod)}
+              />
             </div>
-            <.picker
-              modules={@modules}
-              shown_modules={matching_modules(@modules, @pick_q, @syntax)}
-              pick_q={@pick_q}
-              pick_mod={@pick_mod}
-              fq={@fq}
-              ff={@ff}
-              picked={@picked}
-              syntax={@syntax}
-            />
-          </div>
 
-          <label class="field">
-            <span class="muted small">Or type patterns</span>
-            <input
-              type="text"
-              name="profile[patterns]"
-              value={@form["patterns"]}
-              placeholder="e.g. lists:seq/2, MyApp.Repo.get/2   (_ = everything)"
-              autocomplete="off"
-              spellcheck="false"
-            />
-            <span class="muted small">
-              Modules or functions, comma separated: <code>mod</code>, <code>mod:fun</code>,
-              <code>mod:fun/arity</code>
-              or Elixir <code>Mod.fun/arity</code>. <code>_</code>
-              matches anything; profiling every function slows the node down.
-            </span>
-          </label>
-
-          <div class="field-row">
             <label class="field">
-              <span>Processes</span>
-              <select name="profile[procs]" disabled={@form["type"] == "call_count"}>
-                <option value="all" selected={@form["procs"] == "all"}>All processes</option>
-                <option value="existing" selected={@form["procs"] == "existing"}>
-                  Existing processes
-                </option>
-                <option value="new" selected={@form["procs"] == "new"}>
-                  New processes only
-                </option>
-                <option value="list" selected={@form["procs"] == "list"}>
-                  Specific processes…
-                </option>
-              </select>
-              <span :if={@form["type"] == "call_count"} class="muted small">
-                Call count counts calls from every process.
-              </span>
-            </label>
-            <label
-              :if={@form["procs"] == "list" and @form["type"] != "call_count"}
-              class="field grow"
-            >
-              <span>Names or pids</span>
+              <span class="muted small">Or type patterns</span>
               <input
                 type="text"
-                name="profile[proc_list]"
-                value={@form["proc_list"]}
-                placeholder="demo_shop <0.85.0>"
+                name="profile[patterns]"
+                value={@form["patterns"]}
+                placeholder="e.g. lists:seq/2, MyApp.Repo.get/2   (_ = everything)"
                 autocomplete="off"
+                spellcheck="false"
               />
-              <span class="muted small">Processes they spawn are profiled too.</span>
-            </label>
-            <label class="field">
-              <span>Duration</span>
-              <span class="with-unit">
-                <input
-                  type="number"
-                  name="profile[seconds]"
-                  value={@form["seconds"]}
-                  min="1"
-                  max="600"
-                  inputmode="numeric"
-                /> s
+              <span class="muted small">
+                Modules or functions, comma separated: <code>mod</code>, <code>mod:fun</code>,
+                <code>mod:fun/arity</code>
+                or Elixir <code>Mod.fun/arity</code>. <code>_</code>
+                matches anything; profiling every function slows the node down.
               </span>
             </label>
-          </div>
 
-          <p :if={@form_error} class="error">{@form_error}</p>
-          <div class="actions">
-            <button type="submit">Start profiling</button>
-          </div>
-        </form>
-
-        <div :if={@profile.status == :running} class="profile-running">
-          <div class="run-head">
-            <span class="live-dot" aria-hidden="true"></span>
-            <strong>Profiling {type_label(@profile.config.type)}</strong>
-            <span class="muted">
-              {Enum.map_join(@profile.config.patterns, ", ", &pattern_text(&1, @syntax))} · {procs_text(
-                @profile
-              )}
-            </span>
-          </div>
-          <div
-            class="progress"
-            role="progressbar"
-            aria-valuemin="0"
-            aria-valuemax="100"
-            aria-valuenow={progress(@profile, @now)}
-          >
-            <span style={"width: #{progress(@profile, @now)}%"}></span>
-          </div>
-          <div class="run-foot">
-            <span class="muted small">
-              {seconds_left(@profile, @now)} s left · {functions_text(@profile.info)}
-            </span>
-            <button class="secondary" phx-click="snapshot">Refresh results</button>
-            <button phx-click="stop">Stop now</button>
-          </div>
-          <p :if={@profile.info.unmatched != []} class="notice small">
-            No functions match {Enum.map_join(
-              @profile.info.unmatched,
-              ", ",
-              &pattern_text(&1, @syntax)
-            )} (is the module loaded?).
-          </p>
-        </div>
-
-        <p :if={@profile.error} class="error">tprof: {Format.error(@profile.error)}</p>
-
-        <div :if={@profile.result} class="profile-result">
-          <div class="result-head">
-            <h2>
-              {type_label(@profile.result.type)} ·
-              <span class="mono">{measure(
-                @profile.result.type,
-                view_total(@profile.result, @view),
-                @profile.result.word_size
-              )}</span>
-            </h2>
-            <span class="muted small">
-              {Format.number(@profile.result.functions)} function{if @profile.result.functions != 1,
-                do: "s"} measured
-              · {if @profile.status == :running, do: "so far", else: "final"}, {Calendar.strftime(
-                @profile.result.collected_at,
-                "%H:%M:%S"
-              )} UTC
-            </span>
-          </div>
-
-          <div class="result-tools">
-            <form :if={@profile.result.processes != []} phx-change="view" class="view-select">
-              <label class="muted small">
-                Show
-                <select name="view">
-                  <option value="all" selected={@view == "all"}>All processes</option>
-                  <option
-                    :for={p <- @profile.result.processes}
-                    value={Format.pid(p.pid, :erlang)}
-                    selected={@view == Format.pid(p.pid, :erlang)}
-                  >
-                    {proc_label(p, @syntax)} – {measure(
-                      @profile.result.type,
-                      p.total,
-                      @profile.result.word_size
-                    )}
+            <div class="field-row">
+              <label class="field">
+                <span>Processes</span>
+                <select name="profile[procs]" disabled={@form["type"] == "call_count"}>
+                  <option value="all" selected={@form["procs"] == "all"}>All processes</option>
+                  <option value="existing" selected={@form["procs"] == "existing"}>
+                    Existing processes
+                  </option>
+                  <option value="new" selected={@form["procs"] == "new"}>
+                    New processes only
+                  </option>
+                  <option value="list" selected={@form["procs"] == "list"}>
+                    Specific processes…
                   </option>
                 </select>
+                <span :if={@form["type"] == "call_count"} class="muted small">
+                  Call count counts calls from every process.
+                </span>
               </label>
-            </form>
-            <form phx-change="filter" phx-submit="filter" class="grow">
-              <input
-                type="search"
-                name="q"
-                value={@filter}
-                placeholder="Filter functions"
-                phx-debounce="150"
-                autocomplete="off"
-                aria-label="Filter functions"
-              />
-            </form>
-            <span class="muted small">{Format.number(length(@table))} shown</span>
+              <label
+                :if={@form["procs"] == "list" and @form["type"] != "call_count"}
+                class="field grow"
+              >
+                <span>Names or pids</span>
+                <input
+                  type="text"
+                  name="profile[proc_list]"
+                  value={@form["proc_list"]}
+                  placeholder="demo_shop <0.85.0>"
+                  autocomplete="off"
+                />
+                <span class="muted small">Processes they spawn are profiled too.</span>
+              </label>
+              <label class="field">
+                <span>Duration</span>
+                <span class="with-unit">
+                  <input
+                    type="number"
+                    name="profile[seconds]"
+                    value={@form["seconds"]}
+                    min="1"
+                    max="600"
+                    inputmode="numeric"
+                  /> s
+                </span>
+              </label>
+            </div>
+
+            <p :if={@form_error} class="error">{@form_error}</p>
+            <div class="actions">
+              <button type="submit">Start profiling</button>
+            </div>
+          </form>
+
+          <div :if={@profile.status == :running} class="profile-running">
+            <div class="run-head">
+              <span class="live-dot" aria-hidden="true"></span>
+              <strong>Profiling {type_label(@profile.config.type)}</strong>
+              <span class="muted">
+                {Enum.map_join(@profile.config.patterns, ", ", &pattern_text(&1, @syntax))} · {procs_text(
+                  @profile
+                )}
+              </span>
+            </div>
+            <div
+              class="progress"
+              role="progressbar"
+              aria-valuemin="0"
+              aria-valuemax="100"
+              aria-valuenow={progress(@profile, @now)}
+            >
+              <span style={"width: #{progress(@profile, @now)}%"}></span>
+            </div>
+            <div class="run-foot">
+              <span class="muted small">
+                {seconds_left(@profile, @now)} s left · {functions_text(@profile.info)}
+              </span>
+              <button class="secondary" phx-click="snapshot">Refresh results</button>
+              <button phx-click="stop">Stop now</button>
+            </div>
+            <p :if={@profile.info.unmatched != []} class="notice small">
+              No functions match {Enum.map_join(
+                @profile.info.unmatched,
+                ", ",
+                &pattern_text(&1, @syntax)
+              )} (is the module loaded?).
+            </p>
           </div>
 
-          <table class="profile-table">
-            <thead>
-              <tr>
-                <th class="sortable" phx-click="sort" phx-value-col="function">
-                  Function{arrow(@sort, :function)}
-                </th>
-                <th class="num sortable" phx-click="sort" phx-value-col="calls">
-                  Calls{arrow(@sort, :calls)}
-                </th>
-                <th class="num sortable" phx-click="sort" phx-value-col="measurement">
-                  {measure_heading(@profile.result.type)}{arrow(@sort, :measurement)}
-                </th>
-                <th class="num sortable" phx-click="sort" phx-value-col="per_call">
-                  Per call{arrow(@sort, :per_call)}
-                </th>
-                <th class="pct">Share</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr :for={l <- @table}>
-                <td class="mono">{Format.mfa(l.mfa, @syntax)}</td>
-                <td class="num">{Format.number(l.calls)}</td>
-                <td class="num">
-                  {measure(@profile.result.type, l.measurement, @profile.result.word_size)}
-                </td>
-                <td class="num">
-                  {per_call(@profile.result.type, l.per_call, @profile.result.word_size)}
-                </td>
-                <td class="pct">
-                  <div class="share">
-                    <span class="share-bar">
-                      <span style={"width: #{Float.round(l.percent * 1.0, 1)}%"}></span>
-                    </span>
-                    <span class="muted small">{Float.round(l.percent * 1.0, 1)}%</span>
-                  </div>
-                </td>
-              </tr>
-            </tbody>
-          </table>
-          <p :if={@table == []} class="muted">
-            {if @filter != "",
-              do: "No functions match the filter.",
-              else: "Nothing measured yet: the traced functions were not called."}
-          </p>
-        </div>
-      </section>
+          <p :if={@profile.error} class="error">tprof: {Format.error(@profile.error)}</p>
+
+          <div :if={@profile.result} class="profile-result">
+            <div class="result-head">
+              <h2>
+                {type_label(@profile.result.type)} ·
+                <span class="mono">{measure(
+                  @profile.result.type,
+                  view_total(@profile.result, @view),
+                  @profile.result.word_size
+                )}</span>
+              </h2>
+              <span class="muted small">
+                {Format.number(@profile.result.functions)} function{if @profile.result.functions != 1,
+                  do: "s"} measured
+                · {if @profile.status == :running, do: "so far", else: "final"}, {Calendar.strftime(
+                  @profile.result.collected_at,
+                  "%H:%M:%S"
+                )} UTC
+              </span>
+            </div>
+
+            <div class="result-tools">
+              <form :if={@profile.result.processes != []} phx-change="view" class="view-select">
+                <label class="muted small">
+                  Show
+                  <select name="view">
+                    <option value="all" selected={@view == "all"}>All processes</option>
+                    <option
+                      :for={p <- @profile.result.processes}
+                      value={Format.pid(p.pid, :erlang)}
+                      selected={@view == Format.pid(p.pid, :erlang)}
+                    >
+                      {proc_label(p, @syntax)} – {measure(
+                        @profile.result.type,
+                        p.total,
+                        @profile.result.word_size
+                      )}
+                    </option>
+                  </select>
+                </label>
+              </form>
+              <form phx-change="filter" phx-submit="filter" class="grow">
+                <input
+                  type="search"
+                  name="q"
+                  value={@filter}
+                  placeholder="Filter functions"
+                  phx-debounce="150"
+                  autocomplete="off"
+                  aria-label="Filter functions"
+                />
+              </form>
+              <span class="muted small">{Format.number(length(@table))} shown</span>
+            </div>
+
+            <table class="profile-table">
+              <thead>
+                <tr>
+                  <th class="sortable" phx-click="sort" phx-value-col="function">
+                    Function{arrow(@sort, :function)}
+                  </th>
+                  <th class="num sortable" phx-click="sort" phx-value-col="calls">
+                    Calls{arrow(@sort, :calls)}
+                  </th>
+                  <th class="num sortable" phx-click="sort" phx-value-col="measurement">
+                    {measure_heading(@profile.result.type)}{arrow(@sort, :measurement)}
+                  </th>
+                  <th class="num sortable" phx-click="sort" phx-value-col="per_call">
+                    Per call{arrow(@sort, :per_call)}
+                  </th>
+                  <th class="pct">Share</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr :for={l <- @table}>
+                  <td class="mono">{Format.mfa(l.mfa, @syntax)}</td>
+                  <td class="num">{Format.number(l.calls)}</td>
+                  <td class="num">
+                    {measure(@profile.result.type, l.measurement, @profile.result.word_size)}
+                  </td>
+                  <td class="num">
+                    {per_call(@profile.result.type, l.per_call, @profile.result.word_size)}
+                  </td>
+                  <td class="pct">
+                    <div class="share">
+                      <span class="share-bar">
+                        <span style={"width: #{Float.round(l.percent * 1.0, 1)}%"}></span>
+                      </span>
+                      <span class="muted small">{Float.round(l.percent * 1.0, 1)}%</span>
+                    </div>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+            <p :if={@table == []} class="muted">
+              {if @filter != "",
+                do: "No functions match the filter.",
+                else: "Nothing measured yet: the traced functions were not called."}
+            </p>
+          </div>
+        </section>
+      </div>
     </main>
     """
   end
@@ -719,6 +755,7 @@ defmodule BeamdashWeb.ProfileLive do
   attr :ff, :atom, required: true
   attr :picked, :list, required: true
   attr :syntax, :atom, required: true
+  attr :has_source, :boolean, default: false
 
   # Loaded modules on the left; the chosen module's functions on the right,
   # each a toggle, with "Whole module" on top.
@@ -807,6 +844,16 @@ defmodule BeamdashWeb.ProfileLive do
         </p>
         <div :if={@pick_mod} class="fn-head">
           <h3 class="mono">{Format.name(@pick_mod, @syntax)}</h3>
+          <button
+            :if={@has_source}
+            type="button"
+            class="secondary small-btn"
+            phx-click="open_source"
+            phx-value-mod={@pick_mod}
+            title="Open the module's source in a tab"
+          >
+            Source
+          </button>
           <button
             type="button"
             id="pick-whole"

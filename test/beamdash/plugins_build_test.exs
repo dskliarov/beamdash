@@ -529,6 +529,30 @@ defmodule Beamdash.PluginsBuildTest do
       end
     end
 
+    test "compiling a plugin whose modules are loaded doesn't warn about redefining them",
+         %{tmp: tmp} do
+      a = unique_name("Redef")
+
+      root =
+        write_plugin(tmp, "redef", mix_exs("[]"), [
+          {"lib/a.ex", "defmodule #{a} do\n  def x, do: 1\nend\n"}
+        ])
+
+      ebin = Path.join(tmp, "redef_ebin")
+      File.mkdir_p!(ebin)
+      Code.compile_string("defmodule #{a} do\n  def x, do: 0\nend\n")
+      before = Code.get_compiler_option(:ignore_module_conflict)
+
+      try do
+        {result, stderr} = with_io(:stderr, fn -> Build.compile(root, ebin) end)
+        assert {:ok, [_]} = result
+        refute stderr =~ "redefining module"
+        assert Code.get_compiler_option(:ignore_module_conflict) == before
+      after
+        cleanup_modules([Module.concat([a])])
+      end
+    end
+
     test "a syntax error names file:line and leaves nothing loaded", %{tmp: tmp} do
       a = unique_name("Syn")
 
@@ -668,6 +692,8 @@ defmodule Beamdash.PluginsBuildTest do
         {~S|%{name: "C", pages: [%{slug: "p\n", label: "P", module: X.P}]}|, ~r/invalid page/},
         {~S|%{name: "C", pages: [%{slug: "p", label: "P", module: "X.P"}]}|, ~r/invalid page/},
         {~S|%{name: "C", pages: [:junk]}|, ~r/invalid page/},
+        {~S|%{name: "C", pages: [%{slug: "p", label: "P", module: X.P}], main: "q"}|,
+         ~r/main page that isn't one of its pages: "q"/},
         {~S|%{name: :c, pages: []}|, ~r/plugin declaration/}
       ]
 

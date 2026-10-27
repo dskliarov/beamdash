@@ -374,8 +374,10 @@ folder); **Rebuild** recompiles it after you change it. Each plugin is
 **Trust:** a plugin runs inside beamdash with full access to the nodes you
 connect to, and compiling it runs its code. Add only plugins you trust.
 
-**Writing one:** the entry module does `use Beamdash.Plugin` (name and
-pages), each page `use Beamdash.Plugin.Page`. The supported applications
+**Writing one:** the entry module does `use Beamdash.Plugin` (name, pages
+and, optionally, `main:`, the page the Apps tab also shows for the
+applications it supports; the first page by default), each page
+`use Beamdash.Plugin.Page`. The supported applications
 are `runtime: false` deps in `mix.exs`, which beamdash reads as data and
 never runs. A plugin can't have other runtime deps: it may only use what
 beamdash ships (Phoenix, LiveView, Jason…). Code on the node is called

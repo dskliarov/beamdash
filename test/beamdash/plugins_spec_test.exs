@@ -202,15 +202,27 @@ defmodule Beamdash.Plugins.SpecTest do
       assert {:error, _} = Spec.parse(String.duplicate("a", 10_000))
     end
 
+    # Checked name by name, not with the VM's atom count, which tests
+    # running alongside change too.
     test "parsing does not create atoms from the text" do
-      before = :erlang.system_info(:atom_count)
+      run = System.unique_integer([:positive])
+
+      names =
+        for i <- 1..50,
+            kind <- ~w(zz_unique unique_key unique_val Zz_unique other_key other_val),
+            do: "#{kind}_#{run}_#{i}"
 
       for i <- 1..50 do
-        Spec.parse(~s|{:zz_unique_#{i}, unique_key_#{i}: :unique_val_#{i}}|)
-        Spec.parse(~s|{:Zz_unique_#{i}, "1.0.0", other_key_#{i}: :other_val_#{i}}|)
+        Spec.parse(~s|{:zz_unique_#{run}_#{i}, unique_key_#{run}_#{i}: :unique_val_#{run}_#{i}}|)
+
+        Spec.parse(
+          ~s|{:Zz_unique_#{run}_#{i}, "1.0.0", other_key_#{run}_#{i}: :other_val_#{run}_#{i}}|
+        )
       end
 
-      assert :erlang.system_info(:atom_count) - before < 50
+      for name <- names do
+        assert_raise ArgumentError, fn -> String.to_existing_atom(name) end
+      end
     end
   end
 

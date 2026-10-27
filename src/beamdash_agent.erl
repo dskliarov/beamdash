@@ -8,7 +8,8 @@
 
 -export([version/0, node_info/0, system_info/0, processes/0]).
 -export([load_sampler_start/2, load_sample/0]).
--export([applications/0, app_tree/1]).
+-export([applications/0, app_tree/1, app_info/1, module_summary/1, module_source/1,
+         source_available/1]).
 -export([process_details/2, garbage_collect/1]).
 -export([sys_trace/3, sys_trace_stop_all/0, sys_event/3]).
 -export([log_attach/1, log_detach/0, log/2, log_send/3]).
@@ -26,7 +27,7 @@
 %% dictionary key in the same process_info call as everything else.
 -define(INITIAL_CALL_KEY, {dictionary, '$initial_call'}).
 
-version() -> 17.
+version() -> 21.
 
 node_info() ->
     {WallClockMs, _} = erlang:statistics(wall_clock),
@@ -129,6 +130,187 @@ applications() ->
 
 app_master(Name) ->
     try application_controller:get_master(Name) catch _:_ -> undefined end.
+
+%% A loaded module: where it was loaded from, its source, version,
+%% behaviours, exported functions and application, or undefined when it
+%% isn't loaded.
+module_summary(Mod) when is_atom(Mod) ->
+    case code:is_loaded(Mod) of
+        {file, Loaded} ->
+            Str = fun(V) -> try unicode:characters_to_binary(V) catch _:_ -> <<>> end end,
+            Info = fun(Key) -> try Mod:module_info(Key) catch _:_ -> [] end end,
+            Attrs = Info(attributes),
+            Compile = Info(compile),
+            File = case Loaded of
+                       L when is_list(L) -> Str(L);
+                       Other -> Other
+                   end,
+            Source = case proplists:get_value(source, Compile) of
+                         S when is_list(S) -> Str(S);
+                         _ -> undefined
+                     end,
+            App = case application:get_application(Mod) of
+                      {ok, A} -> A;
+                      undefined -> undefined
+                  end,
+            #{module => Mod,
+              file => File,
+              source => Source,
+              vsn => proplists:get_value(vsn, Attrs, []),
+              behaviours => declared_behaviours(Mod),
+              exports => length([F || {F, _} <- Info(exports),
+                                      F =/= module_info]),
+              application => App,
+              has_source => source_available(Mod)};
+        false ->
+            undefined
+    end.
+
+%% The source of a module, read on this node: the file its compile info
+%% names, or, when that isn't here (a release seldom ships sources),
+%% Erlang source rebuilt from its debug info. At most ?MAX_SOURCE bytes.
+-define(MAX_SOURCE, 2000000).
+
+module_source(Mod) when is_atom(Mod) ->
+    Compile = try Mod:module_info(compile) catch _:_ -> [] end,
+    Path = case proplists:get_value(source, Compile) of
+               S when is_list(S) -> S;
+               _ -> undefined
+           end,
+    PathBin = case Path of
+                  undefined -> undefined;
+                  _ -> unicode:characters_to_binary(Path)
+              end,
+    case read_source(Path) of
+        {ok, Text, Truncated} ->
+            #{kind => file, path => PathBin, text => Text, truncated => Truncated};
+        _ ->
+            case debug_forms(Mod) of
+                {ok, Forms} ->
+                    {Text, Truncated} = limit(source_text(Forms)),
+                    #{kind => debug_info, path => PathBin, text => Text,
+                      truncated => Truncated};
+                {error, Reason} ->
+                    #{kind => none, path => PathBin, reason => Reason}
+            end
+    end.
+
+%% Whether module_source/1 has something to show: the source file is on
+%% this node, or the beam has debug info to rebuild it from. Cheap: the
+%% debug info is looked at, not decoded. A release (mix release strips the
+%% beams by default) usually has neither.
+source_available(Mod) when is_atom(Mod) ->
+    Compile = try Mod:module_info(compile) catch _:_ -> [] end,
+    case proplists:get_value(source, Compile) of
+        Path when is_list(Path) ->
+            filelib:is_regular(Path) orelse has_debug_info(Mod);
+        _ ->
+            has_debug_info(Mod)
+    end.
+
+has_debug_info(Mod) ->
+    case code:which(Mod) of
+        File when is_list(File), File =/= [] ->
+            case beam_lib:chunks(File, [debug_info]) of
+                %% compiled without debug_info: the chunk is there, empty
+                {ok, {_, [{debug_info, {debug_info_v1, _, {none, _}}}]}} -> false;
+                {ok, {_, [{debug_info, {debug_info_v1, _, _}}]}} -> true;
+                _ ->
+                    case beam_lib:chunks(File, [abstract_code]) of
+                        {ok, {_, [{abstract_code, {raw_abstract_v1, _}}]}} -> true;
+                        _ -> false
+                    end
+            end;
+        _ ->
+            false
+    end.
+
+read_source(undefined) ->
+    {error, no_path};
+read_source(Path) ->
+    case file:read_file(Path) of
+        {ok, Bin} ->
+            {Text, Truncated} = limit(Bin),
+            {ok, Text, Truncated};
+        Error ->
+            Error
+    end.
+
+limit(Bin) when byte_size(Bin) > ?MAX_SOURCE -> {binary:part(Bin, 0, ?MAX_SOURCE), true};
+limit(Bin) -> {Bin, false}.
+
+%% The module's Erlang abstract code, from its debug_info chunk (any
+%% compiler: Elixir's gives it as Erlang too) or an old abstract_code one.
+debug_forms(Mod) ->
+    case code:which(Mod) of
+        File when is_list(File), File =/= [] ->
+            case beam_lib:chunks(File, [debug_info]) of
+                {ok, {_, [{debug_info, {debug_info_v1, Backend, Data}}]}} ->
+                    try Backend:debug_info(erlang_v1, Mod, Data, []) of
+                        {ok, Forms} -> {ok, Forms};
+                        %% compiled without debug_info: the chunk is there, empty
+                        {error, missing} -> {error, no_debug_info};
+                        {error, Reason} -> {error, Reason}
+                    catch
+                        _:_ -> {error, no_debug_info}
+                    end;
+                _ ->
+                    case beam_lib:chunks(File, [abstract_code]) of
+                        {ok, {_, [{abstract_code, {raw_abstract_v1, Forms}}]}} -> {ok, Forms};
+                        _ -> {error, no_debug_info}
+                    end
+            end;
+        preloaded ->
+            {error, preloaded};
+        non_existing ->
+            {error, not_loaded};
+        _ ->
+            {error, no_beam_file}
+    end.
+
+source_text(Forms) ->
+    Text = [try erl_pp:form(F) catch _:_ -> io_lib:format("~p.~n", [F]) end
+            || F <- Forms, element(1, F) =/= eof,
+               not (element(1, F) =:= attribute andalso element(3, F) =:= file)],
+    case unicode:characters_to_binary(Text) of
+        Bin when is_binary(Bin) -> Bin;
+        _ -> iolist_to_binary(io_lib:format("~p", [Forms]))
+    end.
+
+%% A loaded application's keys (application:get_all_key/1), its environment,
+%% how it was started and the running applications that need it, or
+%% undefined when it isn't loaded.
+app_info(Name) ->
+    case application:get_all_key(Name) of
+        {ok, Keys} ->
+            Str = fun(V) -> try unicode:characters_to_binary(V) catch _:_ -> <<>> end end,
+            Get = fun(K, Default) -> proplists:get_value(K, Keys, Default) end,
+            Started = proplists:get_value(started, application:info(), []),
+            NeededBy = [A || {A, _, _} <- application:which_applications(),
+                             A =/= Name,
+                             {ok, Deps} <- [application:get_key(A, applications)],
+                             lists:member(Name, Deps)],
+            Path = case code:lib_dir(Name) of
+                       Dir when is_list(Dir) -> Str(Dir);
+                       _ -> undefined
+                   end,
+            #{description => Str(Get(description, "")),
+              vsn => Str(Get(vsn, "")),
+              id => Str(Get(id, "")),
+              mod => Get(mod, []),
+              applications => Get(applications, []),
+              included_applications => Get(included_applications, []),
+              optional_applications => Get(optional_applications, []),
+              registered => lists:sort(Get(registered, [])),
+              modules => length(Get(modules, [])),
+              start_phases => Get(start_phases, undefined),
+              start_type => proplists:get_value(Name, Started, undefined),
+              path => Path,
+              env => lists:sort(application:get_all_env(Name)),
+              needed_by => lists:sort(NeededBy)};
+        undefined ->
+            undefined
+    end.
 
 %% The process tree of an application, found as appmon_info's default
 %% "link" mode does (calc_app_tree/2): from the application master, follow

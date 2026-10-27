@@ -16,7 +16,8 @@ defmodule Beamdash.MixProject do
   def application do
     [
       mod: {Beamdash.Application, []},
-      extra_applications: [:logger, :runtime_tools, :inets, :ssl]
+      # tools: its tprof is loaded onto nodes whose release leaves tools out
+      extra_applications: [:logger, :runtime_tools, :inets, :ssl, :tools]
     ]
   end
 

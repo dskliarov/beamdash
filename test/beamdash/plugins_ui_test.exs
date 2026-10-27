@@ -610,6 +610,48 @@ defmodule Beamdash.PluginsUiTest do
     end
   end
 
+  describe "Apps tab" do
+    test "the plugin's main page is a tab of the application it supports", ctx do
+      install!(ctx.server, path_spec(ctx.src))
+      node = attach(ctx, "1.2.0")
+      eventually(fn -> status(ctx.server) == :active end)
+      [plugin] = Plugins.active(ctx.server)
+
+      # the renderer looks for render/1 on a loaded module
+      Code.ensure_loaded!(BeamdashWeb.AppsLive)
+
+      # the bar's @conn, as the Connection hook keeps it
+      conn = %{status: :connected, node: node, info: nil, node_input: "", error: nil}
+
+      socket =
+        BeamdashWeb.AppsLive
+        |> socket()
+        |> Phoenix.Component.assign(
+          status: :connected,
+          node: node,
+          apps: [%{name: :hello_app, description: "Hello", vsn: "1.2.0", master: self()}],
+          app: :hello_app,
+          tree: nil,
+          info: nil,
+          view: {:plugin, :hello_plugin},
+          plugin_css?: true,
+          selected: nil,
+          proc: nil,
+          sources: [],
+          source_tab: nil,
+          error: nil,
+          conn: Map.put(conn, :plugins, [plugin])
+        )
+
+      html = render(socket)
+      assert html =~ ~r/<button[^>]*aria-selected="true"[^>]*phx-value-view="plugin:hello_plugin"/
+      # embedded with the session PluginLive gives it, and the plugin's stylesheet
+      assert html =~ ~r/<div[^>]* id="apps-plugin-hello_plugin-hello-erlang"/
+      assert html =~ ~s(data-phx-session=)
+      assert html =~ ~s(<link rel="stylesheet" href="/plugins/hello_plugin/plugin.css">)
+    end
+  end
+
   describe "stylesheet route" do
     test "serves an installed plugin's plugin.css, else 404", ctx do
       install!(ctx.server, path_spec(ctx.src))

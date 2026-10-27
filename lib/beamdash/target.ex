@@ -487,6 +487,42 @@ defmodule Beamdash.Target do
 
   def localize_pid(other, _node), do: other
 
+  @doc """
+  The pid a page or link names as this VM writes it (`"<25516.86.0>"`,
+  `Beamdash.Format.pid/2`), or `nil` when the text isn't a pid.
+
+  The first number is this VM's index for the process's node, and it only
+  holds while that connection lasts: a link saved or a page opened before
+  the node was reconnected names an index that is gone, which
+  `:erlang.list_to_pid/1` refuses. The pid is then rebuilt on `node` (the
+  attached node) from the other two numbers, which are the process's own.
+  """
+  @spec parse_pid(term(), node() | nil) :: pid() | nil
+  def parse_pid(text, node) when is_binary(text) do
+    case Regex.run(~r/^<\d+\.(\d+)\.(\d+)>$/, text) do
+      [_, id, serial] ->
+        try do
+          :erlang.list_to_pid(String.to_charlist(text))
+        rescue
+          ArgumentError -> rebuild_pid(node, id, serial)
+        end
+
+      nil ->
+        nil
+    end
+  end
+
+  def parse_pid(_text, _node), do: nil
+
+  defp rebuild_pid(nil, _id, _serial), do: nil
+
+  defp rebuild_pid(node, id, serial) do
+    case rpc(node, :erlang, :list_to_pid, [String.to_charlist("<0.#{id}.#{serial}>")]) do
+      {:ok, pid} when is_pid(pid) -> pid
+      _ -> nil
+    end
+  end
+
   # The node index this VM gives the target's pids: read it off the
   # target's init process.
   defp remember_pid_index(node) do

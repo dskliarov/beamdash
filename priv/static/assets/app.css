@@ -17,6 +17,10 @@
   --mem-1: #2a78d6; --mem-2: #eb6834; --mem-3: #1baf7a;
   --mem-4: #eda100; --mem-5: #e87ba4; --mem-6: #008300;
   --up: #b42318; --down: #15803d;
+  /* source code (Highlight.js classes) */
+  --code-keyword: #cf222e; --code-string: #0a3069; --code-number: #0550ae;
+  --code-comment: #6e7781; --code-atom: #8250df; --code-title: #6639ba;
+  --code-builtin: #953800;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -37,6 +41,9 @@
     --mem-1: #3987e5; --mem-2: #d95926; --mem-3: #199e70;
     --mem-4: #c98500; --mem-5: #d55181; --mem-6: #008300;
     --up: #f87171; --down: #4ade80;
+    --code-keyword: #ff7b72; --code-string: #a5d6ff; --code-number: #79c0ff;
+    --code-comment: #8b949e; --code-atom: #d2a8ff; --code-title: #d2a8ff;
+    --code-builtin: #ffa657;
   }
 }
 
@@ -1105,3 +1112,45 @@ button.danger { background: var(--error); border-color: var(--error); color: #ff
 .plugin-examples { display: grid; grid-template-columns: max-content 1fr; gap: 2px 10px; margin: 6px 0; }
 .plugin-examples dd { margin: 0; overflow-wrap: anywhere; }
 .plugin-message { margin-top: 16px; }
+.apps-details { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 4px 14px; margin: 0 0 10px; font-size: 13px; }
+.apps-details dt { color: var(--muted); }
+.apps-details dd { margin: 0; overflow-wrap: anywhere; }
+.apps-env { margin: 0 0 12px; font-size: 13px; }
+.apps-env summary { cursor: pointer; color: var(--muted); }
+.apps-env-table { border-collapse: collapse; margin-top: 6px; width: 100%; }
+.apps-env-table th, .apps-env-table td { text-align: left; vertical-align: top; padding: 3px 10px 3px 0; border-top: 1px solid var(--line); font-weight: normal; }
+.apps-env-table td { overflow-wrap: anywhere; white-space: pre-wrap; }
+.apps-tabs { margin: 0 0 10px; }
+.apps-tabs .seg-btn { display: inline-flex; align-items: center; gap: 6px; padding: 6px 12px; }
+.apps-panel > p.small:first-child { margin-top: 0; }
+.apps-proc { margin: -2px 0 10px; padding: 8px 10px; border: 1px solid var(--line); border-top: 0; border-radius: 0 0 6px 6px; }
+.apps-proc .apps-details { margin-bottom: 0; }
+.apps-proc dd.warn { justify-self: start; padding: 0 6px; border-radius: 4px; background: var(--warn-bg); font-weight: 600; }
+.module-info { margin-top: 10px; padding-top: 8px; border-top: 1px solid var(--line); }
+.module-info-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 10px; margin-bottom: 6px; }
+.module-info .apps-details { margin-bottom: 0; }
+/* module source tabs (Trace and Profile tabs) */
+.src-tabs { display: flex; flex-wrap: wrap; align-items: stretch; gap: 0; margin: 12px 0 10px; }
+.src-tab { display: inline-flex; align-items: stretch; }
+.src-tab .seg-btn { padding-right: 4px; }
+.src-close { padding: 0 8px; border: 0; background: transparent; color: var(--muted); cursor: pointer; font-size: 15px; line-height: 1; }
+.src-close:hover { color: var(--fg); }
+.src-tab.active .src-close { color: inherit; }
+.src-panel { margin-bottom: 16px; }
+.src-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 12px; margin-bottom: 8px; }
+.src-head h2 { margin: 0; font-size: 18px; }
+.src-code { border: 1px solid var(--line); border-radius: 6px; overflow: auto; max-height: calc(100vh - 220px); font-size: 12.5px; line-height: 1.5; }
+/* the source: line numbers beside one highlighted block, so constructs
+   spanning lines (heredocs, multi-line strings) highlight whole */
+.src-code { display: grid; grid-template-columns: auto 1fr; align-items: stretch; }
+.src-nos, .src-text { margin: 0; padding: 4px 0; font: inherit; line-height: inherit; background: none; border: 0; }
+.src-nos { padding: 4px 10px 4px 8px; text-align: right; color: var(--muted); user-select: none; border-right: 1px solid var(--line); }
+.src-text { padding: 4px 12px; overflow: visible; white-space: pre; }
+.src-text code { font: inherit; background: none; padding: 0; }
+.hljs-keyword, .hljs-meta .hljs-keyword { color: var(--code-keyword); }
+.hljs-string, .hljs-regexp, .hljs-char.escape_ { color: var(--code-string); }
+.hljs-number, .hljs-literal, .hljs-meta { color: var(--code-number); }
+.hljs-comment, .hljs-doctag { color: var(--code-comment); font-style: italic; }
+.hljs-symbol, .hljs-variable.constant_ { color: var(--code-atom); }
+.hljs-title, .hljs-title.function_, .hljs-title.class_, .hljs-section { color: var(--code-title); }
+.hljs-built_in, .hljs-variable, .hljs-type, .hljs-params, .hljs-attr { color: var(--code-builtin); }
