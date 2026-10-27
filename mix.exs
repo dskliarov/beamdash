@@ -31,7 +31,7 @@ defmodule Beamdash.MixProject do
       {:phoenix, "~> 1.7"},
       {:phoenix_live_view, "~> 1.0"},
       {:phoenix_html, "~> 4.1"},
-      {:bandit, "~> 1.5"},
+      {:bandit, "~> 1.14"},
       {:jason, "~> 1.4"},
       # loaded into the target for the Memory page (unless it has its own)
       {:recon, "~> 2.5"}
