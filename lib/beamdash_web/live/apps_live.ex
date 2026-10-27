@@ -329,7 +329,7 @@ defmodule BeamdashWeb.AppsLive do
             </div>
             <.proc_details :if={@selected && @proc} proc={@proc} syntax={@syntax} />
 
-            <p :if={@current && @tree == nil} class="muted">
+            <p :if={@tree == nil} class="muted">
               This application has no processes (a library application) or has just stopped.
             </p>
             <BeamdashWeb.AppChart.chart
