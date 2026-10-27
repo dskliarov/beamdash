@@ -30,7 +30,9 @@ defmodule Beamdash.Target do
   it goes; success is an ordinary `{:connected, node}`.
 
   `switch/2` moves the connection to another node of the attached node's
-  cluster, with the cookie the attached node uses for it.
+  cluster: directly with the cookie the attached node uses for it, or,
+  when attached through kubectl, through a new tunnel to the pod running
+  that node.
   """
 
   use GenServer
@@ -72,7 +74,7 @@ defmodule Beamdash.Target do
   end
 
   @doc """
-  Connects to a node running as `binary` (under `/app/bin`, see
+  Connects to a node running as `binary` (a release binary path, see
   `Beamdash.Kubectl.list_binaries/5`) in `container` (see
   `Beamdash.Kubectl.list_containers/4`; `nil` or `""` for a single-container
   pod) in `pod`, in `namespace`, in the cluster `kubeconfig` points at (see
@@ -91,12 +93,14 @@ defmodule Beamdash.Target do
   def disconnect(server \\ __MODULE__), do: GenServer.call(server, :disconnect)
 
   @doc """
-  Connects to `node`, a node the attached node is connected to, with the
-  cookie the attached node uses for it. Only for direct connections: a
-  pod's peers aren't reachable through its kubectl tunnel.
+  Connects to `node`, a node the attached node is connected to. Directly
+  attached, with the cookie the attached node uses for it. Attached through
+  kubectl, `node`'s pod (see `Beamdash.Kubectl.find_pod/4`) is connected to
+  the same way as the current one: same cluster, container name and
+  binary, since a pod's peers aren't reachable through its own tunnel.
   """
   def switch(node, server \\ __MODULE__) when is_atom(node),
-    do: GenServer.call(server, {:switch, node}, @connect_timeout + @rpc_timeout)
+    do: GenServer.call(server, {:switch, node}, @kubectl_connect_timeout + @rpc_timeout)
 
   @doc """
   `nil`, or while a lost connection is being tried again
@@ -246,8 +250,23 @@ defmodule Beamdash.Target do
   def handle_call({:switch, node}, _from, %{node: node} = state),
     do: {:reply, rpc(node, :beamdash_agent, :node_info, []), state}
 
-  def handle_call({:switch, _node}, _from, %{params: {:kubectl, _, _, _, _, _}} = state),
-    do: {:reply, {:error, :switch_needs_direct}, state}
+  def handle_call(
+        {:switch, node},
+        from,
+        %{params: {:kubectl, kubeconfig, namespace, _pod, container, binary}} = state
+      ) do
+    case Kubectl.find_pod(kubeconfig, namespace, node) do
+      {:ok, {namespace, pod}} ->
+        handle_call(
+          {:connect_kubectl, kubeconfig, namespace, pod, container, binary},
+          from,
+          state
+        )
+
+      {:error, _} = error ->
+        {:reply, error, state}
+    end
+  end
 
   def handle_call({:switch, node}, from, %{params: {:direct, _, current_cookie}} = state) do
     # the cookie the attached node talks to `node` with (its own, unless

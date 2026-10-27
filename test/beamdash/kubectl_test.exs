@@ -5,20 +5,23 @@ defmodule Beamdash.KubectlTest do
   alias Beamdash.Kubectl.Tunnel
 
   describe "list_kubeconfigs/1" do
-    test "lists .yaml/.yml files, sorted, as {name, path}" do
+    test "lists config and .yaml/.yml files, sorted, as {name, path}" do
       dir = tmp_kube_dir()
       File.write!(Path.join(dir, "b-cluster.yaml"), "")
       File.write!(Path.join(dir, "a-cluster.yml"), "")
+      File.write!(Path.join(dir, "config"), "")
       File.write!(Path.join(dir, "notes.txt"), "")
 
       assert {:ok,
               [
                 %{name: "a-cluster", path: a_path},
-                %{name: "b-cluster", path: b_path}
+                %{name: "b-cluster", path: b_path},
+                %{name: "config", path: c_path}
               ]} = Kubectl.list_kubeconfigs(dir)
 
       assert a_path == Path.join(dir, "a-cluster.yml")
       assert b_path == Path.join(dir, "b-cluster.yaml")
+      assert c_path == Path.join(dir, "config")
     end
 
     test "reports an error for a nonexistent directory" do
@@ -29,6 +32,51 @@ defmodule Beamdash.KubectlTest do
                    "does-not-exist-#{System.unique_integer([:positive])}"
                  )
                )
+    end
+  end
+
+  describe "find_pod/4" do
+    @pods "rcl-memkv-0 10.244.0.5 rcl-memkv-0\nrcl-memkv-1 10.244.0.6 rcl-memkv-1\nother 10.244.0.7\n"
+
+    test "matches a StatefulSet DNS name, taking the namespace from it" do
+      exec = fn args ->
+        assert ["get", "pods", "-n", "rcl-memkv", "-o", "jsonpath=" <> _] = args
+        {@pods, 0}
+      end
+
+      node = :"app@rcl-memkv-1.rcl-memkv-headless.rcl-memkv.svc.cluster.local"
+      assert {:ok, {"rcl-memkv", "rcl-memkv-1"}} = Kubectl.find_pod(nil, "default", node, exec)
+    end
+
+    test "matches a pod IP in the current namespace" do
+      exec = fn ["get", "pods", "-n", "prod" | _] -> {@pods, 0} end
+      assert {:ok, {"prod", "other"}} = Kubectl.find_pod(nil, "prod", :"app@10.244.0.7", exec)
+    end
+
+    test "matches a short host against the pod name" do
+      exec = fn _args -> {@pods, 0} end
+
+      assert {:ok, {"prod", "rcl-memkv-0"}} =
+               Kubectl.find_pod(nil, "prod", :"app@rcl-memkv-0", exec)
+    end
+
+    test "passes --kubeconfig when a cluster is given" do
+      exec = fn ["--kubeconfig", "/k.yaml" | _] -> {@pods, 0} end
+      assert {:ok, _} = Kubectl.find_pod("/k.yaml", "prod", :app@other, exec)
+    end
+
+    test "reports a node no pod runs" do
+      exec = fn _args -> {@pods, 0} end
+
+      assert {:error, {:pod_not_found, :"app@10.9.9.9", "prod"}} =
+               Kubectl.find_pod(nil, "prod", :"app@10.9.9.9", exec)
+    end
+
+    test "a non-zero exit is reported" do
+      exec = fn _args -> {"forbidden\n", 1} end
+
+      assert {:error, {:pod_list_failed, {1, "forbidden"}}} =
+               Kubectl.find_pod(nil, "prod", :app@x, exec)
     end
   end
 
@@ -183,19 +231,21 @@ defmodule Beamdash.KubectlTest do
   end
 
   describe "list_binaries/5" do
-    test "parses `ls -1` output into a sorted list of names" do
+    test "runs the discovery script and returns the sorted, de-duplicated paths" do
       exec = fn args ->
-        assert args == ["exec", "-n", "prod", "my-pod", "--", "ls", "-1", "/app/bin"]
-        {"my_app\nmy_app.bat\n", 0}
+        assert ["exec", "-n", "prod", "my-pod", "--", "sh", "-c", script] = args
+        assert script =~ "-root"
+        assert script =~ "/app"
+        {"/opt/my_app/bin/my_app\n/app/bin/my_app\n/opt/my_app/bin/my_app\n", 0}
       end
 
-      assert {:ok, ["my_app", "my_app.bat"]} =
+      assert {:ok, ["/app/bin/my_app", "/opt/my_app/bin/my_app"]} =
                Kubectl.list_binaries(nil, "prod", "my-pod", "", exec)
     end
 
     test "passes -c container when one is given" do
       exec = fn args ->
-        assert args == [
+        assert [
                  "exec",
                  "-n",
                  "prod",
@@ -203,10 +253,10 @@ defmodule Beamdash.KubectlTest do
                  "-c",
                  "gateway",
                  "--",
-                 "ls",
-                 "-1",
-                 "/app/bin"
-               ]
+                 "sh",
+                 "-c",
+                 _script
+               ] = args
 
         {"my_app\n", 0}
       end
@@ -216,7 +266,7 @@ defmodule Beamdash.KubectlTest do
 
     test "passes --kubeconfig when a cluster is given" do
       exec = fn args ->
-        assert args == [
+        assert [
                  "--kubeconfig",
                  "/home/me/.kube/prod.yaml",
                  "exec",
@@ -224,10 +274,10 @@ defmodule Beamdash.KubectlTest do
                  "prod",
                  "my-pod",
                  "--",
-                 "ls",
-                 "-1",
-                 "/app/bin"
-               ]
+                 "sh",
+                 "-c",
+                 _script
+               ] = args
 
         {"my_app\n", 0}
       end
@@ -356,15 +406,14 @@ defmodule Beamdash.KubectlTest do
                )
     end
 
-    test "falls back to an Erlang-style rpc reply when the Elixir one fails" do
+    test "falls back to relx-style eval when the Elixir rpc fails" do
       exec = fn
-        ["exec", "-n", "prod", "my-pod", "--", "/app/bin/my_app", "rpc", expr] ->
-          if String.starts_with?(expr, "IO.puts") do
-            {"** (CompileError) undefined function IO", 1}
-          else
-            assert expr == ~s|io:format("~s~n~s~n",[node(), erlang:get_cookie()]).|
-            {"app@10.0.0.5\nsecret_cookie\n", 0}
-          end
+        ["exec", "-n", "prod", "my-pod", "--", "/opt/my_app/bin/my_app", "rpc", _expr] ->
+          {"Usage: my_app rpc [Mod [Fun [Args]]]]", 1}
+
+        ["exec", "-n", "prod", "my-pod", "--", "/opt/my_app/bin/my_app", "eval", expr] ->
+          assert expr == "{beamdash_discovery, node(), erlang:get_cookie()}."
+          {"{beamdash_discovery,'app@10.0.0.5',secret_cookie}\n", 0}
       end
 
       open_forward = fn _kc, _ns, _pod, {local, _remote} ->
@@ -372,7 +421,24 @@ defmodule Beamdash.KubectlTest do
       end
 
       assert {:ok, %{node: :"app@10.0.0.5", cookie: :secret_cookie}} =
-               Kubectl.connect(nil, "prod", "my-pod", "", "my_app",
+               Kubectl.connect(nil, "prod", "my-pod", "", "/opt/my_app/bin/my_app",
+                 exec: exec,
+                 open_forward: open_forward
+               )
+    end
+
+    test "accepts a relx eval reply wrapped in {ok, _}" do
+      exec = fn
+        [_, _, _, _, _, _, "rpc", _] -> {"", 1}
+        [_, _, _, _, _, _, "eval", _] -> {"{ok, {beamdash_discovery,'app@h','c'}}\n", 0}
+      end
+
+      open_forward = fn _kc, _ns, _pod, {local, _remote} ->
+        {:ok, fake_epmd(local, "app", 9999)}
+      end
+
+      assert {:ok, %{node: :app@h, cookie: :c}} =
+               Kubectl.connect(nil, "prod", "my-pod", "", "/opt/my_app/bin/my_app",
                  exec: exec,
                  open_forward: open_forward
                )

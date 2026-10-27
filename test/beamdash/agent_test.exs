@@ -28,8 +28,8 @@ defmodule Beamdash.AgentTest do
     end
   end
 
-  # AgentLoader compiles the agent's abstract forms on the target, so the
-  # agent must compile on OTP 25 too: no map comprehensions or generators
+  # AgentLoader may compile the agent for an older OTP (here or on the
+  # target), so the agent must compile for OTP 25 too: no map comprehensions or generators
   # (OTP 26) and no `maybe` (OTP 25 only behind a feature flag). No OTP 25
   # install is available to test on, so this static check is the guard.
   test "beamdash_agent uses no OTP 26+ constructs" do

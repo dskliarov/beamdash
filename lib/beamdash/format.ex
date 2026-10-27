@@ -185,9 +185,8 @@ defmodule Beamdash.Format do
 
   def error(:not_distributed), do: "This VM is not running distribution."
 
-  def error(:switch_needs_direct),
-    do:
-      "Switching needs a direct connection: the other nodes of a pod's cluster can't be reached through its kubectl tunnel. Connect to their pod from the bar."
+  def error({:pod_not_found, node, namespace}),
+    do: "No pod in namespace #{namespace} runs #{node}"
 
   def error({:distribution_failed, reason}),
     do:
@@ -231,7 +230,7 @@ defmodule Beamdash.Format do
     do: "Could not list the pod's containers: #{inspect(reason)}"
 
   def error({:binary_list_failed, reason}),
-    do: "Could not list /app/bin in the pod: #{inspect(reason)}"
+    do: "Could not list release binaries in the pod: #{inspect(reason)}"
 
   def error({:discovery_failed, reason}),
     do:

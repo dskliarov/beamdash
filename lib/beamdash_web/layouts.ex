@@ -266,7 +266,7 @@ defmodule BeamdashWeb.Layouts do
               </button>
             </form>
             <p :if={@conn[:kube_binaries] == []} class="conn-hint muted small">
-              No binaries found under /app/bin in this pod{if @conn[:kube_container],
+              No release binaries found in this pod{if @conn[:kube_container],
                 do: " (container #{@conn.kube_container})"}.
             </p>
           </div>

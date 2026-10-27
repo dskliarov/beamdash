@@ -246,7 +246,9 @@ const NavOverflow = {
 // found in the cluster (data-options), filtered as you type. The list is
 // built here and marked phx-update="ignore", so server refreshes keep it open.
 // Picking a namespace lists its pods straight away; a typed name waits for
-// Enter or "List pods" (any name is accepted).
+// Enter or "List pods" (any name is accepted). Focus opens the list only
+// while the field is empty: once a namespace is chosen, typing or the arrow
+// keys bring it back.
 const NamespaceCombobox = {
   mounted() {
     this.input = this.el.querySelector("input");
@@ -255,7 +257,10 @@ const NamespaceCombobox = {
     this.render();
     this.close();
 
-    this.input.addEventListener("focus", () => { this.filtering = false; this.open(); });
+    this.input.addEventListener("focus", () => {
+      this.filtering = false;
+      if (this.input.value === "") this.open();
+    });
     this.input.addEventListener("input", () => { this.filtering = true; this.open(); });
     this.input.addEventListener("blur", () => this.close());
     this.input.addEventListener("keydown", (e) => this.key(e));

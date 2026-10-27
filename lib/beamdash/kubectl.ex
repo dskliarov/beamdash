@@ -10,11 +10,12 @@ defmodule Beamdash.Kubectl do
   namespace, a pod, the container to run commands in (`list_containers/4`
   lists them; pods with more than one container otherwise default to
   whichever `kubectl exec` picks, which is not necessarily the one running
-  the release) and a release binary under `/app/bin` in it (`list_binaries/5`
-  lists them), `connect/6`:
+  the release) and a release binary in it (`list_binaries/5` lists them from
+  the release root of the BEAM running there, or `/app/bin`), `connect/6`:
 
     1. reads the node name and distribution cookie off the pod with
-       `kubectl exec ... <binary> rpc "..."`, which goes through the
+       `kubectl exec ... <binary> rpc "..."` (Mix releases) or
+       `<binary> eval "..."` (relx/rebar3 releases), which goes through the
        Kubernetes API server rather than node distribution, so it needs no
        tunnel and works before one exists;
     2. forwards epmd (`kubectl port-forward ... <local>:4369`) to discover
@@ -38,6 +39,14 @@ defmodule Beamdash.Kubectl do
   @epmd_target_key {:beamdash_epmd, :target}
   @epmd_port 4369
   @release_bin_dir "/app/bin"
+
+  # Prints the executables in `<root>/bin` for each release root: the `-root`
+  # of every BEAM running in the container (a release's own root, wherever it
+  # is installed), plus /app for Mix release images. Roots with `bin/erlc` are
+  # a plain OTP install rather than a release, so they are skipped.
+  @list_binaries_script """
+  { for f in /proc/[0-9]*/cmdline; do tr '\\000' '\\n' < "$f" 2>/dev/null | sed -n '/^-root$/{n;p;q;}'; done; echo /app; } | sort -u | while read -r r; do [ -e "$r/bin/erlc" ] && continue; for b in "$r"/bin/*; do [ -f "$b" ] && [ -x "$b" ] && echo "$b"; done; done; true
+  """
   @forward_wait_attempts 40
   @forward_wait_interval 500
 
@@ -50,7 +59,8 @@ defmodule Beamdash.Kubectl do
   Kubeconfig files under `dir` (default `Beamdash.Settings.kubeconfig_dir/0`,
   `~/.kube` unless changed in Settings), one per cluster, so the UI can
   offer a cluster picker instead of relying on an externally-set
-  KUBECONFIG/current-context.
+  KUBECONFIG/current-context. Matches `.yaml`/`.yml` files plus kubectl's
+  default extensionless `config`.
   """
   @spec list_kubeconfigs(String.t()) ::
           {:ok, [%{name: String.t(), path: String.t()}]} | {:error, term()}
@@ -59,7 +69,7 @@ defmodule Beamdash.Kubectl do
       {:ok, files} ->
         {:ok,
          files
-         |> Enum.filter(&String.ends_with?(&1, [".yaml", ".yml"]))
+         |> Enum.filter(&(&1 == "config" or String.ends_with?(&1, [".yaml", ".yml"])))
          |> Enum.sort()
          |> Enum.map(&%{name: Path.rootname(&1), path: Path.join(dir, &1)})}
 
@@ -89,6 +99,50 @@ defmodule Beamdash.Kubectl do
   catch
     kind, reason -> {:error, {:pod_list_failed, {kind, reason}}}
   end
+
+  @doc """
+  The `{namespace, pod}` running `node`, so a connection can move to a peer
+  of the attached pod's node. `node`'s host is matched against the pods in
+  `namespace` by pod IP, or by its first DNS label against the pod's name
+  or `spec.hostname` (StatefulSet pods are `<pod>.<service>.<namespace>.svc...`,
+  and that namespace is searched instead of `namespace` when present).
+  """
+  @spec find_pod(String.t() | nil, String.t(), node(), (list(String.t()) -> {binary(), integer()})) ::
+          {:ok, {String.t(), String.t()}} | {:error, term()}
+  def find_pod(kubeconfig, namespace, node, exec \\ &run_kubectl/1) do
+    host = node |> Atom.to_string() |> String.split("@", parts: 2) |> List.last()
+    [label | rest] = String.split(host, ".")
+    namespace = dns_namespace(rest) || namespace
+
+    args =
+      kubeconfig_args(kubeconfig) ++
+        [
+          "get",
+          "pods",
+          "-n",
+          namespace,
+          "-o",
+          ~s|jsonpath={range .items[*]}{.metadata.name} {.status.podIP} {.spec.hostname}{"\\n"}{end}|
+        ]
+
+    case exec.(args) do
+      {output, 0} ->
+        pods = for line <- String.split(output, "\n", trim: true), do: String.split(line)
+
+        case Enum.find(pods, fn [name | more] -> host in more or label in [name | more] end) do
+          [name | _] -> {:ok, {namespace, name}}
+          nil -> {:error, {:pod_not_found, node, namespace}}
+        end
+
+      {output, status} ->
+        {:error, {:pod_list_failed, {status, String.trim(output)}}}
+    end
+  catch
+    kind, reason -> {:error, {:pod_list_failed, {kind, reason}}}
+  end
+
+  defp dns_namespace([_service, namespace, "svc" | _]), do: namespace
+  defp dns_namespace(_), do: nil
 
   @doc """
   Namespaces in the cluster `kubeconfig` points at, offered as suggestions
@@ -156,8 +210,11 @@ defmodule Beamdash.Kubectl do
   end
 
   @doc """
-  Binaries under #{@release_bin_dir} in `pod`'s `container` (a release's
-  name there is a good guess at the binary to pick for `connect/6`).
+  Absolute paths of release binaries in `pod`'s `container`: the executables
+  in `bin/` under the release root of each BEAM running there (`-root` on
+  its command line, e.g. `/opt/my_app` for a relx release), plus
+  #{@release_bin_dir} (a release's name there is a good guess at the binary
+  to pick for `connect/6`). Needs `sh` in the container.
   """
   @spec list_binaries(
           String.t() | nil,
@@ -168,9 +225,11 @@ defmodule Beamdash.Kubectl do
         ) ::
           {:ok, [String.t()]} | {:error, term()}
   def list_binaries(kubeconfig, namespace, pod, container, exec \\ &run_kubectl/1) do
-    case exec.(exec_args(kubeconfig, namespace, pod, container, ["ls", "-1", @release_bin_dir])) do
+    command = ["sh", "-c", @list_binaries_script]
+
+    case exec.(exec_args(kubeconfig, namespace, pod, container, command)) do
       {output, 0} ->
-        {:ok, output |> String.split("\n", trim: true) |> Enum.sort()}
+        {:ok, output |> String.split("\n", trim: true) |> Enum.uniq() |> Enum.sort()}
 
       {output, status} ->
         {:error, {:binary_list_failed, {status, String.trim(output)}}}
@@ -203,8 +262,9 @@ defmodule Beamdash.Kubectl do
 
   @doc """
   Opens a tunnel to `pod`'s `container` in `namespace` (in the cluster
-  `kubeconfig` points at) through `binary` (a path under
-  #{@release_bin_dir}) and returns the node and cookie discovered there,
+  `kubeconfig` points at) through `binary` (an absolute path from
+  `list_binaries/5`, or a name under #{@release_bin_dir}) and returns the
+  node and cookie discovered there,
   with the tunnel to pass to `Target.connect/2` and later to `close/1`.
   """
   @spec connect(String.t() | nil, String.t(), String.t(), String.t(), String.t(), keyword()) ::
@@ -255,7 +315,8 @@ defmodule Beamdash.Kubectl do
   ## Discovery (kubectl exec ... rpc), no tunnel needed
 
   defp discover(kubeconfig, namespace, pod, container, binary, exec) do
-    release_bin = Path.join(@release_bin_dir, binary)
+    release_bin =
+      if Path.type(binary) == :absolute, do: binary, else: Path.join(@release_bin_dir, binary)
 
     with {:error, elixir_reason} <-
            discover_with(kubeconfig, namespace, pod, container, release_bin, :elixir, exec),
@@ -265,22 +326,36 @@ defmodule Beamdash.Kubectl do
     end
   end
 
+  # Mix releases take an expression on `rpc` and print what it writes to
+  # stdout. relx releases' `rpc` takes `Mod Fun Args` instead; their `eval`
+  # runs an expression on the node and prints its return value as a term
+  # (with or without an `{ok, _}` wrapper, depending on the relx version).
   defp discover_with(kubeconfig, namespace, pod, container, release_bin, flavor, exec) do
-    args =
-      exec_args(kubeconfig, namespace, pod, container, [release_bin, "rpc", rpc_expr(flavor)])
+    args = exec_args(kubeconfig, namespace, pod, container, [release_bin | command(flavor)])
 
     case exec.(args) do
-      {output, 0} -> parse_discovery(output)
+      {output, 0} -> parse_discovery(flavor, output)
       {output, status} -> {:error, {status, String.trim(output)}}
     end
   catch
     kind, reason -> {:error, {kind, reason}}
   end
 
-  defp rpc_expr(:elixir), do: "IO.puts(node()); IO.puts(:erlang.get_cookie())"
-  defp rpc_expr(:erlang), do: ~s|io:format("~s~n~s~n",[node(), erlang:get_cookie()]).|
+  defp command(:elixir), do: ["rpc", "IO.puts(node()); IO.puts(:erlang.get_cookie())"]
+  defp command(:erlang), do: ["eval", "{beamdash_discovery, node(), erlang:get_cookie()}."]
 
-  defp parse_discovery(output) do
+  defp parse_discovery(:erlang, output) do
+    with {:ok, tokens, _} <- :erl_scan.string(String.to_charlist(String.trim(output) <> ".")),
+         {:ok, term} <- :erl_parse.parse_term(tokens),
+         {:beamdash_discovery, node, cookie} when is_atom(node) and is_atom(cookie) <-
+           unwrap_ok(term) do
+      {:ok, {node, cookie}}
+    else
+      _ -> {:error, {:unparseable_output, output}}
+    end
+  end
+
+  defp parse_discovery(:elixir, output) do
     case output |> String.trim() |> String.split("\n") |> Enum.map(&String.trim/1) do
       [node_str, cookie_str] when node_str != "" and cookie_str != "" ->
         {:ok, {String.to_atom(node_str), String.to_atom(cookie_str)}}
@@ -289,6 +364,9 @@ defmodule Beamdash.Kubectl do
         {:error, {:unparseable_output, output}}
     end
   end
+
+  defp unwrap_ok({:ok, term}), do: term
+  defp unwrap_ok(term), do: term
 
   ## epmd NAMES_REQ (minimal client: 2-byte length + opcode request, the
   ## reply is a 4-byte epmd port then "name <name> at port <port>\n" lines)

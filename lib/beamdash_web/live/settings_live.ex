@@ -30,7 +30,7 @@ defmodule BeamdashWeb.SettingsLive do
   defp assign_kubeconfig_dir(socket, dir) do
     status =
       case Kubectl.list_kubeconfigs(dir) do
-        {:ok, []} -> {:warn, "No .yaml or .yml kubeconfig files in this directory."}
+        {:ok, []} -> {:warn, "No config, .yaml or .yml kubeconfig files in this directory."}
         {:ok, [_]} -> {:ok, "1 cluster found."}
         {:ok, clusters} -> {:ok, "#{length(clusters)} clusters found."}
         {:error, reason} -> {:warn, Format.error(reason)}

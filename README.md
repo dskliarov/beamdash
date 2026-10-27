@@ -244,7 +244,8 @@ connection bar to **kubectl**, pick the **Cluster** (one entry per
 kubeconfig file under `~/.kube`, or the directory set in **Settings** —
 beamdash passes it to `kubectl` directly,
 no shell-level context switch needed), enter the namespace, pick the pod,
-and List `/app/bin` to pick the release binary. beamdash reads the node
+and pick the release binary (found from the running BEAM's release root,
+so Mix releases in `/app` and relx releases in e.g. `/opt/<name>` both work). beamdash reads the node
 name and cookie off the pod itself, then opens the `kubectl port-forward`
 tunnels distribution needs to reach it; no `node@host` or cookie to type.
 
