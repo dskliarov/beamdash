@@ -707,6 +707,8 @@ dl.relations dd { margin: 0; display: flex; flex-wrap: wrap; gap: 4px 6px; }
 .settings-toggle-row { display: flex; align-items: center; gap: 12px; margin: 16px 0; }
 .settings-toggle-row > div { flex: 1; }
 .settings-toggle-row p { margin: 4px 0 0; }
+.settings-list { list-style: none; margin: 0; padding: 0; }
+#source-dir-form input { display: block; margin: 4px 0 8px; }
 .settings-path { width: 100%; max-width: 480px; margin-top: 8px; box-sizing: border-box; }
 .settings-switch { flex: none; width: 44px; height: 26px; padding: 3px; border: 1px solid var(--muted); border-radius: 16px; background: var(--muted); display: flex; align-items: center; }
 .settings-switch.on { background: var(--accent); border-color: var(--accent); }

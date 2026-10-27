@@ -61,6 +61,45 @@ defmodule Beamdash.ModuleSourceTest do
     refute text =~ "a comment"
   end
 
+  describe "a local source folder" do
+    setup do
+      on_exit(fn -> Beamdash.Settings.delete_source_dir("src_local_app") end)
+      local = Path.join(System.tmp_dir!(), "beamdash_local_#{System.unique_integer([:positive])}")
+      on_exit(fn -> File.rm_rf(local) end)
+      %{local: local}
+    end
+
+    test "has the source a release lacks", %{node: node, local: local} do
+      # as in a release: no file on the node, no debug info
+      src = load(node, :src_local_demo, [])
+      text = File.read!(src)
+      File.rm!(src)
+      refute ModuleSource.available?(node, :src_local_demo)
+
+      copy = Path.join([local, "src", "src_local_demo.erl"])
+      File.mkdir_p!(Path.dirname(copy))
+      File.write!(copy, text)
+      :ok = Beamdash.Settings.put_source_dir("src_local_app", local)
+
+      assert ModuleSource.available?(node, :src_local_demo)
+      assert %{has_source: true} = Beamdash.Apps.module_summary(node, :src_local_demo)
+
+      assert {:ok, %{kind: :local, path: ^copy, text: ^text, truncated: false}} =
+               ModuleSource.get(node, :src_local_demo)
+
+      assert SourceTabs.language(%{kind: :local, path: copy}) == "erlang"
+    end
+
+    test "is not used when the node has the file", %{node: node, local: local} do
+      src = load(node, :src_local_file_demo)
+      File.mkdir_p!(local)
+      File.write!(Path.join(local, "src_local_file_demo.erl"), "a local copy")
+      :ok = Beamdash.Settings.put_source_dir("src_local_app", local)
+
+      assert {:ok, %{kind: :file, path: ^src}} = ModuleSource.get(node, :src_local_file_demo)
+    end
+  end
+
   test "available?: the file, or debug info to rebuild it from; a release has neither",
        %{node: node} do
     load(node, :src_avail_file)

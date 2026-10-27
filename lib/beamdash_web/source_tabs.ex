@@ -195,8 +195,14 @@ defmodule BeamdashWeb.SourceTabs do
         The source file isn't on the node, so this is Erlang rebuilt from the module's debug info:
         names, clauses and calls are as compiled, without comments or macros.
       </p>
+      <p :if={@s.source.kind == :local} class="notice small">
+        The source file isn't on the node, so this is the file on this computer, from the
+        application's source folder in <.link navigate="/settings">Settings</.link>.
+        It may differ from the version the node runs.
+      </p>
       <p :if={@s.source.kind == :none} class="notice">
         No source to show: {ModuleSource.reason(@s.source.reason)}.
+        A folder with the application's source on this computer can be set in <.link navigate="/settings">Settings</.link>.
       </p>
       <p :if={@s.source.kind == :error} class="error">{@s.source.reason}</p>
       <p :if={@s.source[:truncated]} class="notice small">
@@ -217,12 +223,12 @@ defmodule BeamdashWeb.SourceTabs do
 
   @doc """
   The Highlight.js language of a source: `"elixir"` for a `.ex` or `.exs`
-  file, `"erlang"` for an Erlang file or source rebuilt from debug info
-  (always Erlang), else `"plaintext"`.
+  file (on the node or local), `"erlang"` for an Erlang file or source
+  rebuilt from debug info (always Erlang), else `"plaintext"`.
   """
   def language(%{kind: :debug_info}), do: "erlang"
 
-  def language(%{kind: :file, path: path}) when is_binary(path) do
+  def language(%{kind: kind, path: path}) when kind in [:file, :local] and is_binary(path) do
     case Path.extname(path) do
       ext when ext in [".ex", ".exs"] -> "elixir"
       ext when ext in [".erl", ".hrl", ".escript"] -> "erlang"

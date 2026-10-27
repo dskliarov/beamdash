@@ -11,7 +11,11 @@ defmodule BeamdashWeb.SettingsLive do
        jev_enabled: Settings.jev_enabled?(),
        auto_reconnect: Settings.auto_reconnect?(),
        saved_connection: saved(),
-       browser: nil
+       browser: nil,
+       source_dirs: Settings.source_dirs(),
+       source_dir_error: nil,
+       source_form: %{"app" => "", "dir" => ""},
+       node_apps: node_apps()
      )
      |> assign_kubeconfig_dir(Settings.kubeconfig_dir())
      |> PluginsSettings.mount(session)}
@@ -49,13 +53,24 @@ defmodule BeamdashWeb.SettingsLive do
     end
   end
 
+  # the attached node's applications, suggested for a source folder
+  defp node_apps do
+    with %{status: :connected, node: node} <- Target.status(),
+         {:ok, apps} when is_list(apps) <- Target.rpc(node, :application, :which_applications, []) do
+      apps |> Enum.map(&Atom.to_string(elem(&1, 0))) |> Enum.sort()
+    else
+      _ -> []
+    end
+  end
+
   # nil: remembering is off in the configuration
   defp saved, do: if(LastConnection.path(), do: LastConnection.get())
 
   # The directory browser lists the local filesystem from the server: beamdash
   # runs on this machine, and a browser folder picker never reveals the full path.
-  # Opens at `dir`, or its nearest existing parent.
-  defp browse(socket, dir) do
+  # Opens at `dir`, or its nearest existing parent. `for` is the field the
+  # picked directory goes to: `:kubeconfig` or `:source`.
+  defp browse(socket, dir, for) do
     dir = existing_dir(Path.expand(dir))
 
     {subdirs, error} =
@@ -68,13 +83,14 @@ defmodule BeamdashWeb.SettingsLive do
       end
 
     kubeconfigs =
-      case Kubectl.list_kubeconfigs(dir) do
+      case for == :kubeconfig && Kubectl.list_kubeconfigs(dir) do
         {:ok, files} -> length(files)
-        {:error, _} -> 0
+        _ -> 0
       end
 
     assign(socket,
       browser: %{
+        for: for,
         path: dir,
         label: tilde(dir),
         subdirs: subdirs,
@@ -95,17 +111,38 @@ defmodule BeamdashWeb.SettingsLive do
 
   @impl true
   def handle_event("browse_kubeconfig_dir", _, socket) do
-    {:noreply, browse(socket, Settings.kubeconfig_dir())}
+    {:noreply, browse(socket, Settings.kubeconfig_dir(), :kubeconfig)}
+  end
+
+  # opens at the folder typed, else the application's saved one, else home
+  @impl true
+  def handle_event("browse_source_dir", _, socket) do
+    %{"app" => app, "dir" => dir} = socket.assigns.source_form
+
+    start =
+      cond do
+        String.trim(dir) != "" -> dir
+        dir = socket.assigns.source_dirs[String.trim(app)] -> dir
+        true -> "~"
+      end
+
+    {:noreply, browse(socket, start, :source)}
   end
 
   @impl true
   def handle_event("browse_into", %{"name" => name}, %{assigns: %{browser: %{} = b}} = socket) do
-    {:noreply, browse(socket, Path.join(b.path, name))}
+    {:noreply, browse(socket, Path.join(b.path, name), b.for)}
   end
 
   @impl true
   def handle_event("browse_up", _, %{assigns: %{browser: %{} = b}} = socket) do
-    {:noreply, browse(socket, Path.dirname(b.path))}
+    {:noreply, browse(socket, Path.dirname(b.path), b.for)}
+  end
+
+  @impl true
+  def handle_event("browse_pick", _, %{assigns: %{browser: %{for: :source} = b}} = socket) do
+    form = Map.put(socket.assigns.source_form, "dir", tilde(b.path))
+    {:noreply, assign(socket, browser: nil, source_form: form)}
   end
 
   @impl true
@@ -129,6 +166,44 @@ defmodule BeamdashWeb.SettingsLive do
   def handle_event("reset_kubeconfig_dir", _, socket) do
     :ok = Settings.reset_kubeconfig_dir()
     {:noreply, assign_kubeconfig_dir(socket, Settings.kubeconfig_dir())}
+  end
+
+  # what is typed, so a re-render (a picked folder) keeps it
+  @impl true
+  def handle_event("source_form", %{"app" => app, "dir" => dir}, socket),
+    do: {:noreply, assign(socket, source_form: %{"app" => app, "dir" => dir})}
+
+  @impl true
+  def handle_event("add_source_dir", %{"app" => app, "dir" => dir}, socket) do
+    {app, dir} = {String.trim(app), String.trim(dir)}
+
+    error =
+      cond do
+        app == "" or dir == "" -> "Enter an application and a folder."
+        not File.dir?(Path.expand(dir)) -> "No such folder: #{dir}"
+        true -> nil
+      end
+
+    form =
+      if error == nil do
+        :ok = Settings.put_source_dir(app, dir)
+        %{"app" => "", "dir" => ""}
+      else
+        %{"app" => app, "dir" => dir}
+      end
+
+    {:noreply,
+     assign(socket,
+       source_dirs: Settings.source_dirs(),
+       source_dir_error: error,
+       source_form: form
+     )}
+  end
+
+  @impl true
+  def handle_event("remove_source_dir", %{"app" => app}, socket) do
+    :ok = Settings.delete_source_dir(app)
+    {:noreply, assign(socket, source_dirs: Settings.source_dirs(), source_dir_error: nil)}
   end
 
   @impl true
@@ -272,8 +347,12 @@ defmodule BeamdashWeb.SettingsLive do
             type="button"
             id="browse-kubeconfig-dir"
             class="secondary"
-            phx-click={if @browser, do: "browse_close", else: "browse_kubeconfig_dir"}
-            aria-expanded={to_string(@browser != nil)}
+            phx-click={
+              if @browser && @browser.for == :kubeconfig,
+                do: "browse_close",
+                else: "browse_kubeconfig_dir"
+            }
+            aria-expanded={to_string(@browser != nil and @browser.for == :kubeconfig)}
             aria-controls="kubeconfig-browser"
           >
             Browse…
@@ -288,61 +367,99 @@ defmodule BeamdashWeb.SettingsLive do
             Reset
           </button>
         </form>
-        <div
-          :if={@browser}
+        <.dir_browser
+          :if={@browser && @browser.for == :kubeconfig}
           id="kubeconfig-browser"
-          class="dir-browser"
-          role="group"
-          aria-label="Choose kubeconfig directory"
-        >
-          <div class="dir-browser-head">
-            <button
-              type="button"
-              id="browse-up"
-              class="secondary"
-              phx-click="browse_up"
-              disabled={Path.dirname(@browser.path) == @browser.path}
-              aria-label="Parent directory"
-            >
-              ↑ Up
-            </button>
-            <span class="mono dir-browser-path">{@browser.label}</span>
-            <span class="muted small" role="status">
-              {case @browser.kubeconfigs do
-                0 -> "no kubeconfig files here"
-                1 -> "1 kubeconfig file here"
-                n -> "#{n} kubeconfig files here"
-              end}
-            </span>
-          </div>
-          <p :if={@browser.error} class="small error">{@browser.error}</p>
-          <ul class="dir-browser-list">
-            <li :for={name <- @browser.subdirs}>
-              <button
-                type="button"
-                class="dir-browser-entry mono"
-                phx-click="browse_into"
-                phx-value-name={name}
-              >
-                📁 {name}
-              </button>
-            </li>
-            <li :if={@browser.subdirs == [] and !@browser.error} class="muted small">
-              No subdirectories.
-            </li>
-          </ul>
-          <div class="dir-browser-actions">
-            <button type="button" id="browse-pick" phx-click="browse_pick">
-              Use this directory
-            </button>
-            <button type="button" class="secondary" phx-click="browse_close">Cancel</button>
-          </div>
-        </div>
+          browser={@browser}
+          label="Choose kubeconfig directory"
+        />
         <p class="muted small">
           Applies at once to the connection bar in every open tab; resets to
           <span class="mono">{tilde(Settings.default_kubeconfig_dir())}</span>
           when beamdash restarts.
         </p>
+      </section>
+      <section class="mem-panel settings-card" aria-labelledby="source-setting-heading">
+        <h3 id="source-setting-heading">Module source</h3>
+        <p class="muted small">
+          A release (in a Kubernetes pod, say) usually has neither its modules' source files nor
+          their debug info. Point an application at a folder with its source on this computer, and
+          the Source button shows the matching file from there. It is the file as it is here, which
+          may differ from the version the node runs.
+        </p>
+        <ul :if={@source_dirs != %{}} id="source-dirs" class="settings-list">
+          <li :for={{app, dir} <- Enum.sort(@source_dirs)} class="settings-toggle-row">
+            <div>
+              <strong class="mono">{app}</strong>
+              <p class="mono small">{tilde(dir)}</p>
+              <p :if={not File.dir?(dir)} class="small error">This folder doesn't exist.</p>
+            </div>
+            <button
+              type="button"
+              class="secondary"
+              phx-click="remove_source_dir"
+              phx-value-app={app}
+              aria-label={"Remove the source folder of #{app}"}
+            >
+              Remove
+            </button>
+          </li>
+        </ul>
+        <form
+          id="source-dir-form"
+          class="settings-toggle-row"
+          phx-change="source_form"
+          phx-submit="add_source_dir"
+        >
+          <div>
+            <label for="source-app"><strong>Application</strong></label>
+            <input
+              type="text"
+              id="source-app"
+              name="app"
+              value={@source_form["app"]}
+              class="mono"
+              list="source-app-options"
+              placeholder="my_app"
+              autocomplete="off"
+              spellcheck="false"
+            />
+            <datalist id="source-app-options">
+              <option :for={app <- @node_apps} value={app} />
+            </datalist>
+            <label for="source-dir"><strong>Source folder</strong></label>
+            <input
+              type="text"
+              id="source-dir"
+              name="dir"
+              value={@source_form["dir"]}
+              class="mono settings-path"
+              placeholder="~/src/my_app"
+              autocomplete="off"
+              spellcheck="false"
+            />
+            <p :if={@source_dir_error} role="alert" class="small error">{@source_dir_error}</p>
+          </div>
+          <button type="submit">Add</button>
+          <button
+            type="button"
+            id="browse-source-dir"
+            class="secondary"
+            phx-click={
+              if @browser && @browser.for == :source, do: "browse_close", else: "browse_source_dir"
+            }
+            aria-expanded={to_string(@browser != nil and @browser.for == :source)}
+            aria-controls="source-browser"
+          >
+            Browse…
+          </button>
+        </form>
+        <.dir_browser
+          :if={@browser && @browser.for == :source}
+          id="source-browser"
+          browser={@browser}
+          label="Choose the source folder"
+        />
       </section>
       <section
         :if={Jev.available?()}
@@ -398,6 +515,60 @@ defmodule BeamdashWeb.SettingsLive do
         notice={@plugin_notice}
       />
     </main>
+    """
+  end
+
+  attr :id, :string, required: true
+  attr :browser, :map, required: true
+  attr :label, :string, required: true
+
+  # the directory browser, under the field it fills (`@browser.for`)
+  defp dir_browser(assigns) do
+    ~H"""
+    <div id={@id} class="dir-browser" role="group" aria-label={@label}>
+      <div class="dir-browser-head">
+        <button
+          type="button"
+          id="browse-up"
+          class="secondary"
+          phx-click="browse_up"
+          disabled={Path.dirname(@browser.path) == @browser.path}
+          aria-label="Parent directory"
+        >
+          ↑ Up
+        </button>
+        <span class="mono dir-browser-path">{@browser.label}</span>
+        <span :if={@browser.for == :kubeconfig} class="muted small" role="status">
+          {case @browser.kubeconfigs do
+            0 -> "no kubeconfig files here"
+            1 -> "1 kubeconfig file here"
+            n -> "#{n} kubeconfig files here"
+          end}
+        </span>
+      </div>
+      <p :if={@browser.error} class="small error">{@browser.error}</p>
+      <ul class="dir-browser-list">
+        <li :for={name <- @browser.subdirs}>
+          <button
+            type="button"
+            class="dir-browser-entry mono"
+            phx-click="browse_into"
+            phx-value-name={name}
+          >
+            📁 {name}
+          </button>
+        </li>
+        <li :if={@browser.subdirs == [] and !@browser.error} class="muted small">
+          No subdirectories.
+        </li>
+      </ul>
+      <div class="dir-browser-actions">
+        <button type="button" id="browse-pick" phx-click="browse_pick">
+          {if @browser.for == :source, do: "Use this folder", else: "Use this directory"}
+        </button>
+        <button type="button" class="secondary" phx-click="browse_close">Cancel</button>
+      </div>
+    </div>
     """
   end
 end

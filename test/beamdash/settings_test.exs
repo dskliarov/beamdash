@@ -87,6 +87,85 @@ defmodule Beamdash.SettingsTest do
     assert conn.resp_body =~ ~s(href="/settings")
   end
 
+  test "source folders are saved, expanded, and still set after a restart" do
+    on_exit(fn -> Settings.delete_source_dir("my_app") end)
+
+    :ok = Settings.put_source_dir("my_app", "~/src/my_app")
+    assert Settings.source_dirs()["my_app"] == Path.expand("~/src/my_app")
+
+    Settings.reload()
+    assert Settings.source_dirs()["my_app"] == Path.expand("~/src/my_app")
+
+    :ok = Settings.delete_source_dir("my_app")
+    Settings.reload()
+    refute Map.has_key?(Settings.source_dirs(), "my_app")
+  end
+
+  test "the Module source card adds and removes a folder" do
+    on_exit(fn -> Settings.delete_source_dir("my_app") end)
+    dir = Path.join(System.tmp_dir!(), "beamdash-src-#{System.unique_integer([:positive])}")
+    File.mkdir_p!(dir)
+    on_exit(fn -> File.rm_rf!(dir) end)
+
+    view = BeamdashWeb.SettingsLive
+    socket = %Phoenix.LiveView.Socket{assigns: %{__changed__: %{}, source_form: %{}}}
+
+    {:noreply, socket} =
+      view.handle_event("add_source_dir", %{"app" => " my_app ", "dir" => dir <> "/nope"}, socket)
+
+    assert socket.assigns.source_dir_error =~ "No such folder"
+    refute Map.has_key?(Settings.source_dirs(), "my_app")
+
+    {:noreply, socket} =
+      view.handle_event("add_source_dir", %{"app" => "my_app", "dir" => dir}, socket)
+
+    assert socket.assigns.source_dir_error == nil
+    assert socket.assigns.source_dirs["my_app"] == dir
+
+    {:noreply, socket} = view.handle_event("remove_source_dir", %{"app" => "my_app"}, socket)
+    refute Map.has_key?(socket.assigns.source_dirs, "my_app")
+  end
+
+  test "Browse fills the source folder, keeping the application typed" do
+    root =
+      Path.join(System.tmp_dir!(), "beamdash-src-browse-#{System.unique_integer([:positive])}")
+
+    File.mkdir_p!(Path.join(root, "my_app/src"))
+    on_exit(fn -> File.rm_rf!(root) end)
+
+    view = BeamdashWeb.SettingsLive
+    {:ok, socket} = view.mount(%{}, %{}, %Phoenix.LiveView.Socket{})
+
+    # opens at the folder typed (its nearest existing parent)
+    form = %{"app" => "my_app", "dir" => Path.join(root, "nope")}
+    {:noreply, socket} = view.handle_event("source_form", form, socket)
+    {:noreply, socket} = view.handle_event("browse_source_dir", %{}, socket)
+    assert %{for: :source, path: ^root, subdirs: ["my_app"]} = socket.assigns.browser
+
+    html =
+      socket.assigns
+      |> Map.put(:syntax, :erlang)
+      |> view.render()
+      |> Phoenix.LiveViewTest.rendered_to_string()
+
+    assert html =~ ~s(id="source-browser")
+    refute html =~ ~s(id="kubeconfig-browser")
+    assert html =~ "Use this folder"
+    refute html =~ "kubeconfig files here"
+
+    {:noreply, socket} = view.handle_event("browse_into", %{"name" => "my_app"}, socket)
+    {:noreply, socket} = view.handle_event("browse_pick", %{}, socket)
+    assert socket.assigns.browser == nil
+    assert socket.assigns.source_form == %{"app" => "my_app", "dir" => Path.join(root, "my_app")}
+
+    # picking doesn't save; Add does, and empties the form
+    refute Map.has_key?(Settings.source_dirs(), "my_app")
+    on_exit(fn -> Settings.delete_source_dir("my_app") end)
+    {:noreply, socket} = view.handle_event("add_source_dir", socket.assigns.source_form, socket)
+    assert Settings.source_dirs()["my_app"] == Path.join(root, "my_app")
+    assert socket.assigns.source_form == %{"app" => "", "dir" => ""}
+  end
+
   describe "kubeconfig directory" do
     setup do
       on_exit(fn -> :ok = Settings.reset_kubeconfig_dir() end)
