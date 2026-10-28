@@ -297,6 +297,43 @@ when both are set. Without `TYPESAFE_API_KEY` the UI is hidden the same way.
 Turning the Settings switch off hides the same elements on every tab; only
 the switch itself stays, so Jev can be turned back on.
 
+### Trying Kev instead of Jev
+
+[Kev](https://github.com/jaredpalmer/kev) is a family of open, self-hosted
+decision models (0.8B to 27B, built on Qwen) that serves the same
+`/v1/systemone` API. beamdash can send every request above to a Kev server
+instead of TypeSafe, so the measurements never leave your network:
+
+```sh
+# in a Kev checkout
+uv sync --extra serve
+uv run --extra serve python -m kev.serve --run jaredpalmer/kev-4b --port 8009
+
+# beamdash
+KEV_URL=http://127.0.0.1:8009 iex -S mix phx.server
+```
+
+`KEV_URL` turns Kev on; `KEV_API_KEY` is sent only to Kev (when its server
+sets one; TypeSafe's key is never sent to it), `KEV_MODEL` names the model
+shown (default `kev-latest`) and `KEV_TIMEOUT` (ms, default 120000) allows
+for a slower machine. With both Jev and Kev configured, **Settings → Suggestions
+model** switches between them for every open tab, and the choice is saved;
+`DECISION_BACKEND=jev|kev` picks one when none is chosen there. With only
+`KEV_URL` set, Kev is used. Labels already shown in other open tabs change
+to the new name when the page is next opened.
+
+Compare the two before relying on Kev:
+
+```sh
+TYPESAFE_API_KEY=... mix beamdash.jev_eval --backend jev
+KEV_URL=http://127.0.0.1:8009 mix beamdash.jev_eval --backend kev
+```
+
+Each prints how many scenarios it got right, the time of each request, and
+the mean and slowest. Kev's smaller models accept states of up to about 8k
+tokens; a longer one (the triage of 30 processes is the largest) is
+refused with a 422, shown as "may be too long for this Kev model".
+
 ### More Jev, same rules
 
 The same rules apply to these too: beamdash measures, Jev only picks one

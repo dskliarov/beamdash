@@ -15,32 +15,108 @@ defmodule Beamdash.Jev do
   every Jev element and blocks every request), `TYPESAFE_API_KEY`,
   `TYPESAFE_MODEL` (default: the pinned `#{"jev-1.13.0"}`; `jev-latest`
   changes when TypeSafe ships a release) and `TYPESAFE_CACERTFILE`.
+
+  ## Backends
+
+  The same requests can go to Kev instead (github.com/jaredpalmer/kev), a
+  self-hosted model that serves TypeSafe's `/v1/systemone` API: `KEV_URL`
+  (its server, e.g. `http://127.0.0.1:8009`) turns it on, `KEV_API_KEY` is
+  sent only to it (when its server sets one), `KEV_MODEL` names the model
+  shown and `KEV_TIMEOUT` (ms, default #{120_000}) allows for a slower
+  machine. Each backend's key goes only to its own server.
+
+  `backend/0` is the one in use: the one chosen in Settings, else
+  `DECISION_BACKEND` (`jev` or `kev`), else Jev, else Kev, among those
+  configured. `:backend` in a request's options overrides it.
   """
 
   @endpoint ~c"https://api.typesafe.ai/v1/systemone"
   @default_model "jev-1.13.0"
+  @kev_default_model "kev-latest"
+  @backends [:jev, :kev]
+  @timeouts %{jev: 15_000, kev: 120_000}
   # top two closer than this: show both
   @close 0.15
 
-  def endpoint, do: List.to_string(endpoint_url())
+  def endpoint(backend \\ backend()), do: List.to_string(endpoint_url(backend))
 
   # TYPESAFE_ENDPOINT points elsewhere (a stand-in for testing); default
-  # TypeSafe's API
-  defp endpoint_url do
+  # TypeSafe's API. Kev: its server's /v1/systemone.
+  defp endpoint_url(:jev) do
     case config()[:endpoint] do
       url when is_binary(url) and url != "" -> String.to_charlist(url)
       _ -> @endpoint
     end
   end
 
-  def default_model, do: @default_model
+  defp endpoint_url(:kev) do
+    base = String.trim_trailing(config()[:kev_url] || "", "/")
 
-  def configured? do
-    key = config()[:api_key]
-    is_binary(key) and String.trim(key) != ""
+    if String.ends_with?(base, "/v1/systemone"),
+      do: String.to_charlist(base),
+      else: String.to_charlist(base <> "/v1/systemone")
   end
 
-  def model, do: config()[:model] || @default_model
+  def default_model, do: @default_model
+
+  def backends, do: @backends
+
+  @doc "Whether `backend` (default: the one in use) can be asked: Jev needs its key, Kev its URL."
+  def configured?(backend \\ backend())
+  def configured?(:jev), do: present?(config()[:api_key])
+  def configured?(:kev), do: present?(config()[:kev_url])
+
+  @doc "The backends that can be asked, Jev first."
+  def configured_backends, do: Enum.filter(@backends, &configured?/1)
+
+  @doc """
+  The backend in use: chosen in Settings, else `DECISION_BACKEND`, else
+  the first configured, else `:jev` (which then asks for a key).
+  """
+  def backend do
+    [Beamdash.Settings.decision_backend(), config_backend() | @backends]
+    |> Enum.find(:jev, &(&1 in @backends and configured?(&1)))
+  end
+
+  defp config_backend do
+    case config()[:backend] do
+      b when b in @backends -> b
+      "kev" -> :kev
+      "jev" -> :jev
+      _ -> nil
+    end
+  end
+
+  @doc "The name shown in the UI: \"Jev\" or \"Kev\"."
+  def name(backend \\ backend())
+  def name(:jev), do: "Jev"
+  def name(:kev), do: "Kev"
+
+  @doc "Where requests go, for \"What is sent to …\": TypeSafe, or Kev's host."
+  def destination(backend \\ backend())
+  def destination(:jev), do: "TypeSafe"
+  def destination(:kev), do: "Kev at " <> (URI.parse(endpoint(:kev)).authority || "?")
+
+  def model(backend \\ backend())
+  def model(:jev), do: config()[:model] || @default_model
+  def model(:kev), do: config()[:kev_model] || @kev_default_model
+
+  defp api_key(:jev), do: config()[:api_key]
+  defp api_key(:kev), do: config()[:kev_api_key]
+
+  defp timeout(:kev), do: positive(config()[:kev_timeout]) || @timeouts.kev
+  defp timeout(backend), do: @timeouts[backend]
+
+  defp positive(n) when is_integer(n) and n > 0, do: n
+
+  defp positive(s) when is_binary(s) do
+    case Integer.parse(String.trim(s)) do
+      {n, ""} when n > 0 -> n
+      _ -> nil
+    end
+  end
+
+  defp positive(_), do: nil
 
   @doc """
   Whether Jev is enabled in the configuration (`JEV_ENABLED`, default
@@ -48,13 +124,14 @@ defmodule Beamdash.Jev do
   """
   def enabled_in_config?, do: config()[:enabled] != false
 
-  @doc "Enabled in the configuration and an API key set: only then does the UI show Jev."
-  def available?, do: enabled_in_config?() and configured?()
+  @doc "Enabled in the configuration and a backend configured: only then does the UI show Jev."
+  def available?, do: enabled_in_config?() and configured_backends() != []
 
   @doc """
   Asks one Choice question. `choices` is `%{key => %{label, what, not_for}}`.
   Returns `{:ok, answer}` (see `parse/2`) or `{:error, user_message}`.
-  Options: `:api_key`, `:model`, `:request` (an `:httpc.request/4`-like fun).
+  Options: `:backend`, `:api_key`, `:model`, `:request` (an
+  `:httpc.request/4`-like fun).
   """
   def ask(state, question, choices, opts \\ []) do
     with {:ok, %{"next_step" => answer}} <-
@@ -69,27 +146,36 @@ defmodule Beamdash.Jev do
   the whole request.
   """
   def ask_many(state, questions, opts \\ []) do
+    backend = Keyword.get(opts, :backend, backend())
+    key = Keyword.get(opts, :api_key, api_key(backend))
+
     cond do
       not enabled_in_config?() ->
         {:error, "Jev is disabled in the configuration."}
 
       not Beamdash.Settings.jev_enabled?() ->
-        {:error, "Jev is off in Settings."}
+        {:error, "#{name(backend)} is off in Settings."}
 
-      not key?(Keyword.get(opts, :api_key, config()[:api_key])) ->
+      backend == :jev and not present?(key) ->
         {:error, "Set TYPESAFE_API_KEY and restart beamdash to use Jev."}
 
+      backend == :kev and not configured?(:kev) ->
+        {:error, "Set KEV_URL and restart beamdash to use Kev."}
+
       true ->
-        request(state, questions, opts)
+        request(backend, key, state, questions, opts)
     end
   end
 
-  defp key?(key), do: is_binary(key) and String.trim(key) != ""
+  defp present?(value), do: is_binary(value) and String.trim(value) != ""
 
-  defp request(state, questions, opts) do
-    key = Keyword.get(opts, :api_key, config()[:api_key])
-    model = Keyword.get(opts, :model, model())
+  defp request(backend, key, state, questions, opts) do
+    model = Keyword.get(opts, :model, model(backend))
     request = Keyword.get(opts, :request, &:httpc.request/4)
+    url = endpoint_url(backend)
+    # Kev's server needs no key unless it sets KEV_API_KEY
+    headers =
+      if present?(key), do: [{~c"authorization", String.to_charlist("Bearer " <> key)}], else: []
 
     payload = %{
       model: model,
@@ -100,28 +186,38 @@ defmodule Beamdash.Jev do
         end)
     }
 
-    with {:ok, ssl} <- tls_options(),
+    with {:ok, ssl} <- transport_options(url),
          {:ok, {{_, 200, _}, _, body}} <-
            request.(
              :post,
-             {endpoint_url(), [{~c"authorization", String.to_charlist("Bearer " <> key)}],
-              ~c"application/json", Jason.encode!(payload)},
-             [timeout: 15_000, connect_timeout: 5_000, autoredirect: false, ssl: ssl],
+             {url, headers, ~c"application/json", Jason.encode!(payload)},
+             [timeout: timeout(backend), connect_timeout: 5_000, autoredirect: false] ++ ssl,
              body_format: :binary
            ),
          {:ok, decoded} <- Jason.decode(body) do
       parse_all(decoded, questions)
     else
       {:ok, {{_, code, _}, _, _}} ->
-        {:error, http_error(code)}
+        {:error, http_error(backend, code)}
 
       {:error, :tls_unavailable} ->
         {:error, "TLS certificates unavailable. Set TYPESAFE_CACERTFILE to a trusted CA bundle."}
 
+      {:error, :timeout} ->
+        {:error, "#{name(backend)} did not answer within #{div(timeout(backend), 1000)} s."}
+
       _ ->
-        {:error, "Jev could not be reached or returned an invalid response. Try again later."}
+        {:error,
+         "#{name(backend)} could not be reached or returned an invalid response. Try again later."}
     end
   end
+
+  # TLS options only for https (a local Kev is plain http)
+  defp transport_options(~c"https" ++ _) do
+    with {:ok, ssl} <- tls_options(), do: {:ok, [ssl: ssl]}
+  end
+
+  defp transport_options(_url), do: {:ok, []}
 
   defp parse_all(%{"model" => model, "answers" => answers}, questions)
        when is_binary(model) and is_map(answers) do
@@ -221,15 +317,25 @@ defmodule Beamdash.Jev do
     _ -> {:error, :tls_unavailable}
   end
 
-  # Status codes from TypeSafe's API reference; bodies are never shown.
-  defp http_error(401), do: "Jev rejected the API key. Check TYPESAFE_API_KEY."
-  defp http_error(413), do: "The measurements were too large for Jev."
-  defp http_error(429), do: "Jev rate limit reached. Wait a moment and try again."
-  defp http_error(529), do: "Jev is overloaded. Try again shortly."
-  defp http_error(code) when code >= 500, do: "Jev is temporarily unavailable. Try again later."
+  # Status codes from TypeSafe's API reference (Kev's server follows it,
+  # and refuses a state over its model's length with a 422); bodies are
+  # never shown.
+  defp http_error(:kev, 401), do: "Kev rejected the API key. Check KEV_API_KEY."
 
-  defp http_error(code) when code in [400, 422],
+  defp http_error(:kev, 422),
+    do: "Kev rejected the request (422): the measurements may be too long for this Kev model."
+
+  defp http_error(:kev, 503), do: "Kev's server is stopping. Try again once it is back."
+  defp http_error(:jev, 401), do: "Jev rejected the API key. Check TYPESAFE_API_KEY."
+  defp http_error(b, 413), do: "The measurements were too large for #{name(b)}."
+  defp http_error(b, 429), do: "#{name(b)} rate limit reached. Wait a moment and try again."
+  defp http_error(b, 529), do: "#{name(b)} is overloaded. Try again shortly."
+
+  defp http_error(b, code) when code >= 500,
+    do: "#{name(b)} is temporarily unavailable. Try again later."
+
+  defp http_error(:jev, code) when code in [400, 422],
     do: "Jev rejected the request (#{code}). Check TYPESAFE_MODEL."
 
-  defp http_error(code), do: "Jev rejected the request (#{code})."
+  defp http_error(b, code), do: "#{name(b)} rejected the request (#{code})."
 end

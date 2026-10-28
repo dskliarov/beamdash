@@ -24,6 +24,7 @@ defmodule Beamdash.JevHiddenTest do
     |> Map.merge(%{
       syntax: :erlang,
       jev_enabled: jev_enabled,
+      jev_backend: Beamdash.Jev.backend(),
       ask: %{query: "", busy: nil, options: [], error: nil}
     })
     |> Map.merge(assigns)

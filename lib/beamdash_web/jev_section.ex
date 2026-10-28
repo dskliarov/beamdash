@@ -33,7 +33,9 @@ defmodule BeamdashWeb.JevSection do
     assigns =
       assign(assigns,
         ready: match?({:ready, _}, assigns.readiness),
-        usable: assigns.enabled and assigns.configured
+        usable: assigns.enabled and assigns.configured,
+        name: Beamdash.Jev.name(),
+        backend: Beamdash.Jev.backend()
       )
 
     ~H"""
@@ -51,7 +53,7 @@ defmodule BeamdashWeb.JevSection do
             disabled={@busy or not @ready}
             title={
               if @ready,
-                do: "Ask Jev which investigation should come next",
+                do: "Ask #{@name} which investigation should come next",
                 else: "Keep this process selected while history is collected"
             }
           >
@@ -96,9 +98,14 @@ defmodule BeamdashWeb.JevSection do
 
       <%!-- stays open across the panel's 1 s refresh --%>
       <details class="jev-sent" id={@id <> "-sent"} phx-mounted={JS.ignore_attributes(["open"])}>
-        <summary class="small muted">What is sent to TypeSafe</summary>
-        <p class="small muted">
+        <summary class="small muted">What is sent to {Beamdash.Jev.destination(@backend)}</summary>
+        <p :if={@backend == :jev} class="small muted">
           {@sends} Never names, pids, modules, stacks, messages or state. Sent only when you click, to TypeSafe's API; its docs do not state how long requests are kept. Calls may be charged.
+        </p>
+        <p :if={@backend == :kev} class="small muted">
+          {@sends} Never names, pids, modules, stacks, messages or state. Sent only when you click, to the Kev server at {Beamdash.Jev.endpoint(
+            :kev
+          )}.
         </p>
         <pre :if={@evidence} class="small">{Jason.encode!(@evidence, pretty: true)}</pre>
       </details>
