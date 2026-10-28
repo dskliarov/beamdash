@@ -290,7 +290,7 @@ defmodule BeamdashWeb.Layouts do
             placeholder="Ask beamdash… e.g. who is leaking binaries?"
             autocomplete="off"
             aria-label="Ask beamdash"
-            title="Jev (TypeSafe) picks the view that answers your question; only the question is sent."
+            title={"#{Beamdash.Jev.name()} picks the view that answers your question; only the question is sent."}
             disabled={@ask.busy != nil}
           />
           <button type="submit" class="small-btn" disabled={@ask.busy != nil}>
@@ -299,7 +299,7 @@ defmodule BeamdashWeb.Layouts do
         </form>
         <div :if={@ask.options != [] or @ask.error} class="ask-results" role="status">
           <span :if={@ask.error} class="error small">{@ask.error}</span>
-          <span :if={@ask.options != []} class="muted small">Jev suggests:</span>
+          <span :if={@ask.options != []} class="muted small">{Beamdash.Jev.name()} suggests:</span>
           <.link :for={o <- @ask.options} navigate={o.path} class="ask-option">
             {o.label} <span class="muted">{round(o.probability * 100)}%</span>
           </.link>

@@ -9,6 +9,8 @@ defmodule BeamdashWeb.SettingsLive do
      socket
      |> assign(
        jev_enabled: Settings.jev_enabled?(),
+       jev_backend: Jev.backend(),
+       kev_port_error: nil,
        auto_reconnect: Settings.auto_reconnect?(),
        saved_connection: saved(),
        browser: nil,
@@ -242,6 +244,32 @@ defmodule BeamdashWeb.SettingsLive do
     {:noreply, assign(socket, jev_enabled: enabled)}
   end
 
+  def handle_event("set_kev_port", %{"port" => value}, socket) do
+    case {String.trim(value), Jev.port(value)} do
+      {"", _} ->
+        :ok = Settings.put_kev_port(nil)
+        {:noreply, assign(socket, kev_port_error: nil)}
+
+      {_, nil} ->
+        {:noreply, assign(socket, kev_port_error: "A port is a number from 1 to 65535.")}
+
+      {_, port} ->
+        :ok = Settings.put_kev_port(port)
+        {:noreply, assign(socket, kev_port_error: nil)}
+    end
+  end
+
+  def handle_event("set_backend", %{"backend" => value}, socket) do
+    case Enum.find(Jev.configured_backends(), &(Atom.to_string(&1) == value)) do
+      nil ->
+        {:noreply, socket}
+
+      backend ->
+        :ok = Settings.put_decision_backend(backend)
+        {:noreply, assign(socket, jev_backend: backend)}
+    end
+  end
+
   # an install's progress and a rebuild's result
   @impl true
   def handle_info(message, socket), do: PluginsSettings.handle_info(message, socket)
@@ -466,12 +494,60 @@ defmodule BeamdashWeb.SettingsLive do
         class="mem-panel settings-card"
         aria-labelledby="jev-setting-heading"
       >
-        <h3 id="jev-setting-heading">Jev</h3>
+        <h3 id="jev-setting-heading">Suggestions model</h3>
+        <div :if={length(Jev.configured_backends()) > 1} class="settings-toggle-row">
+          <div>
+            <strong id="jev-backend-label">Model</strong>
+            <p class="muted small">
+              Jev is TypeSafe's hosted model; Kev a self-hosted one with the same API.
+              Saved for the next start; the next request goes to the one chosen.
+            </p>
+          </div>
+          <div class="seg" role="radiogroup" aria-labelledby="jev-backend-label">
+            <button
+              :for={b <- Jev.configured_backends()}
+              type="button"
+              role="radio"
+              aria-checked={to_string(@jev_backend == b)}
+              class={["seg-btn", @jev_backend == b && "active"]}
+              phx-click="set_backend"
+              phx-value-backend={b}
+            >
+              {Jev.name(b)}
+            </button>
+          </div>
+        </div>
+        <form
+          :if={Jev.configured?(:kev)}
+          id="kev-port-form"
+          class="settings-toggle-row"
+          phx-submit="set_kev_port"
+        >
+          <div>
+            <label for="kev-port"><strong>Kev port</strong></label>
+            <p class="muted small">
+              Port of the Kev server at {Jev.endpoint(:kev)}. Saved for the next start;
+              empty goes back to KEV_URL or KEV_PORT.
+            </p>
+            <p :if={@kev_port_error} class="error small" role="alert">{@kev_port_error}</p>
+          </div>
+          <input
+            id="kev-port"
+            name="port"
+            type="number"
+            min="1"
+            max="65535"
+            value={Settings.kev_port() || Jev.kev_port()}
+            class="mono"
+            style="width: 7em"
+          />
+          <button type="submit" class="small-btn">Save</button>
+        </form>
         <div class="settings-toggle-row">
           <div>
-            <strong id="jev-setting-label">Enable Jev analysis</strong>
+            <strong id="jev-setting-label">Enable {Jev.name(@jev_backend)} analysis</strong>
             <p id="jev-setting-help" class="muted small">
-              Use Jev for investigation suggestions on the Processes and GC pages.
+              Use {Jev.name(@jev_backend)} for investigation suggestions on the Processes and GC pages.
             </p>
           </div>
           <button
@@ -485,23 +561,38 @@ defmodule BeamdashWeb.SettingsLive do
           ><span class="settings-switch-knob" aria-hidden="true"></span></button>
           <span class="small" role="status">{if @jev_enabled, do: "Enabled", else: "Disabled"}</span>
         </div>
-        <p class="guide small">
+        <p :if={@jev_backend == :jev} class="guide small">
           When on, clicking Analyze in a process panel (Processes or GC tab) sends
           measurements computed from that process to TypeSafe's Jev model: trends, shares,
           status, OTP kind and rank on the node. Never names, pids, modules, stacks, messages
           or state. Nothing is sent while you only browse. TypeSafe's documentation does not
           state how long it keeps requests; calls may be charged.
         </p>
+        <p :if={@jev_backend == :kev} class="guide small">
+          When on, clicking Analyze in a process panel (Processes or GC tab) sends
+          measurements computed from that process to the Kev server at {Jev.endpoint(:kev)}:
+          trends, shares, status, OTP kind and rank on the node. Never names, pids, modules,
+          stacks, messages or state. Nothing is sent while you only browse.
+        </p>
         <p class="muted small">
-          Applies at once to every open tab. Until switched here, Jev is on only when an API
-          key is configured; the switch resets when beamdash restarts. Turning it off cancels
+          Applies at once to every open tab. Until switched here, it is on only when a model
+          is configured; the switch resets when beamdash restarts. Turning it off cancels
           pending results; requests already sent cannot be recalled.
         </p>
         <p class="muted small">
-          {if Jev.configured?(),
-            do: "API key configured · model #{Jev.model()}.",
-            else:
-              "No API key. Set TYPESAFE_API_KEY in the environment and restart beamdash to use Jev."}
+          {cond do
+            @jev_backend == :kev ->
+              "Kev server #{Jev.endpoint(:kev)} · model #{Jev.model(:kev)}."
+
+            Jev.configured?(:jev) ->
+              "API key configured · model #{Jev.model(:jev)}."
+
+            true ->
+              "No API key. Set TYPESAFE_API_KEY in the environment and restart beamdash to use Jev."
+          end}
+          <span :if={not Jev.configured?(:kev)}>
+            Set KEV_URL (or KEV_PORT, for a server on this machine) to try Kev instead.
+          </span>
         </p>
       </section>
       <PluginsSettings.card

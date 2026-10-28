@@ -322,7 +322,7 @@ defmodule BeamdashWeb.ProcessDetails do
         :if={@jev}
         id="jev-process"
         event="analyze_process"
-        title="Jev: next step"
+        title={"#{Beamdash.Jev.name()}: next step"}
         sends="Trends computed here (mailbox growth, memory change, reductions rate, shares), the process's status, OTP kind and rank on the node, and a short series of samples."
         enabled={@jev.enabled}
         configured={@jev.configured}
