@@ -28,6 +28,12 @@ defmodule :erlyberly do
 
   The module keeps its Erlang name, `erlyberly`, and the same functions and
   return values as the Erlang original, so the beamdash side is unchanged.
+
+  Tracing calls the trace BIFs (`erlang:trace/3`, `erlang:trace_pattern/3`)
+  directly instead of `dbg`, which is in `runtime_tools`: releases often
+  leave that application out. As with `dbg`, a small tracer process
+  (`erlyberly_tracer`) receives the trace messages and passes them to the
+  collector.
   """
 
   @behaviour :gen_event
@@ -37,6 +43,7 @@ defmodule :erlyberly do
   @compile {:no_warn_undefined, [:xref, :erl_syntax, :erl_prettypr]}
 
   @tcollector :erlyberly_tcollector
+  @tracer :erlyberly_tracer
   @seq_tracer :erlyberly_seq_trace
   @xref :erlyberly_xref
 
@@ -260,7 +267,7 @@ defmodule :erlyberly do
 
   def start_trace({node, pid}, mod, func, arity, max_queue_len)
       when is_atom(node) and is_pid(pid) and is_integer(max_queue_len) do
-    ensure_dbg_started({node, pid}, max_queue_len)
+    ensure_tracer_started({node, pid}, max_queue_len)
     ref = make_ref()
     send(@tcollector, {:start_trace, mod, func, arity, self(), ref})
 
@@ -275,7 +282,7 @@ defmodule :erlyberly do
   def stop_trace(mod, func, arity, _is_exported) do
     # Clear the pattern here, synchronously, so no call made after this
     # returns is traced; the collector then drops it from its list.
-    :dbg.ctpl(mod, func, arity)
+    clear_pattern({mod, func, arity}, :local)
     send(@tcollector, {:stop_trace, mod, func, arity})
     :ok
   end
@@ -292,32 +299,92 @@ defmodule :erlyberly do
     end
   end
 
-  def ensure_dbg_started({eb_node, eb_pid}, max_queue_len) do
-    # restart dbg
-    when_process_is_unregistered(:dbg, &:dbg.start/0)
+  def ensure_tracer_started({eb_node, eb_pid}, max_queue_len) do
+    when_process_is_unregistered(@tracer, fn ->
+      :erlang.register(@tracer, :proc_lib.spawn(__MODULE__, :erlyberly_tracer, []))
+    end)
 
     when_process_is_unregistered(@tcollector, fn ->
       pid = :proc_lib.spawn(__MODULE__, :erlyberly_tcollector, [eb_node, eb_pid, max_queue_len])
       :erlang.register(@tcollector, pid)
-      # a tracer that sends the trace logs to erlyberly_tcollector
-      trace_fun = fn trace, _ ->
-        send(@tcollector, trace)
-        :ok
-      end
-
-      :dbg.tracer(:process, {trace_fun, :ok})
     end)
   end
 
-  # Stop dbg and clear all trace flags and patterns. dbg:stop/0 does that
-  # itself since OTP 26, where stop_clear/0 was deprecated; OTP 27 removes
-  # it. Older nodes still need it, called via apply so newer compilers do
-  # not warn.
-  defp dbg_stop_clear do
-    if :erlang.list_to_integer(:erlang.system_info(:otp_release)) >= 26 do
-      :dbg.stop()
-    else
-      :erlang.apply(:dbg, :stop_clear, [])
+  @doc false
+  # The tracer: passes every trace message to the collector (dropped while
+  # there is none, as for a seq trace's own call patterns).
+  def erlyberly_tracer do
+    receive do
+      trace ->
+        case :erlang.whereis(@tcollector) do
+          :undefined -> :ok
+          collector -> send(collector, trace)
+        end
+
+        erlyberly_tracer()
+    end
+  end
+
+  # Call tracing (with timestamps) for every process, sent to the tracer;
+  # dbg:p(all, [c, timestamp]). The tracer and the collector are left out,
+  # so their own calls never feed back into the trace.
+  defp trace_calls do
+    case :erlang.whereis(@tracer) do
+      :undefined ->
+        {:error, :no_tracer}
+
+      tracer ->
+        n = :erlang.trace(:all, true, [:call, :timestamp, {:tracer, tracer}])
+
+        :lists.foreach(
+          fn name ->
+            case :erlang.whereis(name) do
+              :undefined -> :ok
+              pid -> catch_trace_off(pid)
+            end
+          end,
+          [@tracer, @tcollector]
+        )
+
+        {:ok, n}
+    end
+  end
+
+  defp catch_trace_off(pid) do
+    try do
+      :erlang.trace(pid, false, [:all])
+    catch
+      _, _ -> :ok
+    end
+  end
+
+  # dbg:tp (global: exported functions) and dbg:tpl (local: all functions)
+  defp set_pattern(mfa, match_spec, scope), do: :erlang.trace_pattern(mfa, match_spec, [scope])
+  defp clear_pattern(mfa, scope), do: :erlang.trace_pattern(mfa, false, [scope])
+
+  # Stop tracing: clear every trace flag and pattern and stop the tracer,
+  # as dbg:stop/0 does (dbg:stop_clear/0 before OTP 26).
+  defp stop_clear do
+    _ = :erlang.trace(:all, false, [:all])
+    _ = clear_pattern({:_, :_, :_}, :local)
+    _ = clear_pattern({:_, :_, :_}, :global)
+
+    case :erlang.whereis(@tracer) do
+      :undefined ->
+        :ok
+
+      pid ->
+        catch_unregister(@tracer)
+        :erlang.exit(pid, :kill)
+        :ok
+    end
+  end
+
+  defp catch_unregister(name) do
+    try do
+      :erlang.unregister(name)
+    catch
+      _, _ -> :ok
     end
   end
 
@@ -330,15 +397,17 @@ defmodule :erlyberly do
 
     # Trace the returns of the code module to hear about code reloads: a
     # reload removes all traces on that module, so they are re-applied.
-    {:ok, _} = :dbg.p(:all, [:c, :timestamp])
-    {:ok, _} = :dbg.tp(:code, :x)
+    {:ok, _} = trace_calls()
+    # it may not be registered yet, so trace_calls/0 could not leave it out
+    catch_trace_off(self())
+    _ = set_pattern({:code, :_, :_}, [{:_, [], [{:exception_trace}]}], :global)
     tcollector2(%{ui_pid: pid, traces: [], max_queue_len: max_queue_len})
   end
 
   defp tcollector2(%{ui_pid: ui_pid, max_queue_len: max_queue_len} = tc) do
     case :erlang.process_info(self(), :message_queue_len) do
       {:message_queue_len, queue_len} when queue_len > max_queue_len ->
-        :ok = dbg_stop_clear()
+        :ok = stop_clear()
         send(ui_pid, {:erlyberly_trace_overload, queue_len})
         collect_overloading_logs(max_queue_len, tc)
 
@@ -375,14 +444,14 @@ defmodule :erlyberly do
         tcollector2(tc1)
 
       {:stop_trace, mod, func, arity} ->
-        :dbg.ctpl(mod, func, arity)
+        clear_pattern({mod, func, arity}, :local)
         tcollector2(%{tc | traces: traces -- [{mod, func, arity}]})
 
       :stop_traces ->
-        :ok = dbg_stop_clear()
+        :ok = stop_clear()
 
       {:nodedown, _node} ->
-        :ok = dbg_stop_clear()
+        :ok = stop_clear()
 
       log ->
         case collect_log(log) do
@@ -403,8 +472,8 @@ defmodule :erlyberly do
 
   defp tcollector_start_trace(mod, func, arity, %{traces: traces} = tc) do
     trace_spec = {mod, func, arity}
-    :dbg.tpl(trace_spec, trace_match_spec())
-    :dbg.p(:all, [:c, :timestamp])
+    _ = set_pattern(trace_spec, trace_match_spec(), :local)
+    _ = trace_calls()
     %{tc | traces: [trace_spec | traces]}
   end
 
@@ -555,7 +624,7 @@ defmodule :erlyberly do
   defp reapply_traces(loaded_module, traces) do
     :lists.foreach(
       fn
-        {^loaded_module, _f, _a} = trace -> :dbg.tpl(trace, trace_match_spec())
+        {^loaded_module, _f, _a} = trace -> set_pattern(trace, trace_match_spec(), :local)
         _ -> :ok
       end,
       traces
@@ -601,14 +670,10 @@ defmodule :erlyberly do
     drop_seq_token()
     {:ok, _seq_trace_pid} = ensure_seq_tracer_started(node_pid)
 
-    if is_exported do
-      :dbg.tp(mod, function_name, seq_trace_match_spec())
-    else
-      :dbg.tpl(mod, function_name, seq_trace_match_spec())
-    end
-
-    :dbg.p(:all, :c)
-    # dbg's replies may have brought a token back
+    scope = if is_exported, do: :global, else: :local
+    _ = set_pattern({mod, function_name, :_}, seq_trace_match_spec(), scope)
+    _ = trace_calls()
+    # replies may have brought a token back
     drop_seq_token()
   end
 
@@ -619,9 +684,7 @@ defmodule :erlyberly do
   def stop_seq_trace(mod, function_name, arity, is_exported) do
     drop_seq_token()
 
-    if is_exported,
-      do: :dbg.ctpg(mod, function_name, arity),
-      else: :dbg.ctpl(mod, function_name, arity)
+    clear_pattern({mod, function_name, arity}, if(is_exported, do: :global, else: :local))
 
     drop_seq_token()
   end
@@ -648,7 +711,7 @@ defmodule :erlyberly do
 
   # A seq_trace token travels with every message, across nodes too: an RPC
   # from a process that has picked one up (by receiving a traced message)
-  # brings it along, and this process's own messages to dbg and the
+  # brings it along, and this process's own messages to the tracer and the
   # collector would then be traced and show up as events. Calls into the
   # agent never carry the caller's token on.
   defp drop_seq_token do
@@ -657,7 +720,7 @@ defmodule :erlyberly do
   end
 
   defp ensure_seq_tracer_started(remote_node) do
-    ensure_dbg_started(remote_node, 500)
+    ensure_tracer_started(remote_node, 500)
 
     case :erlang.whereis(@seq_tracer) do
       :undefined -> start_seq_tracer(remote_node)
@@ -684,7 +747,7 @@ defmodule :erlyberly do
   defp seq_trace_collector(trace_logs) do
     receive do
       {:nodedown, _node} ->
-        :ok = dbg_stop_clear()
+        :ok = stop_clear()
         true = :seq_trace.reset_trace()
 
       {:seq_trace, _label, trace_log, timestamp} ->

@@ -99,6 +99,16 @@ defmodule Beamdash.TracerTest do
     assert [^entry] = Tracer.entries(ctx.tracer)
   end
 
+  test "needs no dbg: releases often leave runtime_tools out", ctx do
+    true = :erpc.call(ctx.node, :code, :del_path, [:runtime_tools])
+    assert :non_existing = :erpc.call(ctx.node, :code, :which, [:dbg])
+
+    assert :ok = Tracer.start_trace(:beamdash_fixture, :add, 2, ctx.tracer)
+    assert 5 = :erpc.call(ctx.node, :beamdash_fixture, :add, [2, 3])
+    assert %{fun: :add, args: [2, 3], result: {:return, 5}} = next_completed_entry()
+    refute :erpc.call(ctx.node, :code, :is_loaded, [:dbg])
+  end
+
   test "records exceptions", ctx do
     :ok = Tracer.start_trace(:beamdash_fixture, :boom, 1, ctx.tracer)
 
