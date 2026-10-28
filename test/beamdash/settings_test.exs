@@ -166,6 +166,28 @@ defmodule Beamdash.SettingsTest do
     assert socket.assigns.source_form == %{"app" => "", "dir" => ""}
   end
 
+  test "plugin settings are kept per plugin, saved, and removed with nil" do
+    on_exit(fn ->
+      Beamdash.Plugin.put_setting(:plugin_a, "zoom", nil)
+      Beamdash.Plugin.put_setting(:plugin_b, "zoom", nil)
+    end)
+
+    assert Beamdash.Plugin.get_setting(:plugin_a, "zoom", 100) == 100
+    :ok = Beamdash.Plugin.put_setting(:plugin_a, "zoom", 150)
+    :ok = Beamdash.Plugin.put_setting(:plugin_b, "zoom", %{"a" => [1, 2]})
+
+    assert Beamdash.Plugin.get_setting(:plugin_a, "zoom", 100) == 150
+    assert Beamdash.Plugin.get_setting(:plugin_b, "zoom") == %{"a" => [1, 2]}
+
+    assert Jason.decode!(File.read!(Settings.path()))["plugin_settings"]["plugin_a"] == %{
+             "zoom" => 150
+           }
+
+    :ok = Beamdash.Plugin.put_setting(:plugin_a, "zoom", nil)
+    assert Beamdash.Plugin.get_setting(:plugin_a, "zoom", 100) == 100
+    refute Map.has_key?(Jason.decode!(File.read!(Settings.path()))["plugin_settings"], "plugin_a")
+  end
+
   describe "kubeconfig directory" do
     setup do
       on_exit(fn -> :ok = Settings.reset_kubeconfig_dir() end)

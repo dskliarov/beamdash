@@ -77,7 +77,7 @@ defmodule Beamdash.SeqTracer do
 
   def handle_call({:start, mod, fun, arity, exported?}, _from, state) do
     # erlyberly also makes sure its main trace collector runs, reporting to
-    # the Tracer; it needs that collector's dbg tracer.
+    # the Tracer; it needs that collector's tracer process.
     ui_pid = GenServer.whereis(state.tracer) || self()
     args = [{node(), ui_pid}, mod, fun, arity, exported?]
 
