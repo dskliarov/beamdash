@@ -9,7 +9,7 @@ defmodule Beamdash.Tracer do
 
     * `{:erlyberly_trace_log, {:call | :return_from | :exception_from, props}}`
     * `{:erlyberly_trace_overload, queue_len}` – the collector fell behind, so
-      erlyberly stopped all tracing (`dbg:stop_clear/0`)
+      erlyberly stopped all tracing and cleared every pattern
     * `{:erlyberly_module_loaded, mod, functions}` – a traced module was
       reloaded and erlyberly re-applied its traces
 
@@ -23,7 +23,7 @@ defmodule Beamdash.Tracer do
   being switched off are not recorded, so the log holds exactly n calls.
 
   `start_trace(mod, :_, :_)` traces every function of `mod`, local ones
-  included (`dbg:tpl({Mod, '_', '_'}, ...)`). It cannot be combined with
+  included (a local trace pattern on `{Mod, '_', '_'}`). It cannot be combined with
   traces of single functions of the same module (stopping one would clear
   the other), and is refused for the modules the tracing itself runs in
   (see `wildcard_allowed?/1`). Its call limit counts calls of any function
@@ -212,7 +212,7 @@ defmodule Beamdash.Tracer do
   end
 
   def handle_info({:erlyberly_trace_overload, queue_len}, state) do
-    # erlyberly has already run dbg:stop_clear(): every trace is gone.
+    # erlyberly has already stopped tracing: every trace is gone.
     state = %{state | traces: MapSet.new(), open: %{}, limits: %{}}
     notify(state, {:overload, queue_len})
     notify(state, :traces_changed)
