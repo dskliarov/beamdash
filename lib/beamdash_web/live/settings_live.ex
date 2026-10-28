@@ -10,6 +10,7 @@ defmodule BeamdashWeb.SettingsLive do
      |> assign(
        jev_enabled: Settings.jev_enabled?(),
        jev_backend: Jev.backend(),
+       kev_port_error: nil,
        auto_reconnect: Settings.auto_reconnect?(),
        saved_connection: saved(),
        browser: nil,
@@ -241,6 +242,21 @@ defmodule BeamdashWeb.SettingsLive do
     enabled = not Settings.jev_enabled?()
     :ok = Settings.put_jev_enabled(enabled)
     {:noreply, assign(socket, jev_enabled: enabled)}
+  end
+
+  def handle_event("set_kev_port", %{"port" => value}, socket) do
+    case {String.trim(value), Jev.port(value)} do
+      {"", _} ->
+        :ok = Settings.put_kev_port(nil)
+        {:noreply, assign(socket, kev_port_error: nil)}
+
+      {_, nil} ->
+        {:noreply, assign(socket, kev_port_error: "A port is a number from 1 to 65535.")}
+
+      {_, port} ->
+        :ok = Settings.put_kev_port(port)
+        {:noreply, assign(socket, kev_port_error: nil)}
+    end
   end
 
   def handle_event("set_backend", %{"backend" => value}, socket) do
@@ -501,6 +517,32 @@ defmodule BeamdashWeb.SettingsLive do
             </button>
           </div>
         </div>
+        <form
+          :if={Jev.configured?(:kev)}
+          id="kev-port-form"
+          class="settings-toggle-row"
+          phx-submit="set_kev_port"
+        >
+          <div>
+            <label for="kev-port"><strong>Kev port</strong></label>
+            <p class="muted small">
+              Port of the Kev server at {Jev.endpoint(:kev)}. Saved for the next start;
+              empty goes back to KEV_URL or KEV_PORT.
+            </p>
+            <p :if={@kev_port_error} class="error small" role="alert">{@kev_port_error}</p>
+          </div>
+          <input
+            id="kev-port"
+            name="port"
+            type="number"
+            min="1"
+            max="65535"
+            value={Settings.kev_port() || Jev.kev_port()}
+            class="mono"
+            style="width: 7em"
+          />
+          <button type="submit" class="small-btn">Save</button>
+        </form>
         <div class="settings-toggle-row">
           <div>
             <strong id="jev-setting-label">Enable {Jev.name(@jev_backend)} analysis</strong>
@@ -549,7 +591,7 @@ defmodule BeamdashWeb.SettingsLive do
               "No API key. Set TYPESAFE_API_KEY in the environment and restart beamdash to use Jev."
           end}
           <span :if={not Jev.configured?(:kev)}>
-            Set KEV_URL to a Kev server to try Kev instead.
+            Set KEV_URL (or KEV_PORT, for a server on this machine) to try Kev instead.
           </span>
         </p>
       </section>

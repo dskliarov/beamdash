@@ -25,6 +25,8 @@ jev_env =
     endpoint: System.get_env("TYPESAFE_ENDPOINT"),
     # Kev (self-hosted, same API): KEV_URL turns it on; its key goes only to it
     kev_url: System.get_env("KEV_URL"),
+    # without KEV_URL: a Kev server on this machine at this port
+    kev_port: System.get_env("KEV_PORT"),
     kev_api_key: System.get_env("KEV_API_KEY"),
     kev_model: System.get_env("KEV_MODEL"),
     kev_timeout: System.get_env("KEV_TIMEOUT"),

@@ -8,16 +8,19 @@ defmodule Beamdash.KevTest do
     previous = Settings.jev_enabled?()
     Settings.put_jev_enabled(true)
     Settings.put_decision_backend(nil)
+    Settings.put_kev_port(nil)
 
     on_exit(fn ->
       Settings.put_jev_enabled(previous)
       Settings.put_decision_backend(nil)
+      Settings.put_kev_port(nil)
     end)
 
     Fixture.put_jev_config(
       enabled: true,
       api_key: "typesafe-key",
       kev_url: "http://127.0.0.1:8009",
+      kev_port: nil,
       kev_api_key: nil,
       kev_model: nil,
       kev_timeout: nil,
@@ -146,5 +149,41 @@ defmodule Beamdash.KevTest do
     assert Settings.decision_backend() == :kev
     {:noreply, socket} = view.handle_event("set_backend", %{"backend" => "nope"}, socket)
     assert socket.assigns.jev_backend == :kev
+  end
+
+  test "KEV_PORT alone is a Kev server on this machine; a bad port is not" do
+    Fixture.put_jev_config(kev_url: nil, kev_port: "9100")
+    assert Jev.configured?(:kev)
+    assert Jev.endpoint(:kev) == "http://127.0.0.1:9100/v1/systemone"
+    assert Jev.kev_port() == 9100
+
+    Fixture.put_jev_config(kev_port: "70000")
+    refute Jev.configured?(:kev)
+    assert Jev.kev_port() == nil
+  end
+
+  test "the port saved in Settings replaces KEV_URL's, and empty goes back to it" do
+    Fixture.put_jev_config(kev_url: "http://kev.lan:8009/")
+    view = BeamdashWeb.SettingsLive
+    {:ok, socket} = view.mount(%{}, %{}, %Phoenix.LiveView.Socket{})
+
+    {:noreply, socket} = view.handle_event("set_kev_port", %{"port" => "9200"}, socket)
+    assert socket.assigns.kev_port_error == nil
+    assert Jev.endpoint(:kev) == "http://kev.lan:9200/v1/systemone"
+
+    assert {:ok, _} = Jev.ask(%{}, "q", @choices, backend: :kev, request: capture(self()))
+    assert_receive {:request, "http://kev.lan:9200/v1/systemone", _, _, _}
+
+    # saved for the next start
+    Settings.reload()
+    assert Settings.kev_port() == 9200
+
+    {:noreply, socket} = view.handle_event("set_kev_port", %{"port" => "http"}, socket)
+    assert socket.assigns.kev_port_error =~ "65535"
+    assert Settings.kev_port() == 9200
+
+    {:noreply, _} = view.handle_event("set_kev_port", %{"port" => " "}, socket)
+    assert Settings.kev_port() == nil
+    assert Jev.endpoint(:kev) == "http://kev.lan:8009/v1/systemone"
   end
 end

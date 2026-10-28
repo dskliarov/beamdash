@@ -20,7 +20,9 @@ defmodule Beamdash.Jev do
 
   The same requests can go to Kev instead (github.com/jaredpalmer/kev), a
   self-hosted model that serves TypeSafe's `/v1/systemone` API: `KEV_URL`
-  (its server, e.g. `http://127.0.0.1:8009`) turns it on, `KEV_API_KEY` is
+  (its server, e.g. `http://127.0.0.1:8009`) or `KEV_PORT` alone (a server
+  on this machine, `http://127.0.0.1:<port>`) turns it on. The port saved in
+  Settings (`Beamdash.Settings.kev_port/0`) replaces the URL's. `KEV_API_KEY` is
   sent only to it (when its server sets one), `KEV_MODEL` names the model
   shown and `KEV_TIMEOUT` (ms, default #{120_000}) allows for a slower
   machine. Each backend's key goes only to its own server.
@@ -50,12 +52,50 @@ defmodule Beamdash.Jev do
   end
 
   defp endpoint_url(:kev) do
-    base = String.trim_trailing(config()[:kev_url] || "", "/")
+    base = String.trim_trailing(kev_url() || "", "/")
 
     if String.ends_with?(base, "/v1/systemone"),
       do: String.to_charlist(base),
       else: String.to_charlist(base <> "/v1/systemone")
   end
+
+  @default_kev_host "127.0.0.1"
+
+  # KEV_URL, else this machine at KEV_PORT; the port saved in Settings wins
+  defp kev_url do
+    url =
+      cond do
+        present?(config()[:kev_url]) -> String.trim(config()[:kev_url])
+        port = port(config()[:kev_port]) -> "http://#{@default_kev_host}:#{port}"
+        true -> nil
+      end
+
+    case {url, Beamdash.Settings.kev_port()} do
+      {nil, _} -> nil
+      {url, nil} -> url
+      {url, port} -> url |> URI.parse() |> Map.put(:port, port) |> URI.to_string()
+    end
+  end
+
+  @doc "The port of Kev's server, from `KEV_URL`, `KEV_PORT` or Settings; `nil` without Kev."
+  def kev_port do
+    case kev_url() do
+      nil -> nil
+      url -> URI.parse(url).port
+    end
+  end
+
+  @doc "A TCP port from an integer or a string, or `nil`."
+  def port(p) when is_integer(p) and p in 1..65_535, do: p
+
+  def port(p) when is_binary(p) do
+    case Integer.parse(String.trim(p)) do
+      {n, ""} -> port(n)
+      _ -> nil
+    end
+  end
+
+  def port(_), do: nil
 
   def default_model, do: @default_model
 
@@ -64,7 +104,7 @@ defmodule Beamdash.Jev do
   @doc "Whether `backend` (default: the one in use) can be asked: Jev needs its key, Kev its URL."
   def configured?(backend \\ backend())
   def configured?(:jev), do: present?(config()[:api_key])
-  def configured?(:kev), do: present?(config()[:kev_url])
+  def configured?(:kev), do: kev_url() != nil
 
   @doc "The backends that can be asked, Jev first."
   def configured_backends, do: Enum.filter(@backends, &configured?/1)

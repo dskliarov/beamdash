@@ -313,7 +313,10 @@ uv run --extra serve python -m kev.serve --run jaredpalmer/kev-4b --port 8009
 KEV_URL=http://127.0.0.1:8009 iex -S mix phx.server
 ```
 
-`KEV_URL` turns Kev on; `KEV_API_KEY` is sent only to Kev (when its server
+`KEV_URL` turns Kev on, or `KEV_PORT` alone for a server on this machine
+(`KEV_PORT=9100` is `http://127.0.0.1:9100`); **Settings → Kev port** changes
+the port without a restart and is saved, and clearing it goes back to the
+environment's. `KEV_API_KEY` is sent only to Kev (when its server
 sets one; TypeSafe's key is never sent to it), `KEV_MODEL` names the model
 shown (default `kev-latest`) and `KEV_TIMEOUT` (ms, default 120000) allows
 for a slower machine. With both Jev and Kev configured, **Settings → Suggestions

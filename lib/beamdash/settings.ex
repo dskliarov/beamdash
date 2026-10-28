@@ -18,6 +18,7 @@ defmodule Beamdash.Settings do
   @key {__MODULE__, :syntax}
   @jev_key {__MODULE__, :jev_enabled}
   @backend_key {__MODULE__, :decision_backend}
+  @kev_port_key {__MODULE__, :kev_port}
   @kube_key {__MODULE__, :kubeconfig_dir}
   @reconnect_key {__MODULE__, :auto_reconnect}
   @source_dirs_key {__MODULE__, :source_dirs}
@@ -80,6 +81,29 @@ defmodule Beamdash.Settings do
     :persistent_term.put(@backend_key, backend)
     save("decision_backend", backend && Atom.to_string(backend))
     Phoenix.PubSub.broadcast(Beamdash.PubSub, "settings", {:beamdash_backend, backend})
+    :ok
+  end
+
+  @doc """
+  The port of Kev's server set in Settings, replacing the one in `KEV_URL`
+  or `KEV_PORT` (see `Beamdash.Jev`), or `nil`. Saved for the next start.
+  """
+  def kev_port do
+    case :persistent_term.get(@kev_port_key, :unset) do
+      :unset ->
+        port = Beamdash.Jev.port(read()["kev_port"])
+        :persistent_term.put(@kev_port_key, port)
+        port
+
+      port ->
+        port
+    end
+  end
+
+  @doc "Sets Kev's port (1..65535); `nil` goes back to the configured one."
+  def put_kev_port(port) when port == nil or (is_integer(port) and port in 1..65_535) do
+    :persistent_term.put(@kev_port_key, port)
+    save("kev_port", port)
     :ok
   end
 
@@ -192,6 +216,7 @@ defmodule Beamdash.Settings do
   # Drops the in-memory copy so the next read loads the file (tests).
   def reload do
     :persistent_term.erase(@backend_key)
+    :persistent_term.erase(@kev_port_key)
     :persistent_term.erase(@kube_key)
     :persistent_term.erase(@reconnect_key)
     :persistent_term.erase(@source_dirs_key)
