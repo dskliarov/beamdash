@@ -26,6 +26,7 @@ defmodule BeamdashWeb.Router do
       live "/nodes", NodesLive
       live "/load", LoadLive
       live "/apps", AppsLive
+      live "/modules", ModulesLive
       live "/memory", MemoryLive
       live "/logs", LogsLive
       live "/gc", GCLive

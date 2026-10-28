@@ -330,6 +330,7 @@ defmodule BeamdashWeb.Layouts do
        {"/nodes", :nodes, "Nodes", "Nodes", "n"},
        {"/load", :load, "Load", "Load Charts", "l"},
        {"/apps", :apps, "Apps", "Applications", "a"},
+       {"/modules", :modules, "Modules", "Modules", "u"},
        {"/memory", :memory, "Memory", "Memory", "m"},
        {"/logs", :logs, "Logs", "Logs", "o"}
      ]},
