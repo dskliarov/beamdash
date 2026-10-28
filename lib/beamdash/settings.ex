@@ -6,7 +6,8 @@ defmodule Beamdash.Settings do
   `{:beamdash_jev, enabled}` or `{:beamdash_kubeconfig_dir, dir}`.
 
   The syntax and Jev switch last for this VM's lifetime. The kubeconfig
-  directory, auto-reconnect and the local source folders are also saved, as JSON in `<user config dir>/beamdash/settings.json`
+  directory, auto-reconnect, the local source folders and plugins' own
+  settings are also saved, as JSON in `<user config dir>/beamdash/settings.json`
   (next to `Beamdash.LastConnection`'s file), so it is still chosen after a
   restart; `config :beamdash, :settings_file` points elsewhere, `false`
   turns saving off.
@@ -141,6 +142,37 @@ defmodule Beamdash.Settings do
   defp put_source_dirs(dirs) do
     :persistent_term.put(@source_dirs_key, dirs)
     save("source_dirs", if(dirs != %{}, do: dirs))
+    :ok
+  end
+
+  @doc """
+  Plugin `plugin`'s saved value for `key` (see `Beamdash.Plugin.get_setting/3`),
+  or `default`. Read from the file each time: plugins read them rarely.
+  """
+  def plugin_setting(plugin, key, default) when is_atom(plugin) and is_binary(key) do
+    case read()["plugin_settings"] do
+      %{} = all -> all |> Map.get(Atom.to_string(plugin), %{}) |> then(&Map.get(&1, key, default))
+      _ -> default
+    end
+  end
+
+  @doc "Saves plugin `plugin`'s `value` for `key`; `nil` removes it."
+  def put_plugin_setting(plugin, key, value) when is_atom(plugin) and is_binary(key) do
+    all =
+      case read()["plugin_settings"] do
+        %{} = all -> all
+        _ -> %{}
+      end
+
+    name = Atom.to_string(plugin)
+
+    own =
+      all
+      |> Map.get(name, %{})
+      |> then(&if(value == nil, do: Map.delete(&1, key), else: Map.put(&1, key, value)))
+
+    all = if own == %{}, do: Map.delete(all, name), else: Map.put(all, name, own)
+    save("plugin_settings", if(all != %{}, do: all))
     :ok
   end
 
