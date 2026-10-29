@@ -336,6 +336,11 @@ defmodule Beamdash.Target do
     {:noreply, state |> maybe_reconnect() |> drop_current(:tunnel_failed)}
   end
 
+  # A closed or superseded port-forward can report its exit after the
+  # tunnel was cleared or a new connection was established.
+  def handle_info({port, {:exit_status, _status}}, state) when is_port(port),
+    do: {:noreply, state}
+
   def handle_info({:reconnect_try, ref}, %{reconnect: %{ref: ref} = r} = state) do
     if state.auto_reconnect.() do
       owner = self()
@@ -351,9 +356,23 @@ defmodule Beamdash.Target do
 
   def handle_info({:reconnect_try, _stale}, state), do: {:noreply, state}
 
-  def handle_info({:reconnect_result, ref, {:ok, connection}}, %{reconnect: %{ref: ref}} = state) do
-    Logger.info("beamdash: reconnected to #{connection.node}")
-    {:noreply, connected(%{state | reconnect: nil}, connection)}
+  def handle_info(
+        {:reconnect_result, ref, {:ok, connection}},
+        %{reconnect: %{ref: ref} = r} = state
+      ) do
+    if tunnel_alive?(connection.tunnel) do
+      Logger.info("beamdash: reconnected to #{connection.node}")
+      {:noreply, connected(%{state | reconnect: nil}, connection)}
+    else
+      Kubectl.close(connection.tunnel)
+      if connection.node != state.node, do: Node.disconnect(connection.node)
+
+      {:noreply,
+       %{
+         state
+         | reconnect: schedule_try(%{r | attempt: r.attempt + 1, error: :tunnel_failed}, state)
+       }}
+    end
   end
 
   def handle_info(
@@ -382,6 +401,12 @@ defmodule Beamdash.Target do
   end
 
   ## Helpers
+
+  defp tunnel_alive?(nil), do: true
+
+  defp tunnel_alive?(%Kubectl.Tunnel{epmd_port: epmd, dist_port: dist}) do
+    Port.info(epmd) != nil and Port.info(dist) != nil
+  end
 
   # Makes the connection `params` describes: `{:direct, node, cookie}` or
   # `{:kubectl, kubeconfig, namespace, pod, container, binary}`. Run in the
