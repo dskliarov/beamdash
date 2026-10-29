@@ -212,6 +212,55 @@ defmodule Beamdash.TargetTest do
   end
 
   describe "auto-reconnect" do
+    for dead_side <- [:epmd_port, :dist_port] do
+      test "rejects a reconnect whose #{dead_side} exited during handoff", ctx do
+        server = ctx.server
+        :ok = Target.subscribe(server)
+        ref = make_ref()
+
+        reconnect = %{
+          ref: ref,
+          node: ctx.node,
+          params: {:direct, ctx.node, @cookie},
+          attempt: 1,
+          error: nil
+        }
+
+        :sys.replace_state(server, fn state ->
+          %{state | reconnect: reconnect, reconnect_delays: [60_000]}
+        end)
+
+        epmd =
+          Port.open({:spawn_executable, System.find_executable("cat")}, [:binary, :exit_status])
+
+        dist =
+          Port.open({:spawn_executable, System.find_executable("cat")}, [:binary, :exit_status])
+
+        tunnel = %Beamdash.Kubectl.Tunnel{epmd_port: epmd, dist_port: dist}
+        dead = Map.fetch!(tunnel, unquote(dead_side))
+        Port.close(dead)
+        pid = GenServer.whereis(server)
+        send(pid, {dead, {:exit_status, 1}})
+
+        connection = %{
+          node: ctx.node,
+          tunnel: tunnel,
+          source: :kubectl,
+          params: reconnect.params,
+          info: %{}
+        }
+
+        send(pid, {:reconnect_result, ref, {:ok, connection}})
+        assert %{status: :disconnected, node: nil} = Target.status(server)
+        assert %{node: node, attempt: 2, error: error} = Target.reconnecting(server)
+        assert node == ctx.node
+        assert error == :tunnel_failed
+        assert Port.info(epmd) == nil
+        assert Port.info(dist) == nil
+        refute_receive {:beamdash_target, {:connected, _}}, 100
+      end
+    end
+
     test "a node that comes back is connected again" do
       name = :peer.random_name()
       {peer, node} = start_named_peer(name)
