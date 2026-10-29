@@ -166,6 +166,9 @@ defmodule Beamdash.PluginsTest do
 
   # HelloPlugin.Extra compiles at once; HelloPlugin.Slow takes `ms` to compile.
   defp add_slow(src, ms) do
+    marker = Path.join(src, ".slow-compile-started")
+    File.rm(marker)
+
     File.write!(Path.join(src, "lib/hello_plugin/extra.ex"), """
     defmodule HelloPlugin.Extra do
       def x, do: 1
@@ -174,6 +177,7 @@ defmodule Beamdash.PluginsTest do
 
     File.write!(Path.join(src, "lib/hello_plugin/slow.ex"), """
     defmodule HelloPlugin.Slow do
+      File.write!(#{inspect(marker)}, "started")
       Process.sleep(#{ms})
       def y, do: 2
     end
@@ -458,7 +462,7 @@ defmodule Beamdash.PluginsTest do
       add_slow(src, 1_500)
 
       caller = spawn(fn -> Plugins.rebuild(server, :hello_plugin) end)
-      eventually(fn -> loaded?(HelloPlugin.Extra) end)
+      eventually(fn -> File.exists?(Path.join(src, ".slow-compile-started")) end)
       Process.exit(caller, :kill)
 
       eventually(fn -> not Map.has_key?(:sys.get_state(server).rebuilding, :hello_plugin) end)
@@ -738,7 +742,7 @@ defmodule Beamdash.PluginsTest do
 
       server = start_plugins(dir)
       %{startup: %{pid: pid}} = :sys.get_state(server)
-      eventually(fn -> loaded?(HelloPlugin.Extra) end)
+      eventually(fn -> File.exists?(Path.join(src, ".slow-compile-started")) end)
       Process.exit(pid, :kill)
 
       eventually(fn -> entry(server, :hello_plugin).status == :waiting end)

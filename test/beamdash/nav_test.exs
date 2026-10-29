@@ -23,7 +23,7 @@ defmodule Beamdash.NavTest do
 
     assert Enum.sort(paths) ==
              Enum.sort(
-               ~w(/system /nodes /load /apps /memory /logs / /gc /crashes /trace /seq /profile)
+               ~w(/system /nodes /load /apps /modules /console /memory /logs / /gc /crashes /trace /seq /profile)
              )
 
     keys = Enum.map(tabs, &elem(&1, 4)) ++ [","]
@@ -50,7 +50,9 @@ defmodule Beamdash.NavTest do
     assert h =~ ~s(data-shortcuts-open)
     # the overflow menu and the hook that fills it
     assert h =~ ~s(phx-hook="NavOverflow")
-    assert h =~ ~s(<details class="tabs-more" hidden>)
+    assert h =~ ~s(class="tabs-more")
+    assert h =~ ~s(id="tabs-more-menu")
+    assert h =~ ~s(data-overflow-last="true")
     # the shortcut list
     assert h =~ ~s(<dialog id="shortcuts")
     assert h =~ ~r/<kbd>g<\/kbd>\s*<kbd>t<\/kbd>\s*Tracing/

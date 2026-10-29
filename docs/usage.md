@@ -305,3 +305,107 @@ To write a plugin, start from the riak_core plugin ([beamdash-riak-core-plugin](
 ## Refreshing the screenshots
 
 Run the demo and repeat the steps above. Save JPEG screenshots under `docs/screenshots/` using the same names; use synthetic demo data and keep real cookies, keys, messages and state out of the images. Capture a short GC trace on `demo_shop`, trace `checkout/1`, profile `work/1`, and generate the crash only after collecting the earlier screenshots. Scroll or capture the full page when needed so the relevant output is visible.
+
+## Remote console
+
+Open **Console** after connecting to a node. Choose Erlang or Elixir and type at
+the numbered prompt. **Enter** submits, and **Shift+Enter** inserts a newline.
+Erlang commands require a terminating period. Incomplete Erlang input and Elixir
+blocks, strings and expressions continue on the next line at a `...>` prompt;
+they are not evaluated until complete. Elixir mode requires Elixir on the target.
+
+For example, evaluate `X = 21.` followed by `X * 2.` in Erlang, or `x = 21`
+followed by `x * 2` in Elixir. Bindings and the evaluator process persist within
+that page's session. Standard output and the result appear in the transcript;
+**Reuse** copies a prior command into the input. The transcript retains the last
+50 commands, with up to 64 KB of output per command. **↑/↓** recalls the last 100
+commands per language at the first/last input line; moving forward past the newest
+command restores the unsent draft. History stays in this page's memory and is
+cleared when the target changes or the page closes.
+
+**Clear transcript** (**Ctrl+L**) keeps bindings and command history.
+**Ctrl+C** clears incomplete input, or interrupts a running command and resets
+its evaluator. Selecting text keeps Ctrl+C available for copying.
+**Reset session** creates a fresh evaluator
+on the next command and clears bindings. Changing language also resets the
+session. Leaving the page or losing the connection closes the remote session.
+
+Commands run on the target with its permissions and can change live state. An
+evaluation times out after five seconds, killing the evaluator and clearing its
+bindings; this does not undo side effects or terminate processes the command
+spawned. Interactive input prompts and IEx shell helpers are unavailable. Elixir
+variable bindings, aliases, imports, and evaluation environment persist across
+commands.
+
+The console's **Autocomplete** option suggests loaded modules and exported
+functions from the connected node. Type a prefix such as `Enum.ma` in Elixir or
+`lists:ma` in Erlang. Use the arrow keys to select, Tab or Enter to insert,
+Escape to dismiss, or Ctrl+Space to request suggestions. Suggestions include
+function arities and insert the call's opening parenthesis (both parentheses for
+zero-argument functions). Completion reads metadata without evaluating code; it
+does not resolve variables or aliases created inside expressions.
+
+## Console notebooks
+
+Choose **Console → Notebooks** to create or import Livebook `.livemd` files.
+The format follows Livebook's LiveMarkdown conventions: a level-one notebook
+title, level-two section headings, Markdown, fenced Elixir/Erlang code cells,
+and `<!-- livebook:... -->` metadata. The original Shell mode remains available.
+See the upstream [format definition](https://github.com/livebook-dev/livebook/blob/main/lib/livebook/live_markdown.ex)
+and [attached-node runtime](https://github.com/livebook-dev/livebook/blob/main/lib/livebook/runtime/attached.ex)
+for the Livebook functionality this integration is based on.
+
+Use **Save** to write a `.livemd` file to the folder shown in the notebook
+sidebar. `config :beamdash, :notebooks_dir, "/path/to/notebooks"` changes the
+folder; by default it is the `notebooks` folder in Beamdash's user data directory.
+**Download .livemd** exports a browser download, and **Import** opens a local
+`.livemd` file without executing it. Existing files are only overwritten if they
+have not changed since opening/saving; otherwise choose a new filename. The
+source limit is 2 MiB. Optionally include evaluated text outputs when saving.
+Saving uses a loopback socket lock shared between beamdash processes on the same
+machine. The lock is released if the process exits unexpectedly. If a lock port
+is already in use, retry or choose another filename.
+
+Add Markdown, Elixir, Erlang, or section blocks. Code cells have syntax coloring
+and completion. **Run cell** uses the current per-language session on the
+connected node. **Run all** resets notebook sessions and executes supported cells
+in file order, stopping at the first error. Elixir bindings, aliases, imports,
+and requires persist between cells. Erlang and Elixir use separate sessions.
+Editing marks cached results stale; run all to rebuild state in order. Cell
+timeouts are selectable from 5 to 60 seconds, with a 32 KiB execution limit per
+cell. Closing the page closes notebook sessions; disconnecting preserves unsaved
+source but resets execution state. **Reset runtime** cancels an active evaluation.
+Effects on the node and processes spawned by code are not rolled back.
+
+This provides LiveMarkdown file interoperability and connected-node code/Markdown
+notebooks. It does not embed the Livebook application or its reactive dependency
+graph. Smart cells, Python cells, persisted output blocks, unknown metadata and
+signatures are preserved when untouched. Unsupported cells cannot run, and
+branching notebooks are not executable here. Kino widgets, attachments, Mermaid,
+math rendering, package installation, collaboration, and application deployment
+require Livebook. Signatures are not verified and are removed after content or
+output changes. No code runs merely by opening/importing a notebook, including
+setup cells and automatically reevaluating-cell annotations.
+
+### Modules source editor
+
+The Modules tab uses a locally bundled CodeMirror 6 editor for Elixir and Erlang.
+It includes line numbers, folding, bracket matching, undo/redo, and search.
+Use Ctrl/Cmd+F to search and Ctrl/Cmd+Enter to compile. Changing language
+reconfigures syntax support. Clear code and Discard changes replace the editor
+contents, while ordinary page updates preserve the current draft and cursor.
+The resized editor height is remembered in the browser. The bundle is served
+locally; Node.js is only needed to rebuild it (see `assets/codemirror/README.md`).
+
+Module Source lookup searches configured folders recursively, including `deps`,
+`_build`, and linked dependency folders. Directory identities prevent symlink
+cycles. When names are ambiguous, project source is preferred over dependency
+and build copies. Elixir declaration lookup uses the same recursive traversal.
+
+If lookup cannot find the original source file, **Browse local source** opens a
+filesystem picker on the machine running Beamdash. Navigate folders or enter a
+folder path, then choose an `.ex`, `.exs`, or `.erl` file. The file is loaded into
+the editor with its language and nearest Mix project directory. It becomes the
+baseline for Discard changes, and any staged compilation or test result is
+cleared. Reading a file does not save, compile, or deploy it. Files must be UTF-8
+and at most 2 MiB; a failed read preserves the current editor contents.

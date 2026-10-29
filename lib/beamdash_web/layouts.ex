@@ -23,6 +23,16 @@ defmodule BeamdashWeb.Layouts do
         </script>
         <script defer src="/assets/vendor/highlight/elixir.min.js">
         </script>
+        <script defer src="/assets/source_editor.js">
+        </script>
+        <script defer src="/assets/console_completion.js">
+        </script>
+        <script defer src="/assets/notebook_files.js">
+        </script>
+        <script defer src="/assets/vendor/codemirror/editor.js">
+        </script>
+        <script defer src="/assets/module_editor.js">
+        </script>
         <script defer src="/assets/app.js">
         </script>
       </head>
@@ -330,6 +340,8 @@ defmodule BeamdashWeb.Layouts do
        {"/nodes", :nodes, "Nodes", "Nodes", "n"},
        {"/load", :load, "Load", "Load Charts", "l"},
        {"/apps", :apps, "Apps", "Applications", "a"},
+       {"/modules", :modules, "Modules", "Modules", "u"},
+       {"/console", :console, "Console", "Remote console", "e"},
        {"/memory", :memory, "Memory", "Memory", "m"},
        {"/logs", :logs, "Logs", "Logs", "o"}
      ]},
@@ -381,6 +393,7 @@ defmodule BeamdashWeb.Layouts do
           class={["tab", @active == key && "active"]}
           title={"#{title} · #{group} — g #{shortcut}"}
           data-key={shortcut}
+          data-overflow-last={key in [:modules, :console] && "true"}
           aria-current={@active == key && "page"}
         >
           {label}
@@ -418,9 +431,13 @@ defmodule BeamdashWeb.Layouts do
           </div>
         </div>
       </details>
-      <details class="tabs-more" hidden>
+      <details
+        class="tabs-more"
+        hidden
+        phx-mounted={Phoenix.LiveView.JS.ignore_attributes(["open"])}
+      >
         <summary title="More tabs">More ▾</summary>
-        <div class="tabs-more-menu" role="menu"></div>
+        <div id="tabs-more-menu" class="tabs-more-menu" role="menu" phx-update="ignore"></div>
       </details>
     </nav>
     <div class="header-tools">

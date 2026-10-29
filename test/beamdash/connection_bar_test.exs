@@ -286,8 +286,23 @@ defmodule Beamdash.ConnectionBarTest do
     refute_receive {:beamdash_target, {:connected, ^node}}, 200
   end
 
-  # an empty kubeconfig: a real kubectl, if present, fails fast instead of
-  # reaching a cluster; only the shape of its reply is asserted
+  # Do not use a real cluster or depend on kubectl's network timeout in CI.
+  defp fake_kubectl do
+    dir = Path.join(System.tmp_dir!(), "beamdash-kubectl-#{System.unique_integer([:positive])}")
+    File.mkdir_p!(dir)
+    executable = Path.join(dir, "kubectl")
+    File.write!(executable, "#!/bin/sh\nprintf 'no cluster\\n' >&2\nexit 1\n")
+    File.chmod!(executable, 0o700)
+    previous = System.get_env("PATH")
+    System.put_env("PATH", dir <> ":" <> (previous || ""))
+
+    on_exit(fn ->
+      if previous, do: System.put_env("PATH", previous), else: System.delete_env("PATH")
+      File.rm_rf!(dir)
+    end)
+  end
+
+  # The fake kubectl returns an error without reaching a cluster.
   defp empty_kubeconfig do
     path =
       Path.join(System.tmp_dir!(), "beamdash-empty-#{System.unique_integer([:positive])}.yaml")
@@ -307,6 +322,7 @@ defmodule Beamdash.ConnectionBarTest do
   end
 
   test "switching to Kubernetes returns at once and lists namespaces in the background" do
+    fake_kubectl()
     path = empty_kubeconfig()
 
     {:halt, s} =
@@ -322,6 +338,7 @@ defmodule Beamdash.ConnectionBarTest do
   end
 
   test "clicking Kubernetes while already on it does not list again" do
+    fake_kubectl()
     path = empty_kubeconfig()
 
     {:halt, s} =
@@ -366,6 +383,7 @@ defmodule Beamdash.ConnectionBarTest do
   end
 
   test "picking another cluster clears the suggestions and lists the new one's" do
+    fake_kubectl()
     old = empty_kubeconfig()
     new = empty_kubeconfig()
     s = on_cluster(old, %{method: :kubectl, kube_namespaces: ["default"]})

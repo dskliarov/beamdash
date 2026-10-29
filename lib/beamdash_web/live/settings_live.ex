@@ -11,6 +11,10 @@ defmodule BeamdashWeb.SettingsLive do
        jev_enabled: Settings.jev_enabled?(),
        jev_backend: Jev.backend(),
        kev_port_error: nil,
+       ai_provider: Settings.ai_provider(),
+       ai_notice: nil,
+       ai_models: [],
+       ai_loading: nil,
        auto_reconnect: Settings.auto_reconnect?(),
        saved_connection: saved(),
        browser: nil,
@@ -269,6 +273,60 @@ defmodule BeamdashWeb.SettingsLive do
         {:noreply, assign(socket, jev_backend: backend)}
     end
   end
+
+  def handle_event("save_ai_provider", %{"provider" => provider, "model" => model}, socket) do
+    case Settings.put_ai_provider(provider, model) do
+      :ok ->
+        {:noreply,
+         assign(socket, ai_provider: Settings.ai_provider(), ai_notice: "Settings saved.")}
+
+      {:error, message} ->
+        {:noreply, assign(socket, ai_notice: message)}
+    end
+  end
+
+  def handle_event("edit_ai_provider", %{"provider" => provider, "model" => model}, socket) do
+    changed = provider != socket.assigns.ai_provider["provider"]
+
+    {:noreply,
+     assign(socket,
+       ai_provider: %{"provider" => provider, "model" => model},
+       ai_models: if(changed, do: [], else: socket.assigns.ai_models),
+       ai_loading: if(changed, do: nil, else: socket.assigns.ai_loading),
+       ai_notice: if(changed, do: nil, else: socket.assigns.ai_notice)
+     )}
+  end
+
+  def handle_event("load_ai_models", _, socket) do
+    provider = socket.assigns.ai_provider["provider"]
+    ref = make_ref()
+
+    {:noreply,
+     socket
+     |> assign(ai_loading: ref, ai_notice: nil, ai_models: [])
+     |> start_async({:ai_models, ref}, fn -> Beamdash.AIModels.list(provider) end)}
+  end
+
+  @impl true
+  def handle_async({:ai_models, ref}, result, %{assigns: %{ai_loading: ref}} = socket) do
+    case result do
+      {:ok, {:ok, models}} ->
+        {:noreply,
+         assign(socket,
+           ai_models: models,
+           ai_loading: nil,
+           ai_notice: "Found #{length(models)} models."
+         )}
+
+      {:ok, {:error, error}} ->
+        {:noreply, assign(socket, ai_loading: nil, ai_notice: error)}
+
+      _ ->
+        {:noreply, assign(socket, ai_loading: nil, ai_notice: "Could not retrieve models.")}
+    end
+  end
+
+  def handle_async({:ai_models, _}, _, socket), do: {:noreply, socket}
 
   # an install's progress and a rebuild's result
   @impl true
@@ -594,6 +652,60 @@ defmodule BeamdashWeb.SettingsLive do
             Set KEV_URL (or KEV_PORT, for a server on this machine) to try Kev instead.
           </span>
         </p>
+      </section>
+      <section class="mem-panel settings-card" aria-labelledby="ai-provider-heading">
+        <h3 id="ai-provider-heading">AI provider</h3>
+        <p class="muted small">
+          Save a provider and model for future AI analysis. Connecting these providers to Analyze is not yet implemented.
+        </p>
+        <form id="ai-provider-form" phx-change="edit_ai_provider" phx-submit="save_ai_provider">
+          <label for="ai-provider">Provider</label>
+          <select id="ai-provider" name="provider">
+            <option
+              :for={
+                {value, label} <- [
+                  {"none", "None"},
+                  {"anthropic", "Claude (Anthropic)"},
+                  {"openai", "ChatGPT (OpenAI API)"},
+                  {"gemini", "Gemini (Google)"}
+                ]
+              }
+              value={value}
+              selected={@ai_provider["provider"] == value}
+            >
+              {label}
+            </option>
+          </select>
+          <label for="ai-model">Model ID</label>
+          <input
+            id="ai-model"
+            name="model"
+            value={@ai_provider["model"]}
+            maxlength="256"
+            placeholder="Provider model ID"
+            list="ai-model-list"
+            autocomplete="off"
+          />
+          <datalist id="ai-model-list"><option :for={model <- @ai_models} value={model}></option></datalist>
+          <button
+            type="button"
+            class="secondary"
+            phx-click="load_ai_models"
+            disabled={@ai_loading != nil or @ai_provider["provider"] == "none"}
+          >{if @ai_loading, do: "Loading…", else: "Load models"}</button>
+          <button type="submit">Save</button>
+        </form>
+        <p class="muted small">
+          Configure credentials in the environment: ANTHROPIC_API_KEY, OPENAI_API_KEY, or GEMINI_API_KEY. Keys are not stored in settings.
+        </p>
+        <p :if={@ai_provider["provider"] == "gemini"} class="muted small">
+          Without a Gemini API key, model lookup uses a Google account signed in with Google Cloud application-default credentials and the GOOGLE_CLOUD_PROJECT environment variable. Configure a Google Cloud project and OAuth client first; see <a
+            href="https://ai.google.dev/gemini-api/docs/oauth"
+            target="_blank"
+            rel="noopener noreferrer"
+          >Google's OAuth setup</a>.
+        </p>
+        <p :if={@ai_notice} role="status">{@ai_notice}</p>
       </section>
       <PluginsSettings.card
         plugins={@plugins}
