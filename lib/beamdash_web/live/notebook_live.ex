@@ -521,7 +521,10 @@ defmodule BeamdashWeb.NotebookLive do
         <div class="notebook-cells">
           <article
             :for={block <- @notebook.blocks}
-            :if={block.kind != :markdown or String.trim(block.source) != ""}
+            :if={
+              block.kind != :markdown or String.trim(block.source) != "" or
+                String.trim(block.original) != ""
+            }
             id={"notebook-block-#{block.id}"}
             class="notebook-cell"
           >

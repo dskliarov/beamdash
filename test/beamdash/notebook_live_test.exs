@@ -77,6 +77,36 @@ defmodule Beamdash.NotebookLiveTest do
     assert socket.assigns.sessions == %{}
   end
 
+  test "a cleared Markdown cell remains editable and accepts replacement text", %{socket: socket} do
+    {:noreply, socket} = NotebookLive.handle_event("add_cell", %{"kind" => "markdown"}, socket)
+
+    cell =
+      Enum.find(
+        socket.assigns.notebook.blocks,
+        &String.contains?(&1.source, "Write Markdown here.")
+      )
+
+    {:noreply, socket} =
+      NotebookLive.handle_event("edit_cell", %{"cell_id" => cell.id, "source" => ""}, socket)
+
+    html = socket.assigns |> NotebookLive.render() |> Phoenix.LiveViewTest.rendered_to_string()
+    assert html =~ ~s(id="notebook-block-#{cell.id}")
+    assert html =~ ~s(id="notebook-markdown-#{cell.id}")
+
+    {:noreply, socket} =
+      NotebookLive.handle_event(
+        "edit_cell",
+        %{"cell_id" => cell.id, "source" => "Replacement text"},
+        socket
+      )
+
+    assert Enum.find(socket.assigns.notebook.blocks, &(&1.id == cell.id)).source ==
+             "Replacement text"
+
+    html = socket.assigns |> NotebookLive.render() |> Phoenix.LiveViewTest.rendered_to_string()
+    assert html =~ "Replacement text"
+  end
+
   test "an error stops run-all and stale async responses are ignored", %{socket: socket} do
     cell = Enum.find(socket.assigns.notebook.blocks, & &1.executable)
     ref = make_ref()
