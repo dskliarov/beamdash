@@ -29,4 +29,31 @@ defmodule Beamdash.NotebookStoreTest do
     assert {:error, _} = NotebookStore.save("link.livemd", "# Bad", :new, dir)
     assert File.read!(Path.join(dir, "actual.txt")) == "important"
   end
+
+  test "an abandoned lock file does not prevent saving", %{dir: dir} do
+    File.write!(Path.join(dir, "demo.livemd.lock"), "abandoned")
+    assert {:ok, _} = NotebookStore.save("demo.livemd", "# Recovered", :new, dir)
+    assert File.read!(Path.join(dir, "demo.livemd")) == "# Recovered"
+  end
+
+  test "a live process holding the advisory lock prevents saving", %{dir: dir} do
+    python = System.find_executable("python3")
+
+    script =
+      "import fcntl,sys; f=open(sys.argv[1], 'w'); fcntl.flock(f, fcntl.LOCK_EX); print('ready', flush=True); sys.stdin.read(1)"
+
+    port =
+      Port.open({:spawn_executable, python}, [
+        :binary,
+        :exit_status,
+        :use_stdio,
+        args: ["-u", "-c", script, Path.join(dir, "demo.livemd.lock")]
+      ])
+
+    assert_receive {^port, {:data, "ready\n"}}, 2_000
+    assert {:error, _} = NotebookStore.save("demo.livemd", "# Blocked", :new, dir)
+    Port.command(port, "q")
+    assert_receive {^port, {:exit_status, 0}}, 2_000
+    assert {:ok, _} = NotebookStore.save("demo.livemd", "# Allowed", :new, dir)
+  end
 end

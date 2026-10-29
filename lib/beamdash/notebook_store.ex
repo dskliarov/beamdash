@@ -38,7 +38,7 @@ defmodule Beamdash.NotebookStore do
          true <- is_binary(source) and byte_size(source) <= 2 * 1024 * 1024,
          :ok <- File.mkdir_p(dir),
          path = Path.join(dir, name),
-         {:ok, lock} <- File.open(path <> ".lock", [:write, :exclusive]) do
+         {:ok, lock} <- lock(path <> ".lock") do
       temp = path <> ".tmp-#{System.unique_integer([:positive, :monotonic])}"
 
       try do
@@ -48,14 +48,75 @@ defmodule Beamdash.NotebookStore do
           {:ok, version(source)}
         end
       after
-        File.close(lock)
-        File.rm(path <> ".lock")
+        unlock(lock)
         File.rm(temp)
       end
     else
       false -> {:error, "Notebook exceeds the 2 MiB limit."}
       error -> error
     end
+  end
+
+  # The helper holds an OS advisory lock until its stdin closes. If the VM is
+  # killed, the OS closes the pipe and releases the lock automatically. The
+  # inode is intentionally retained so concurrent processes lock the same file.
+  defp lock(path) do
+    case System.find_executable("python3") do
+      nil ->
+        {:error, "Notebook saving requires python3 for cross-process file locking."}
+
+      executable ->
+        script = """
+        import fcntl, os, sys
+        try:
+            fd = os.open(sys.argv[1], os.O_CREAT | os.O_RDWR | getattr(os, 'O_NOFOLLOW', 0), 0o600)
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            print('locked', flush=True)
+            sys.stdin.buffer.read(1)
+        except (OSError, ImportError):
+            print('unavailable', flush=True)
+            sys.exit(1)
+        """
+
+        port =
+          Port.open({:spawn_executable, executable}, [
+            :binary,
+            :exit_status,
+            :use_stdio,
+            :stderr_to_stdout,
+            args: ["-u", "-c", script, path]
+          ])
+
+        receive do
+          {^port, {:data, "locked\n"}} ->
+            {:ok, port}
+
+          {^port, {:data, _}} ->
+            Port.close(port)
+            {:error, "Notebook is locked by another process or the lock is unavailable."}
+
+          {^port, {:exit_status, _}} ->
+            {:error, "Could not acquire notebook lock."}
+        after
+          5_000 ->
+            Port.close(port)
+            {:error, "Timed out acquiring notebook lock."}
+        end
+    end
+  rescue
+    _ -> {:error, "Could not start notebook lock helper."}
+  end
+
+  defp unlock(port) do
+    Port.command(port, "q")
+
+    receive do
+      {^port, {:exit_status, _}} -> :ok
+    after
+      5_000 -> Port.close(port)
+    end
+  rescue
+    ArgumentError -> :ok
   end
 
   defp check_version(name, :new, dir) do

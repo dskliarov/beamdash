@@ -362,6 +362,8 @@ folder; by default it is the `notebooks` folder in Beamdash's user data director
 `.livemd` file without executing it. Existing files are only overwritten if they
 have not changed since opening/saving; otherwise choose a new filename. The
 source limit is 2 MiB. Optionally include evaluated text outputs when saving.
+Saving uses `python3` for an operating-system file lock shared between local
+beamdash processes. The lock is released if the process exits unexpectedly.
 
 Add Markdown, Elixir, Erlang, or section blocks. Code cells have syntax coloring
 and completion. **Run cell** uses the current per-language session on the

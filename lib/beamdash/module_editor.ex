@@ -1,5 +1,5 @@
 defmodule Beamdash.ModuleEditor do
-  @moduledoc "Compiles Erlang modules and safely replaces a loaded module."
+  @moduledoc "Compiles Erlang modules and replaces a loaded module with a best-effort digest check."
   alias Beamdash.Target
 
   def compile(source) when is_binary(source) do
@@ -253,6 +253,8 @@ defmodule Beamdash.ModuleEditor do
   end
 
   def load(node, mod, beam, expected_digest) do
+    # This check and load are separate RPCs. Callers must coordinate with
+    # other code loaders; the code server does not provide a compare-and-load.
     with {:ok, ^expected_digest} <- Target.rpc(node, mod, :module_info, [:md5]),
          {:ok, {^mod, digest}} <- :beam_lib.md5(beam),
          {:ok, {:module, ^mod}} <-

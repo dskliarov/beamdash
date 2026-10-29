@@ -41,3 +41,23 @@ test('guards unsaved navigation and cleans up listeners', () => {
   e.hook.destroyed();
   assert.equal(Object.keys(e.events).length, 0);
 });
+
+test('guards local edits before the server acknowledges them and keeps newer edits after save', () => {
+  const e = setup();
+  e.hook.el.dataset.dirty = 'false';
+  e.events['element:input']({ target: { matches: () => true } });
+  let prevented = false;
+  e.events['document:click']({ target: { closest: () => ({}) }, preventDefault() { prevented = true; }, stopImmediatePropagation() {} });
+  assert.equal(prevented, true);
+  e.events['element:submit']({ target: { dataset: {}, matches: (selector) => selector === ".notebook-save" } });
+  e.events['element:input']({ target: { matches: () => true } });
+  e.handlers['notebook-saved']();
+  prevented = false;
+  e.events['window:beforeunload']({ preventDefault() { prevented = true; } });
+  assert.equal(prevented, true);
+  e.events['element:submit']({ target: { dataset: {}, matches: (selector) => selector === ".notebook-save" } });
+  e.handlers['notebook-saved']();
+  prevented = false;
+  e.events['window:beforeunload']({ preventDefault() { prevented = true; } });
+  assert.equal(prevented, false);
+});

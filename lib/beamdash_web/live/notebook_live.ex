@@ -56,7 +56,8 @@ defmodule BeamdashWeb.NotebookLive do
        results: %{},
        error: nil,
        notice: nil
-     )}
+     )
+     |> push_event("notebook-replaced", %{})}
   end
 
   def handle_event("refresh_notebooks", _, socket), do: {:noreply, list_files(socket)}
@@ -95,7 +96,8 @@ defmodule BeamdashWeb.NotebookLive do
                results: %{},
                error: nil,
                notice: "Opened #{name}. No cells have been executed."
-             )}
+             )
+             |> push_event("notebook-replaced", %{})}
 
           {:error, error} ->
             {:noreply, assign(socket, error: error)}
@@ -122,6 +124,7 @@ defmodule BeamdashWeb.NotebookLive do
            error: nil,
            notice: "Saved #{name}."
          )
+         |> push_event("notebook-saved", %{})
          |> list_files()}
 
       {:error, reason} ->
@@ -179,7 +182,8 @@ defmodule BeamdashWeb.NotebookLive do
                results: %{},
                error: nil,
                notice: "Imported #{name}. Review cells before running them."
-             )}
+             )
+             |> push_event("notebook-replaced", %{})}
 
           {:error, error} ->
             {:noreply, assign(socket, error: error)}

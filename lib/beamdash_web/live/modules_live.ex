@@ -478,6 +478,9 @@ defmodule BeamdashWeb.ModulesLive do
         <p class="warn">
           The source and the BEAM file on the server may differ from the running code. Local or reconstructed source may also differ. Deployment requires a BEAM file matching the running module.
         </p>
+        <p class="warn">
+          Pause other deployments and hot upgrades while deploying or rolling back. The running-code check and replacement are separate operations; a concurrent upgrade can be overwritten and make the backup stale.
+        </p>
         <p class="help">
           Elixir compilation runs in a separate local VM matching the target's OTP and Elixir versions. A local Mix project can provide compiled dependencies and configuration; its Mix environment is used. Erlang compilation uses the dashboard's compiler. Compilation and project configuration can execute code on this machine.
         </p>
@@ -590,7 +593,7 @@ defmodule BeamdashWeb.ModulesLive do
                     phx-click="deploy"
                     phx-disable-with="Deploying…"
                     disabled={@compiled == nil or @backup != nil}
-                    data-confirm={"Deploy #{@selected} to #{@node}?"}
+                    data-confirm={"Deploy #{@selected} to #{@node}? Pause other deployments and hot upgrades first; concurrent code changes can be overwritten."}
                   >Deploy</button>
                   <button
                     type="button"
@@ -598,7 +601,7 @@ defmodule BeamdashWeb.ModulesLive do
                     phx-click="rollback"
                     phx-disable-with="Restoring…"
                     disabled={@backup == nil}
-                    data-confirm={"Restore the previous #{@selected} module on #{@node}?"}
+                    data-confirm={"Restore the previous #{@selected} module on #{@node}? Pause other deployments and hot upgrades first; concurrent code changes can be overwritten."}
                   >Rollback</button>
                   <span class="module-target muted small">Target: {@node}</span>
                 </div>
