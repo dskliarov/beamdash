@@ -254,12 +254,19 @@ defmodule Beamdash.ModuleEditor do
 
   def load(node, mod, beam, expected_digest) do
     with {:ok, {^mod, digest}} <- :beam_lib.md5(beam),
-         :ok <- AgentLoader.ensure_loaded(node, &Target.rpc/4, :beamdash_module_deploy),
-         {:ok, {:ok, ^digest}} <-
-           Target.rpc(node, :beamdash_module_deploy, :load, [mod, beam, expected_digest, digest]) do
-      {:ok, digest}
+         :ok <- AgentLoader.ensure_loaded(node, &Target.rpc/4, :beamdash_module_deploy) do
+      case Target.rpc(node, :beamdash_module_deploy, :load, [mod, beam, expected_digest, digest]) do
+        {:ok, {:ok, ^digest}} ->
+          {:ok, digest}
+
+        {:ok, {:error, reason}} ->
+          {:error, {:rejected, "Module was not loaded: #{inspect(reason)}"}}
+
+        other ->
+          {:error, "Deployment outcome is uncertain: #{inspect(other)}"}
+      end
     else
-      other -> {:error, "Module changed or could not be loaded: #{inspect(other)}"}
+      other -> {:error, {:rejected, "Deployment failed before loading: #{inspect(other)}"}}
     end
   end
 

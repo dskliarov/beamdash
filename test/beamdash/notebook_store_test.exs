@@ -36,24 +36,17 @@ defmodule Beamdash.NotebookStoreTest do
     assert File.read!(Path.join(dir, "demo.livemd")) == "# Recovered"
   end
 
-  test "a live process holding the advisory lock prevents saving", %{dir: dir} do
-    python = System.find_executable("python3")
+  test "a live process holding the socket lock prevents saving", %{dir: dir} do
+    {:ok, stat} = File.stat(dir)
+    key = {stat.major_device, stat.minor_device, stat.inode, "demo.livemd.lock"}
+    <<hash::unsigned-16, _::binary>> = :crypto.hash(:sha256, :erlang.term_to_binary(key))
+    port = 1024 + rem(hash, 64_512)
 
-    script =
-      "import fcntl,sys; f=open(sys.argv[1], 'w'); fcntl.flock(f, fcntl.LOCK_EX); print('ready', flush=True); sys.stdin.read(1)"
+    {:ok, socket} =
+      :gen_tcp.listen(port, [:binary, active: false, reuseaddr: false, ip: {127, 0, 0, 1}])
 
-    port =
-      Port.open({:spawn_executable, python}, [
-        :binary,
-        :exit_status,
-        :use_stdio,
-        args: ["-u", "-c", script, Path.join(dir, "demo.livemd.lock")]
-      ])
-
-    assert_receive {^port, {:data, "ready\n"}}, 2_000
     assert {:error, _} = NotebookStore.save("demo.livemd", "# Blocked", :new, dir)
-    Port.command(port, "q")
-    assert_receive {^port, {:exit_status, 0}}, 2_000
+    :ok = :gen_tcp.close(socket)
     assert {:ok, _} = NotebookStore.save("demo.livemd", "# Allowed", :new, dir)
   end
 end

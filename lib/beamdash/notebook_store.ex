@@ -57,67 +57,29 @@ defmodule Beamdash.NotebookStore do
     end
   end
 
-  # The helper holds an OS advisory lock until its stdin closes. If the VM is
-  # killed, the OS closes the pipe and releases the lock automatically. The
-  # inode is intentionally retained so concurrent processes lock the same file.
+  # A loopback listener is released by the OS on process exit. Identical
+  # directory identities and filenames map to the same port across local VMs.
+  # Hash collisions fail closed; they can temporarily block an unrelated save.
   defp lock(path) do
-    case System.find_executable("python3") do
-      nil ->
-        {:error, "Notebook saving requires python3 for cross-process file locking."}
+    with {:ok, stat} <- File.stat(Path.dirname(path)) do
+      key = {stat.major_device, stat.minor_device, stat.inode, Path.basename(path)}
+      <<hash::unsigned-16, _::binary>> = :crypto.hash(:sha256, :erlang.term_to_binary(key))
+      port = 1024 + rem(hash, 64_512)
 
-      executable ->
-        script = """
-        import fcntl, os, sys
-        try:
-            fd = os.open(sys.argv[1], os.O_CREAT | os.O_RDWR | getattr(os, 'O_NOFOLLOW', 0), 0o600)
-            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            print('locked', flush=True)
-            sys.stdin.buffer.read(1)
-        except (OSError, ImportError):
-            print('unavailable', flush=True)
-            sys.exit(1)
-        """
+      case :gen_tcp.listen(port, [:binary, active: false, reuseaddr: false, ip: {127, 0, 0, 1}]) do
+        {:ok, socket} ->
+          {:ok, socket}
 
-        port =
-          Port.open({:spawn_executable, executable}, [
-            :binary,
-            :exit_status,
-            :use_stdio,
-            :stderr_to_stdout,
-            args: ["-u", "-c", script, path]
-          ])
+        {:error, :eaddrinuse} ->
+          {:error, "Notebook lock is busy; retry or choose a different filename."}
 
-        receive do
-          {^port, {:data, "locked\n"}} ->
-            {:ok, port}
-
-          {^port, {:data, _}} ->
-            Port.close(port)
-            {:error, "Notebook is locked by another process or the lock is unavailable."}
-
-          {^port, {:exit_status, _}} ->
-            {:error, "Could not acquire notebook lock."}
-        after
-          5_000 ->
-            Port.close(port)
-            {:error, "Timed out acquiring notebook lock."}
-        end
+        {:error, reason} ->
+          {:error, "Cannot acquire notebook lock: #{inspect(reason)}"}
+      end
     end
-  rescue
-    _ -> {:error, "Could not start notebook lock helper."}
   end
 
-  defp unlock(port) do
-    Port.command(port, "q")
-
-    receive do
-      {^port, {:exit_status, _}} -> :ok
-    after
-      5_000 -> Port.close(port)
-    end
-  rescue
-    ArgumentError -> :ok
-  end
+  defp unlock(socket), do: :gen_tcp.close(socket)
 
   defp check_version(name, :new, dir) do
     case File.lstat(Path.join(dir, name)) do

@@ -347,6 +347,9 @@ defmodule BeamdashWeb.ModulesLive do
              message: "Module deployed. Rollback is available while this page remains open."
            )}
 
+        {:error, {:rejected, reason}} ->
+          {:noreply, assign(socket, message: reason)}
+
         error ->
           {:noreply,
            assign(socket,

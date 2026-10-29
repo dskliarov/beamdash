@@ -88,7 +88,10 @@ defmodule Beamdash.ModuleEditorTest do
 
     try do
       assert_receive :locked
-      assert {:error, message} = Beamdash.ModuleEditor.load(node(), mod, changed, digest)
+
+      assert {:error, {:rejected, message}} =
+               Beamdash.ModuleEditor.load(node(), mod, changed, digest)
+
       assert message =~ "another beamdash deployment"
       assert apply(mod, :value, []) == :original
       send(holder, :release)
@@ -126,6 +129,40 @@ defmodule Beamdash.ModuleEditorTest do
     assert {:ok, _} = Beamdash.ModuleEditor.load(target, mod, changed, digest)
     assert :changed = :erpc.call(target, mod, :value, [])
     assert :erpc.call(target, :code, :is_loaded, [:beamdash_module_deploy]) != false
+  end
+
+  test "a rejected deployment retains the staged code and permits module selection" do
+    {peer, target} = Beamdash.Test.Fixture.start_peer()
+    on_exit(fn -> Beamdash.Test.Fixture.stop_peer(peer) end)
+    {:ok, _} = Beamdash.Target.connect(Atom.to_string(target), Beamdash.Test.Fixture.cookie())
+    on_exit(fn -> Beamdash.Target.disconnect() end)
+    mod = :beamdash_rejected_deploy_fixture
+
+    source =
+      "-module(beamdash_rejected_deploy_fixture).\n-export([value/0]).\nvalue() -> original.\n"
+
+    :ok = Beamdash.Test.Fixture.load_module(target, mod, source)
+
+    {:ok, ^mod, beam, _} =
+      Beamdash.ModuleEditor.compile(String.replace(source, "original", "changed"))
+
+    socket = %Phoenix.LiveView.Socket{
+      private: %{lifecycle: %Phoenix.LiveView.Lifecycle{}, live_temp: %{}}
+    }
+
+    {:ok, socket} = BeamdashWeb.ModulesLive.mount(%{}, %{}, socket)
+    socket = Phoenix.Component.assign(socket, selected: mod, compiled: beam)
+    id = {{:beamdash_module_deploy, mod}, self()}
+    assert :global.set_lock(id, [target], 0)
+
+    try do
+      {:noreply, result} = BeamdashWeb.ModulesLive.handle_event("deploy", %{}, socket)
+      assert result.assigns.backup == nil
+      assert result.assigns.compiled == beam
+      assert result.assigns.message =~ "another beamdash deployment"
+    after
+      :global.del_lock(id, [target])
+    end
   end
 
   test "compiles Elixir in a separate VM without loading it into the dashboard" do
