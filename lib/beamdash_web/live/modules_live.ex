@@ -57,6 +57,13 @@ defmodule BeamdashWeb.ModulesLive do
   defp list_modules(socket), do: socket
 
   @impl true
+  def handle_params(%{"module" => name}, _uri, socket) when is_binary(name) do
+    handle_event("select", %{"module" => name}, socket)
+  end
+
+  def handle_params(_params, _uri, socket), do: {:noreply, socket}
+
+  @impl true
   def handle_event("filter_modules", %{"q" => query}, socket),
     do: {:noreply, assign(socket, module_filter: query)}
 

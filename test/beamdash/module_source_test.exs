@@ -3,6 +3,8 @@ defmodule Beamdash.ModuleSourceTest do
   # and Profile tabs.
   use ExUnit.Case, async: false
 
+  require Phoenix.LiveViewTest
+
   alias Beamdash.{ModuleSource, Target}
   alias Beamdash.Test.Fixture
   alias BeamdashWeb.{ProfileLive, SourceTabs, TraceLive}
@@ -174,6 +176,7 @@ defmodule Beamdash.ModuleSourceTest do
       assert socket.assigns.source_tab == :src_tab_a
       h = html(socket)
       assert h =~ ~s(class="seg src-tabs")
+      assert h =~ ~r/href="\/modules\?module=src_tab_a"[^>]*>\s*Edit/
       assert h =~ ~r/<button[^>]*aria-selected="false"[^>]*phx-value-tab="main"[^>]*>\s*Tracing/
       assert h =~ "a comment only the source file has"
       # one block for Highlight.js (Erlang, from the .erl), numbered 1 to 5
@@ -392,6 +395,30 @@ defmodule Beamdash.ModuleSourceTest do
     assert html =~ ~s(label="hello/1")
   end
 
+  test "Modules opens the module named in the URL without creating atoms", %{node: node} do
+    path = load(node, :src_editor_link)
+
+    socket = %Phoenix.LiveView.Socket{
+      private: %{lifecycle: %Phoenix.LiveView.Lifecycle{}, live_temp: %{}}
+    }
+
+    {:ok, socket} = BeamdashWeb.ModulesLive.mount(%{}, %{}, socket)
+
+    {:noreply, selected} =
+      BeamdashWeb.ModulesLive.handle_params(%{"module" => "src_editor_link"}, "", socket)
+
+    assert selected.assigns.selected == :src_editor_link
+    assert selected.assigns.source == File.read!(path)
+
+    unknown = "not_loaded_#{System.unique_integer([:positive])}"
+
+    {:noreply, unchanged} =
+      BeamdashWeb.ModulesLive.handle_params(%{"module" => unknown}, "", socket)
+
+    assert unchanged.assigns.selected == nil
+    assert_raise ArgumentError, fn -> String.to_existing_atom(unknown) end
+  end
+
   test "Modules selection explains when source is unavailable", %{node: node} do
     path = load(node, :src_editor_missing, [])
     File.rm!(path)
@@ -488,6 +515,15 @@ defmodule Beamdash.ModuleSourceTest do
 
     assert [%{source: %{kind: :local, text: ^text}}] = source_tab.assigns.sources
 
+    panel =
+      Phoenix.LiveViewTest.render_component(&SourceTabs.panel/1,
+        sources: source_tab.assigns.sources,
+        current: mod,
+        syntax: :elixir
+      )
+
+    assert panel =~ ~s(href="/modules?module=Elixir.PaceKeeperCore.Vnode")
+
     {:noreply, selected} =
       BeamdashWeb.ModulesLive.handle_event("select", %{"module" => Atom.to_string(mod)}, socket)
 
@@ -496,6 +532,12 @@ defmodule Beamdash.ModuleSourceTest do
     assert selected.assigns.project == dir
     assert selected.assigns.original == %{source: text, language: "elixir", project: dir}
     assert selected.assigns.message =~ path
+
+    {:noreply, linked} =
+      BeamdashWeb.ModulesLive.handle_params(%{"module" => Atom.to_string(mod)}, "", socket)
+
+    assert linked.assigns.selected == mod
+    assert linked.assigns.source == text
 
     html =
       selected.assigns
