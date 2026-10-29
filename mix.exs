@@ -24,15 +24,16 @@ defmodule Beamdash.MixProject do
   defp elixirc_paths(:test), do: ["lib", "test/support"]
   defp elixirc_paths(_), do: ["lib"]
 
-  # No Node.js toolchain: the Phoenix and LiveView JS are served straight
-  # from the deps' priv/static folders (see BeamdashWeb.Endpoint).
+  # No Node.js build is needed to run: CodeMirror is vendored, and Phoenix
+  # and LiveView JS are served from deps (see BeamdashWeb.Endpoint).
   defp deps do
     [
       {:phoenix, "~> 1.7"},
       {:phoenix_live_view, "~> 1.0"},
       {:phoenix_html, "~> 4.1"},
-      {:bandit, "~> 1.14"},
+      {:bandit, "~> 1.14 and >= 1.14.1"},
       {:jason, "~> 1.4"},
+      {:earmark_parser, "~> 1.4"},
       # loaded into the target for the Memory page (unless it has its own)
       {:recon, "~> 2.5"}
     ]

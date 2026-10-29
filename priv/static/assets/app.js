@@ -182,20 +182,24 @@ const NavOverflow = {
     const seps = [...nav.querySelectorAll(":scope > .tab-sep")];
     const more = nav.querySelector(".tabs-more");
     const menu = more.querySelector(".tabs-more-menu");
+    const wasOpen = more.open;
     tabs.forEach((t) => t.classList.remove("overflowed"));
     seps.forEach((s) => s.classList.remove("overflowed"));
     more.hidden = true;
     menu.replaceChildren();
-    if (nav.scrollWidth <= nav.clientWidth) return;
+    // Keep Modules and Console in More, except for the active tab.
+    const hidden = tabs.filter((t) => t.dataset.overflowLast === "true" && !t.classList.contains("active"));
+    hidden.forEach((t) => t.classList.add("overflowed"));
+    if (hidden.length === 0 && nav.scrollWidth <= nav.clientWidth) return;
 
     more.hidden = false;
-    // hide from the end, keeping the current tab, until the rest fits
-    const hidden = [];
+    more.open = wasOpen;
+    // Hide additional tabs from the end, keeping the current tab visible.
     for (const t of [...tabs].reverse()) {
       if (nav.scrollWidth <= nav.clientWidth) break;
-      if (t.classList.contains("active")) continue;
+      if (t.classList.contains("active") || t.classList.contains("overflowed")) continue;
       t.classList.add("overflowed");
-      hidden.unshift(t);
+      hidden.splice(0, 0, t);
     }
     // a divider with nothing visible after it goes too
     seps.forEach((s) => {
@@ -370,7 +374,7 @@ const Highlight = {
 const csrfToken = document.querySelector("meta[name='csrf-token']").getAttribute("content");
 const liveSocket = new LiveView.LiveSocket("/live", Phoenix.Socket, {
   params: { _csrf_token: csrfToken },
-  hooks: { Resizer, DockSpacer, NavOverflow, NamespaceCombobox, LogExport, Highlight },
+  hooks: { Resizer, DockSpacer, NavOverflow, NamespaceCombobox, LogExport, Highlight, SourceEditor: globalThis.BeamSourceEditor, ConsoleCompletion: globalThis.BeamConsoleCompletion, ReplConsole: globalThis.BeamReplConsole, NotebookFiles: globalThis.BeamNotebookFiles, CodeMirrorEditor: globalThis.BeamModuleEditor },
 });
 liveSocket.connect();
 window.liveSocket = liveSocket;

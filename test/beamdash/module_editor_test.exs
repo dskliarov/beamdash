@@ -171,4 +171,105 @@ defmodule Beamdash.ModuleEditorTest do
     assert socket.assigns.candidate_result =~ "staged"
     assert socket.assigns.compiled == beam
   end
+
+  test "module list filters names without changing the staged editor" do
+    socket = %Phoenix.LiveView.Socket{
+      private: %{lifecycle: %Phoenix.LiveView.Lifecycle{}, live_temp: %{}}
+    }
+
+    {:ok, socket} = BeamdashWeb.ModulesLive.mount(%{}, %{}, socket)
+
+    socket =
+      Phoenix.Component.assign(socket,
+        status: :connected,
+        modules: [:lists, :maps],
+        selected: :maps,
+        source: "draft",
+        compiled: "candidate"
+      )
+
+    {:noreply, filtered} =
+      BeamdashWeb.ModulesLive.handle_event("filter_modules", %{"q" => " LIST "}, socket)
+
+    assert filtered.assigns.module_filter == " LIST "
+    assert filtered.assigns.selected == :maps
+    assert filtered.assigns.source == "draft"
+    assert filtered.assigns.compiled == "candidate"
+
+    html =
+      filtered.assigns
+      |> Map.put(:syntax, :erlang)
+      |> BeamdashWeb.ModulesLive.render()
+      |> Phoenix.LiveViewTest.rendered_to_string()
+
+    assert html =~ ~s(phx-value-module="lists")
+    refute html =~ ~s(phx-value-module="maps")
+    assert html =~ "1 of 2 loaded modules"
+    refute html =~ ~s(select name="module")
+  end
+
+  test "module list shows an empty result and keeps selection locked during rollback" do
+    socket = %Phoenix.LiveView.Socket{
+      private: %{lifecycle: %Phoenix.LiveView.Lifecycle{}, live_temp: %{}}
+    }
+
+    {:ok, socket} = BeamdashWeb.ModulesLive.mount(%{}, %{}, socket)
+
+    socket =
+      Phoenix.Component.assign(socket,
+        status: :connected,
+        modules: [:lists],
+        backup: %{beam: "saved"}
+      )
+
+    {:noreply, unchanged} =
+      BeamdashWeb.ModulesLive.handle_event("select", %{"module" => "lists"}, socket)
+
+    assert unchanged.assigns.selected == nil
+
+    {:noreply, filtered} =
+      BeamdashWeb.ModulesLive.handle_event("filter_modules", %{"q" => "no-match"}, socket)
+
+    html =
+      filtered.assigns
+      |> Map.put(:syntax, :erlang)
+      |> BeamdashWeb.ModulesLive.render()
+      |> Phoenix.LiveViewTest.rendered_to_string()
+
+    assert html =~ "No matching modules"
+  end
+
+  test "clear and discard invalidate the candidate and preserve rollback" do
+    socket = %Phoenix.LiveView.Socket{
+      private: %{lifecycle: %Phoenix.LiveView.Lifecycle{}, live_temp: %{}}
+    }
+
+    {:ok, socket} = BeamdashWeb.ModulesLive.mount(%{}, %{}, socket)
+    original = %{source: "original code", language: "elixir", project: "/project"}
+
+    socket =
+      Phoenix.Component.assign(socket,
+        selected: Demo,
+        original: original,
+        source: "edited code",
+        language: "erlang",
+        project: "/other",
+        compiled: "beam",
+        candidate_result: "passed",
+        backup: %{beam: "backup"}
+      )
+
+    {:noreply, cleared} = BeamdashWeb.ModulesLive.handle_event("clear_source", %{}, socket)
+    assert cleared.assigns.source == ""
+    assert cleared.assigns.editor_revision == socket.assigns.editor_revision + 1
+    assert cleared.assigns.compiled == nil
+    assert cleared.assigns.candidate_result == nil
+    assert cleared.assigns.original == original
+    {:noreply, discarded} = BeamdashWeb.ModulesLive.handle_event("discard_source", %{}, cleared)
+    assert discarded.assigns.source == original.source
+    assert discarded.assigns.editor_revision == socket.assigns.editor_revision + 2
+    assert discarded.assigns.language == original.language
+    assert discarded.assigns.project == original.project
+    assert discarded.assigns.backup == socket.assigns.backup
+  end
 end

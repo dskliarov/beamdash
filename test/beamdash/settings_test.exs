@@ -9,6 +9,20 @@ defmodule Beamdash.SettingsTest do
     Beamdash.Test.Fixture.put_jev_config(api_key: "test-key")
   end
 
+  test "AI provider settings persist without credentials and reject invalid providers" do
+    previous = Settings.ai_provider()
+    on_exit(fn -> Settings.put_ai_provider(previous["provider"], previous["model"]) end)
+    assert :ok = Settings.put_ai_provider("anthropic", "example-model")
+    assert {:error, _} = Settings.put_ai_provider("unknown", "model")
+    Settings.reload()
+    assert Settings.ai_provider() == %{"provider" => "anthropic", "model" => "example-model"}
+    saved = Settings.path() |> File.read!() |> Jason.decode!()
+    assert saved["ai_provider"] == Settings.ai_provider()
+    conn = Plug.Test.conn(:get, "/settings") |> BeamdashWeb.Endpoint.call([])
+    assert conn.resp_body =~ "Connecting these providers to Analyze is not yet implemented"
+    assert conn.resp_body =~ "Claude (Anthropic)"
+  end
+
   test "settings switch changes the shared value and broadcasts it" do
     Phoenix.PubSub.subscribe(Beamdash.PubSub, "settings")
     view = BeamdashWeb.SettingsLive

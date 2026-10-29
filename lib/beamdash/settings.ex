@@ -22,9 +22,49 @@ defmodule Beamdash.Settings do
   @kube_key {__MODULE__, :kubeconfig_dir}
   @reconnect_key {__MODULE__, :auto_reconnect}
   @source_dirs_key {__MODULE__, :source_dirs}
+  @ai_key {__MODULE__, :ai_provider}
   @syntaxes [:erlang, :elixir]
 
   def syntaxes, do: @syntaxes
+
+  @doc "Saved AI provider and model. API credentials are read from the environment."
+  def ai_provider do
+    case :persistent_term.get(@ai_key, :unset) do
+      :unset ->
+        saved = read()["ai_provider"]
+        config = if is_map(saved), do: saved, else: %{}
+
+        provider =
+          if config["provider"] in ~w(none anthropic openai gemini),
+            do: config["provider"],
+            else: "none"
+
+        model =
+          if is_binary(config["model"]) and byte_size(config["model"]) <= 256,
+            do: config["model"],
+            else: ""
+
+        result = %{"provider" => provider, "model" => model}
+        :persistent_term.put(@ai_key, result)
+        result
+
+      config ->
+        config
+    end
+  end
+
+  def put_ai_provider(provider, model) when is_binary(provider) and is_binary(model) do
+    model = String.trim(model)
+
+    if provider in ~w(none anthropic openai gemini) and byte_size(model) <= 256 do
+      config = %{"provider" => provider, "model" => model}
+      :persistent_term.put(@ai_key, config)
+      save("ai_provider", config)
+      :ok
+    else
+      {:error, "Choose a supported provider and a model name of at most 256 bytes."}
+    end
+  end
 
   @doc "`:erlang` (default) or `:elixir`."
   def syntax, do: :persistent_term.get(@key, :erlang)
@@ -251,6 +291,7 @@ defmodule Beamdash.Settings do
     :persistent_term.erase(@kube_key)
     :persistent_term.erase(@reconnect_key)
     :persistent_term.erase(@source_dirs_key)
+    :persistent_term.erase(@ai_key)
     :ok
   end
 

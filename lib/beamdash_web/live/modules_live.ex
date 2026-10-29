@@ -1,6 +1,18 @@
 defmodule BeamdashWeb.ModulesLive do
   use Phoenix.LiveView
-  alias Beamdash.{ModuleEditor, ModuleSource, Target}
+
+  alias Beamdash.{
+    Console,
+    Format,
+    LocalSource,
+    ModuleEditor,
+    ModuleSource,
+    Settings,
+    SourceBrowser,
+    Target
+  }
+
+  alias BeamdashWeb.FunctionList
 
   @impl true
   def mount(_params, _session, socket) do
@@ -12,8 +24,15 @@ defmodule BeamdashWeb.ModulesLive do
   defp reset(socket) do
     assign(socket,
       modules: [],
+      module_filter: "",
       selected: nil,
+      exported_functions: [],
       source: "",
+      editor_revision: 0,
+      original: nil,
+      browser: nil,
+      source_file_found: false,
+      manual_source: nil,
       language: "erlang",
       project: "",
       compiled: nil,
@@ -38,36 +57,186 @@ defmodule BeamdashWeb.ModulesLive do
   defp list_modules(socket), do: socket
 
   @impl true
+  def handle_event("filter_modules", %{"q" => query}, socket),
+    do: {:noreply, assign(socket, module_filter: query)}
+
+  def handle_event("refresh_modules", _, socket),
+    do: {:noreply, list_modules(socket)}
+
   def handle_event("select", %{"module" => name}, socket) do
     mod = Enum.find(socket.assigns.modules, &(Atom.to_string(&1) == name))
 
     if mod && socket.assigns.backup == nil do
-      {source, language} =
-        case ModuleSource.get(socket.assigns.node, mod) do
-          {:ok, %{text: text, truncated: false, kind: :debug_info}} ->
-            {text, "erlang"}
+      default_language =
+        if String.starts_with?(Atom.to_string(mod), "Elixir."), do: "elixir", else: "erlang"
 
-          {:ok, %{text: text, truncated: false}} ->
-            {text,
-             if(String.starts_with?(Atom.to_string(mod), "Elixir."), do: "elixir", else: "erlang")}
+      result = ModuleSource.get(socket.assigns.node, mod)
 
-          _ ->
-            {"",
-             if(String.starts_with?(Atom.to_string(mod), "Elixir."), do: "elixir", else: "erlang")}
+      source_file_found =
+        match?({:ok, %{kind: kind, truncated: false}} when kind in [:file, :local], result)
+
+      {source, language, project, message} =
+        case result do
+          {:ok, %{text: text, truncated: false} = result} ->
+            language = if result.kind == :debug_info, do: "erlang", else: default_language
+
+            origin =
+              case result.kind do
+                :debug_info -> "Reconstructed from BEAM debug information as Erlang"
+                :local -> "Loaded local source"
+                _ -> "Loaded source from the node"
+              end
+
+            project =
+              if result.kind in [:local, :file],
+                do: LocalSource.project_dir(result[:path]),
+                else: nil
+
+            {text, language, project || "",
+             origin <> if(result[:path], do: ": #{result.path}", else: ".")}
+
+          {:ok, %{truncated: true}} ->
+            {"", default_language, "",
+             "Source exceeds the 2 MiB limit and was truncated. It was not loaded into the editor to avoid compiling incomplete code. Paste a complete module to continue."}
+
+          {:ok, %{kind: :none, reason: reason}} ->
+            {"", default_language, "",
+             "Source unavailable: " <>
+               ModuleSource.reason(reason) <>
+               ". Browse for a local source file, configure the application's local source folder in Settings, or paste its source here."}
+
+          {:error, reason} ->
+            {"", default_language, "", "Source retrieval failed: " <> Format.error(reason)}
         end
 
       {:noreply,
        assign(socket,
          selected: mod,
+         exported_functions: exported_functions(socket.assigns.node, mod),
+         browser: nil,
+         source_file_found: source_file_found,
+         manual_source: nil,
+         editor_revision: socket.assigns.editor_revision + 1,
          source: source,
+         original: %{source: source, language: language, project: project},
          language: language,
+         project: project,
          compiled: nil,
          candidate_result: nil,
-         message: nil
+         message: message
        )}
     else
       {:noreply, socket}
     end
+  end
+
+  def handle_event(
+        "browse_source_file",
+        _,
+        %{assigns: %{selected: mod, status: :connected}} = socket
+      )
+      when not is_nil(mod) do
+    configured =
+      Settings.source_dirs()
+      |> Enum.sort()
+      |> Enum.map(&elem(&1, 1))
+      |> Enum.find(&File.dir?/1)
+
+    path =
+      cond do
+        socket.assigns.project != "" and File.dir?(socket.assigns.project) ->
+          socket.assigns.project
+
+        configured != nil ->
+          configured
+
+        true ->
+          System.user_home!()
+      end
+
+    {:noreply, assign(socket, browser: SourceBrowser.open(path))}
+  end
+
+  def handle_event(
+        "source_browse_into",
+        %{"name" => name},
+        %{assigns: %{browser: browser}} = socket
+      )
+      when is_map(browser) do
+    if name in browser.subdirs,
+      do: {:noreply, assign(socket, browser: SourceBrowser.open(Path.join(browser.path, name)))},
+      else: {:noreply, socket}
+  end
+
+  def handle_event("source_browse_up", _, %{assigns: %{browser: browser}} = socket)
+      when is_map(browser),
+      do: {:noreply, assign(socket, browser: SourceBrowser.open(Path.dirname(browser.path)))}
+
+  def handle_event(
+        "source_browse_path",
+        %{"path" => path},
+        %{assigns: %{browser: browser}} = socket
+      )
+      when is_map(browser),
+      do: {:noreply, assign(socket, browser: SourceBrowser.open(path))}
+
+  def handle_event("source_browse_close", _, socket),
+    do: {:noreply, assign(socket, browser: nil)}
+
+  def handle_event(
+        "source_browse_pick",
+        %{"name" => name},
+        %{assigns: %{browser: browser, selected: mod, status: :connected}} = socket
+      )
+      when is_map(browser) and not is_nil(mod) do
+    case SourceBrowser.load(browser, name) do
+      {:ok, result} ->
+        project = LocalSource.project_dir(result.path) || ""
+
+        {:noreply,
+         assign(socket,
+           source: result.text,
+           language: result.language,
+           project: project,
+           original: %{source: result.text, language: result.language, project: project},
+           editor_revision: socket.assigns.editor_revision + 1,
+           compiled: nil,
+           candidate_result: nil,
+           browser: nil,
+           source_file_found: true,
+           manual_source: result.path,
+           message: "Loaded local source: #{result.path}"
+         )}
+
+      {:error, error} ->
+        {:noreply, assign(socket, browser: %{browser | error: error})}
+    end
+  end
+
+  def handle_event("clear_source", _, %{assigns: %{selected: selected}} = socket)
+      when not is_nil(selected) do
+    {:noreply,
+     assign(socket,
+       editor_revision: socket.assigns.editor_revision + 1,
+       source: "",
+       compiled: nil,
+       candidate_result: nil,
+       message: "Code cleared. Use Discard changes to restore the originally loaded source."
+     )}
+  end
+
+  def handle_event("discard_source", _, %{assigns: %{original: original}} = socket)
+      when is_map(original) do
+    {:noreply,
+     assign(socket,
+       editor_revision: socket.assigns.editor_revision + 1,
+       source: original.source,
+       language: original.language,
+       project: original.project,
+       compiled: nil,
+       candidate_result: nil,
+       message: "Originally loaded source restored."
+     )}
   end
 
   def handle_event(
@@ -240,7 +409,37 @@ defmodule BeamdashWeb.ModulesLive do
      )}
   end
 
+  def handle_event(
+        "complete_editor",
+        %{"token" => token, "language" => language},
+        %{assigns: %{status: :connected, node: node, selected: selected}} = socket
+      )
+      when is_binary(token) and language in ["erlang", "elixir"] and not is_nil(selected) do
+    items =
+      if Target.status() == %{status: :connected, node: node},
+        do: Console.complete(node, String.to_existing_atom(language), token),
+        else: []
+
+    {:reply, %{items: items}, socket}
+  end
+
+  def handle_event("complete_editor", _, socket), do: {:reply, %{items: []}, socket}
   def handle_event(_, _, socket), do: {:noreply, socket}
+
+  defp exported_functions(node, mod) do
+    case Target.rpc(node, mod, :module_info, [:exports], 1_000) do
+      {:ok, exports} when is_list(exports) ->
+        exports
+        |> Enum.filter(fn {name, arity} ->
+          is_atom(name) and is_integer(arity) and name not in [:module_info, :__info__]
+        end)
+        |> Enum.map(fn {name, arity} -> {Atom.to_string(name), arity} end)
+        |> Enum.sort()
+
+      _ ->
+        []
+    end
+  end
 
   @impl true
   def handle_info({:beamdash_target, {:connected, node}}, socket),
@@ -253,8 +452,19 @@ defmodule BeamdashWeb.ModulesLive do
 
   @impl true
   def render(assigns) do
+    assigns =
+      assign(
+        assigns,
+        :shown_modules,
+        FunctionList.matching_modules(
+          Enum.map(assigns.modules, &{&1, [], []}),
+          assigns.module_filter,
+          assigns.syntax
+        )
+      )
+
     ~H"""
-    <main class="wrap">
+    <main class="wrap modules-page">
       <BeamdashWeb.Layouts.header
         active={:modules}
         syntax={@syntax}
@@ -274,65 +484,159 @@ defmodule BeamdashWeb.ModulesLive do
         <p class="help">
           Candidate tests run in a separate local VM, not a security sandbox: code can access local files and services. The live-node test calls the running module and can change node state. Rollback restores code only, not state; it is available only while this page remains open and connected.
         </p>
-        <form phx-change="select">
-          <label>
-            Loaded module
-            <select name="module" disabled={@backup != nil}>
-              <option value="">Select a module</option>
-              <option :for={mod <- @modules} value={mod} selected={mod == @selected}>{mod}</option>
-            </select>
-          </label>
-        </form>
-        <div :if={@selected}>
-          <form phx-change="edit" phx-submit="compile">
-            <label>
-              Language
-              <select name="language">
-                <option value="erlang" selected={@language == "erlang"}>Erlang</option>
-                <option value="elixir" selected={@language == "elixir"}>Elixir</option>
-              </select>
-            </label>
-            <label>
-              Local Mix project directory (optional for Elixir)
-              <input name="project" value={@project} placeholder="/path/to/project" />
-            </label>
-            <label for="module-source">Source</label>
-            <textarea
-              id="module-source"
-              name="source"
-              rows="24"
-              style="width:100%;font-family:monospace"
-            >{@source}</textarea>
-            <button type="submit">Compile</button>
-          </form>
-          <form :if={@compiled} phx-submit="test_candidate">
-            <h2>Test candidate before deployment (optional)</h2>
-            <p class="help">
-              Runs the staged code locally with the selected Mix project, without deploying it. Local state and services may differ from the target.
+        <div class="trace-layout">
+          <aside class="browser" aria-label="Loaded modules">
+            <form phx-change="filter_modules" phx-submit="filter_modules" class="filter">
+              <input
+                id="module-search"
+                type="search"
+                name="q"
+                value={@module_filter}
+                placeholder="Filter modules"
+                aria-label="Filter modules"
+                phx-debounce="150"
+                autocomplete="off"
+              />
+              <button
+                type="button"
+                class="secondary"
+                phx-click="refresh_modules"
+                title="Reload the module list"
+              >↻</button>
+            </form>
+            <p class="muted small">
+              {length(@shown_modules)} of {Format.number(length(@modules))} loaded modules
             </p>
-            <label>Exported function <input name="function" value={@candidate_function} required /></label>
-            <label>Arguments (Erlang list)
-            <input name="arguments" value={@candidate_arguments} required /></label>
-            <button type="submit">Test candidate</button>
-            <pre :if={@candidate_result} role="status" style="white-space:pre-wrap">{@candidate_result}</pre>
-          </form>
-          <button
-            phx-click="deploy"
-            disabled={@compiled == nil or @backup != nil}
-            data-confirm={"Deploy #{@selected} to #{@node}?"}
-          >Deploy to {@node}</button>
-          <button
-            phx-click="rollback"
-            disabled={@backup == nil}
-            data-confirm={"Restore the previous #{@selected} module on #{@node}?"}
-          >Rollback</button>
-          <form phx-submit="test">
-            <label>Exported function <input name="function" value={@function} required /></label>
-            <label>Arguments (Erlang list) <input name="arguments" value={@arguments} required /></label>
-            <button type="submit">Run test on node</button>
-          </form>
+            <p :if={length(@shown_modules) == 150} class="muted small">
+              Showing up to 150 results. Refine the search to find more.
+            </p>
+            <p :if={@backup != nil} class="muted small">
+              Roll back the deployed module before selecting another module.
+            </p>
+            <ul class="modules" aria-label="Matching modules">
+              <li :for={mod <- @shown_modules} class={mod == @selected && "selected"}>
+                <a
+                  href="#"
+                  phx-click={@backup == nil && "select"}
+                  phx-value-module={mod}
+                  aria-current={mod == @selected && "true"}
+                  aria-disabled={to_string(@backup != nil)}
+                  tabindex={if @backup != nil, do: "-1", else: "0"}
+                  title={Format.name(mod, @syntax)}
+                ><FunctionList.highlight
+                  text={Format.name(mod, @syntax)}
+                  needle={FunctionList.needle(@module_filter)}
+                /></a>
+              </li>
+            </ul>
+            <p :if={@shown_modules == []} class="muted small">No matching modules.</p>
+          </aside>
+          <section class="trace-main">
+            <p :if={@selected == nil} class="help">Select a module to view or edit its source.</p>
+            <h2 :if={@selected}>{Format.name(@selected, @syntax)}</h2>
+            <pre :if={@message} role="status" style="white-space:pre-wrap">{@message}</pre>
+            <div :if={@selected} class="module-workspace">
+              <div :if={not @source_file_found or @manual_source != nil} class="module-source-actions">
+                <button type="button" class="secondary module-action" phx-click="browse_source_file">
+                  {if @manual_source, do: "Browse another file", else: "Browse local source"}
+                </button>
+              </div>
+              <BeamdashWeb.SourceBrowser.picker :if={@browser} browser={@browser} />
+              <form phx-change="edit" phx-submit="compile">
+                <label>
+                  Language
+                  <select name="language">
+                    <option value="erlang" selected={@language == "erlang"}>Erlang</option>
+                    <option value="elixir" selected={@language == "elixir"}>Elixir</option>
+                  </select>
+                </label>
+                <label>
+                  Local Mix project directory (optional for Elixir)
+                  <input name="project" value={@project} placeholder="/path/to/project" />
+                </label>
+                <div class="module-source-actions" role="group" aria-label="Editor actions">
+                  <button
+                    type="button"
+                    class="secondary module-action"
+                    phx-click="clear_source"
+                    disabled={@source == ""}
+                  >Clear code</button>
+                  <button
+                    type="button"
+                    class="secondary module-action"
+                    phx-click="discard_source"
+                    disabled={
+                      @original == nil or
+                        (@source == @original.source and @language == @original.language and
+                           @project == @original.project)
+                    }
+                    title="Restore the source, language and project loaded when this module was selected"
+                  >Discard changes</button>
+                </div>
+                <BeamdashWeb.CodeEditor.editor
+                  id={"module-source-#{@selected}"}
+                  source={@source}
+                  language={@language}
+                  revision={@editor_revision}
+                />
+                <p class="muted small">
+                  Ctrl/Cmd+Enter to compile · Ctrl/Cmd+F to search · Ctrl+Space for completion
+                </p>
+                <div class="module-actions" role="group" aria-label="Module actions">
+                  <button type="submit" class="module-action" phx-disable-with="Compiling…">Compile</button>
+                  <button
+                    type="button"
+                    class="module-action module-deploy"
+                    phx-click="deploy"
+                    phx-disable-with="Deploying…"
+                    disabled={@compiled == nil or @backup != nil}
+                    data-confirm={"Deploy #{@selected} to #{@node}?"}
+                  >Deploy</button>
+                  <button
+                    type="button"
+                    class="module-action secondary"
+                    phx-click="rollback"
+                    phx-disable-with="Restoring…"
+                    disabled={@backup == nil}
+                    data-confirm={"Restore the previous #{@selected} module on #{@node}?"}
+                  >Rollback</button>
+                  <span class="module-target muted small">Target: {@node}</span>
+                </div>
+              </form>
+              <form :if={@compiled} phx-submit="test_candidate" class="module-test-panel">
+                <h2>Test candidate before deployment (optional)</h2>
+                <p class="help">
+                  Runs the staged code locally with the selected Mix project, without deploying it. Local state and services may differ from the target.
+                </p>
+                <label>Exported function
+                <input name="function" value={@candidate_function} required /></label>
+                <label>Arguments (Erlang list)
+                <input name="arguments" value={@candidate_arguments} required /></label>
+                <button type="submit" class="secondary module-action" phx-disable-with="Testing…">Test candidate</button>
+                <pre :if={@candidate_result} role="status" style="white-space:pre-wrap">{@candidate_result}</pre>
+              </form>
+              <form phx-submit="test" class="module-test-panel">
+                <h2>Test running module</h2>
+                <label>Exported function
+                <input
+                  name="function"
+                  value={@function}
+                  list="running-module-functions"
+                  autocomplete="off"
+                  required
+                /></label>
+                <datalist id="running-module-functions"><option
+                  :for={{name, arity} <- @exported_functions}
+                  value={name}
+                  label={"#{name}/#{arity}"}
+                >
+                </option></datalist>
+                <label>Arguments (Erlang list) <input name="arguments" value={@arguments} required /></label>
+                <button type="submit" class="secondary module-action" phx-disable-with="Running…">Run on node</button>
+              </form>
+            </div>
+          </section>
         </div>
-        <pre :if={@message} role="status" style="white-space:pre-wrap">{@message}</pre>
       </section>
     </main>
     """

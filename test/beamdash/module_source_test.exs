@@ -267,7 +267,16 @@ defmodule Beamdash.ModuleSourceTest do
         ~w(highlight.min.js erlang.min.js elixir.min.js)
         |> Enum.map(&"/assets/vendor/highlight/#{&1}")
 
-      assert Enum.take(scripts, -4) == hl ++ ["/assets/app.js"]
+      assert Enum.take(scripts, -9) ==
+               hl ++
+                 [
+                   "/assets/source_editor.js",
+                   "/assets/console_completion.js",
+                   "/assets/notebook_files.js",
+                   "/assets/vendor/codemirror/editor.js",
+                   "/assets/module_editor.js",
+                   "/assets/app.js"
+                 ]
 
       for path <- hl do
         file = Path.join(Application.app_dir(:beamdash, "priv/static"), path)
@@ -343,5 +352,160 @@ defmodule Beamdash.ModuleSourceTest do
 
       assert socket.assigns.sources == []
     end
+  end
+
+  test "Modules selection loads source into the editor", %{node: node} do
+    path = load(node, :src_editor_demo)
+
+    socket = %Phoenix.LiveView.Socket{
+      private: %{lifecycle: %Phoenix.LiveView.Lifecycle{}, live_temp: %{}}
+    }
+
+    {:ok, socket} = BeamdashWeb.ModulesLive.mount(%{}, %{}, socket)
+
+    {:noreply, selected} =
+      BeamdashWeb.ModulesLive.handle_event("select", %{"module" => "src_editor_demo"}, socket)
+
+    assert selected.assigns.source == File.read!(path)
+    assert {"hello", 1} in selected.assigns.exported_functions
+
+    assert {:reply, %{items: items}, _} =
+             BeamdashWeb.ModulesLive.handle_event(
+               "complete_editor",
+               %{"token" => "src_editor_demo:he", "language" => "erlang"},
+               selected
+             )
+
+    assert Enum.any?(
+             items,
+             &(&1.label == "src_editor_demo:hello/1" and &1.insert == "src_editor_demo:hello(")
+           )
+
+    html =
+      selected.assigns
+      |> Map.put(:syntax, :erlang)
+      |> BeamdashWeb.ModulesLive.render()
+      |> Phoenix.LiveViewTest.rendered_to_string()
+
+    assert html =~ "a comment only the source file has"
+    assert html =~ ~s(list="running-module-functions")
+    assert html =~ ~s(label="hello/1")
+  end
+
+  test "Modules selection explains when source is unavailable", %{node: node} do
+    path = load(node, :src_editor_missing, [])
+    File.rm!(path)
+
+    socket = %Phoenix.LiveView.Socket{
+      private: %{lifecycle: %Phoenix.LiveView.Lifecycle{}, live_temp: %{}}
+    }
+
+    {:ok, socket} = BeamdashWeb.ModulesLive.mount(%{}, %{}, socket)
+
+    {:noreply, selected} =
+      BeamdashWeb.ModulesLive.handle_event("select", %{"module" => "src_editor_missing"}, socket)
+
+    assert selected.assigns.message =~ "compiled without debug info"
+  end
+
+  test "Modules selection tries all Module Source settings when the owner path misses", %{
+    node: node
+  } do
+    mod = :src_editor_cross
+    path = load(node, mod, [])
+    text = File.read!(path)
+    File.rm!(path)
+    dir = Path.join(Path.dirname(path), "checkout")
+    local = Path.join(dir, "src/#{mod}.erl")
+    File.mkdir_p!(Path.dirname(local))
+    File.write!(local, text)
+
+    {:ok, :ok} =
+      Target.rpc(node, :application, :load, [
+        {:application, :src_editor_owner, [vsn: ~c"1", modules: [mod]]}
+      ])
+
+    assert {:ok, {:ok, :src_editor_owner}} =
+             Target.rpc(node, :application, :get_application, [mod])
+
+    Beamdash.Settings.put_source_dir("src_editor_owner", Path.join(dir, "missing"))
+    Beamdash.Settings.put_source_dir("src_editor_checkout", dir)
+
+    on_exit(fn ->
+      Beamdash.Settings.delete_source_dir("src_editor_owner")
+      Beamdash.Settings.delete_source_dir("src_editor_checkout")
+    end)
+
+    socket = %Phoenix.LiveView.Socket{
+      private: %{lifecycle: %Phoenix.LiveView.Lifecycle{}, live_temp: %{}}
+    }
+
+    {:ok, socket} = BeamdashWeb.ModulesLive.mount(%{}, %{}, socket)
+
+    {:noreply, selected} =
+      BeamdashWeb.ModulesLive.handle_event("select", %{"module" => Atom.to_string(mod)}, socket)
+
+    assert selected.assigns.source == text
+    assert selected.assigns.message =~ local
+  end
+
+  test "Modules and SourceTabs load the same local source for an Elixir module", %{node: node} do
+    mod = PaceKeeperCore.Vnode
+    dir = Path.join(System.tmp_dir!(), "beamdash-vnode-#{System.unique_integer([:positive])}")
+    path = Path.join(dir, "lib/pace_keeper_core/vnode.ex")
+    File.mkdir_p!(Path.dirname(path))
+    File.write!(Path.join(dir, "mix.exs"), "# local project")
+    text = "defmodule PaceKeeperCore.Vnode do\n  def value, do: :ok\nend\n"
+    File.write!(path, text)
+
+    forms = [
+      {:attribute, 1, :module, mod},
+      {:attribute, 2, :export, [value: 0]},
+      {:function, 3, :value, 0, [{:clause, 3, [], [], [{:atom, 3, :ok}]}]}
+    ]
+
+    {:ok, ^mod, beam} =
+      :compile.forms(forms, [:binary, {:source, ~c"/release/lib/pace_keeper_core/vnode.ex"}])
+
+    {:ok, {:module, ^mod}} = Target.rpc(node, :code, :load_binary, [mod, ~c"vnode.beam", beam])
+    Beamdash.Settings.put_source_dir("pace_keeper", dir)
+
+    on_exit(fn ->
+      Beamdash.Settings.delete_source_dir("pace_keeper")
+      File.rm_rf!(dir)
+    end)
+
+    socket = %Phoenix.LiveView.Socket{
+      private: %{lifecycle: %Phoenix.LiveView.Lifecycle{}, live_temp: %{}}
+    }
+
+    {:ok, socket} = BeamdashWeb.ModulesLive.mount(%{}, %{}, socket)
+
+    source_tab =
+      SourceTabs.event("open_source", %{"mod" => Atom.to_string(mod)}, SourceTabs.init(socket), [
+        mod
+      ])
+
+    assert [%{source: %{kind: :local, text: ^text}}] = source_tab.assigns.sources
+
+    {:noreply, selected} =
+      BeamdashWeb.ModulesLive.handle_event("select", %{"module" => Atom.to_string(mod)}, socket)
+
+    assert selected.assigns.source == text
+    assert selected.assigns.language == "elixir"
+    assert selected.assigns.project == dir
+    assert selected.assigns.original == %{source: text, language: "elixir", project: dir}
+    assert selected.assigns.message =~ path
+
+    html =
+      selected.assigns
+      |> Map.put(:syntax, :elixir)
+      |> BeamdashWeb.ModulesLive.render()
+      |> Phoenix.LiveViewTest.rendered_to_string()
+
+    assert html =~ ~s(phx-hook="CodeMirrorEditor")
+    assert html =~ ~s(data-language="elixir")
+    assert html =~ ~s(id="module-source-Elixir.PaceKeeperCore.Vnode")
+    assert html =~ "defmodule PaceKeeperCore.Vnode"
   end
 end
