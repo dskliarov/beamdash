@@ -190,6 +190,12 @@ defmodule BeamdashWeb.SourceTabs do
       <div class="src-head">
         <h2 class="mono">{Format.name(@s.mod, @syntax)}</h2>
         <span :if={@s.source.path} class="mono muted small">{@s.source.path}</span>
+        <.link
+          navigate={"/modules?" <> URI.encode_query(%{module: Atom.to_string(@s.mod)})}
+          class="src-edit small-btn"
+        >
+          Edit
+        </.link>
       </div>
       <p :if={@s.source.kind == :debug_info} class="notice small">
         The source file isn't on the node, so this is Erlang rebuilt from the module's debug info:
