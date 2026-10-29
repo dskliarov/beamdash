@@ -11,6 +11,13 @@ defmodule Mix.Tasks.Beamdash.JevEval do
   `--strict` exits with status 1 if any scenario is missed. Each scenario
   is one request and may be charged. `--only memory,seq` runs
   only those sets (process, gc, memory, seq, route, triage).
+
+  `--backend kev` sends the same scenarios to the Kev server at `KEV_URL`
+  instead (`--backend jev` forces Jev); the default is the backend in use.
+  Each line shows how long its request took, and the summary the mean and
+  slowest, to compare speed as well as answers.
+
+      KEV_URL=http://127.0.0.1:8009 mix beamdash.jev_eval --backend kev
   """
   use Mix.Task
 
@@ -20,16 +27,31 @@ defmodule Mix.Tasks.Beamdash.JevEval do
   @impl true
   def run(args) do
     {opts, _, _} =
-      OptionParser.parse(args, strict: [model: :string, strict: :boolean, only: :string])
+      OptionParser.parse(args,
+        strict: [model: :string, strict: :boolean, only: :string, backend: :string]
+      )
 
     Mix.Task.run("app.config")
     {:ok, _} = Application.ensure_all_started([:inets, :ssl])
 
-    unless Jev.configured?(), do: Mix.raise("Set TYPESAFE_API_KEY first.")
+    backend =
+      case opts[:backend] do
+        nil -> Jev.backend()
+        "jev" -> :jev
+        "kev" -> :kev
+        other -> Mix.raise("--backend is jev or kev, not #{other}")
+      end
 
-    model = opts[:model] || Jev.model()
+    unless Jev.configured?(backend) do
+      Mix.raise(if backend == :kev, do: "Set KEV_URL first.", else: "Set TYPESAFE_API_KEY first.")
+    end
+
+    model = opts[:model] || Jev.model(backend)
     only = if o = opts[:only], do: o |> String.split(",", trim: true) |> Enum.map(&String.trim/1)
-    Mix.shell().info("Jev scenarios · model #{model}\n")
+
+    Mix.shell().info(
+      "#{Jev.name(backend)} scenarios · #{Jev.endpoint(backend)} · model #{model}\n"
+    )
 
     scenarios =
       (Scenarios.all() ++ MoreScenarios.all())
@@ -37,23 +59,34 @@ defmodule Mix.Tasks.Beamdash.JevEval do
 
     results =
       for s <- scenarios do
-        case check(s, model: model) do
+        {us, result} = :timer.tc(fn -> check(s, model: model, backend: backend) end)
+        ms = div(us, 1000)
+
+        case result do
           {:ok, ok, got} ->
             Mix.shell().info(
               "#{if ok, do: "ok  ", else: "MISS"} #{s.advisor}/#{s.name}: #{got}" <>
-                if(ok, do: "", else: " · expected #{expected(s)}")
+                if(ok, do: "", else: " · expected #{expected(s)}") <> " · #{ms} ms"
             )
 
-            ok
+            {ok, ms}
 
           {:error, message} ->
-            Mix.shell().error("ERR  #{s.advisor}/#{s.name}: #{message}")
-            false
+            Mix.shell().error("ERR  #{s.advisor}/#{s.name}: #{message} · #{ms} ms")
+            {false, ms}
         end
       end
 
-    right = Enum.count(results, & &1)
+    right = Enum.count(results, &elem(&1, 0))
+    times = Enum.map(results, &elem(&1, 1))
     Mix.shell().info("\n#{right} of #{length(results)} right")
+
+    if times != [] do
+      Mix.shell().info(
+        "request time: mean #{div(Enum.sum(times), length(times))} ms, slowest #{Enum.max(times)} ms"
+      )
+    end
+
     if opts[:strict] && right < length(results), do: exit({:shutdown, 1})
   end
 

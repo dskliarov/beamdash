@@ -18,6 +18,7 @@ defmodule BeamdashWeb.SeqLive do
 
     socket =
       assign(socket,
+        jev_backend: Beamdash.Jev.backend(),
         status: status,
         node: node,
         events: [],
@@ -188,7 +189,7 @@ defmodule BeamdashWeb.SeqLive do
         <BeamdashWeb.JevSection.section
           id="jev-seq"
           event="analyze_seq"
-          title="Jev: message-flow pattern"
+          title={"#{Beamdash.Jev.name(@jev_backend)}: message-flow pattern"}
           sends="The shape of the recorded messages, computed here: counts by kind (call, reply, cast), call-to-reply latency and unanswered calls, fan-out and fan-in, how much goes to or from one process, round trips, chain depth and burstiness."
           enabled={@jev_enabled}
           configured={Beamdash.Jev.configured?()}

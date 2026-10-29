@@ -288,7 +288,7 @@ defmodule BeamdashWeb.GCDetails do
       <BeamdashWeb.JevSection.section
         id="jev-gc"
         event="analyze_gc"
-        title="Jev: next step"
+        title={"#{Beamdash.Jev.name()}: next step"}
         sends="Heap, binary and mailbox trends computed here, the GC trace summary (rates, pause times, share of time in GC), the last Force GC result, OTP kind and rank on the node."
         enabled={@jev.enabled}
         configured={@jev.configured}

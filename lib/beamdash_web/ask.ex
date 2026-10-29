@@ -39,7 +39,7 @@ defmodule BeamdashWeb.Ask do
           try do
             AskAdvisor.ask(q, module)
           catch
-            _, _ -> {:error, "Jev could not be reached. Try again."}
+            _, _ -> {:error, "#{Beamdash.Jev.name()} could not be reached. Try again."}
           end
 
         send(parent, {:beamdash_ask, ref, result})

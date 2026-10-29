@@ -9,6 +9,20 @@ defmodule Beamdash.SettingsTest do
     Beamdash.Test.Fixture.put_jev_config(api_key: "test-key")
   end
 
+  test "AI provider settings persist without credentials and reject invalid providers" do
+    previous = Settings.ai_provider()
+    on_exit(fn -> Settings.put_ai_provider(previous["provider"], previous["model"]) end)
+    assert :ok = Settings.put_ai_provider("anthropic", "example-model")
+    assert {:error, _} = Settings.put_ai_provider("unknown", "model")
+    Settings.reload()
+    assert Settings.ai_provider() == %{"provider" => "anthropic", "model" => "example-model"}
+    saved = Settings.path() |> File.read!() |> Jason.decode!()
+    assert saved["ai_provider"] == Settings.ai_provider()
+    conn = Plug.Test.conn(:get, "/settings") |> BeamdashWeb.Endpoint.call([])
+    assert conn.resp_body =~ "Connecting these providers to Analyze is not yet implemented"
+    assert conn.resp_body =~ "Claude (Anthropic)"
+  end
+
   test "settings switch changes the shared value and broadcasts it" do
     Phoenix.PubSub.subscribe(Beamdash.PubSub, "settings")
     view = BeamdashWeb.SettingsLive
@@ -164,6 +178,28 @@ defmodule Beamdash.SettingsTest do
     {:noreply, socket} = view.handle_event("add_source_dir", socket.assigns.source_form, socket)
     assert Settings.source_dirs()["my_app"] == Path.join(root, "my_app")
     assert socket.assigns.source_form == %{"app" => "", "dir" => ""}
+  end
+
+  test "plugin settings are kept per plugin, saved, and removed with nil" do
+    on_exit(fn ->
+      Beamdash.Plugin.put_setting(:plugin_a, "zoom", nil)
+      Beamdash.Plugin.put_setting(:plugin_b, "zoom", nil)
+    end)
+
+    assert Beamdash.Plugin.get_setting(:plugin_a, "zoom", 100) == 100
+    :ok = Beamdash.Plugin.put_setting(:plugin_a, "zoom", 150)
+    :ok = Beamdash.Plugin.put_setting(:plugin_b, "zoom", %{"a" => [1, 2]})
+
+    assert Beamdash.Plugin.get_setting(:plugin_a, "zoom", 100) == 150
+    assert Beamdash.Plugin.get_setting(:plugin_b, "zoom") == %{"a" => [1, 2]}
+
+    assert Jason.decode!(File.read!(Settings.path()))["plugin_settings"]["plugin_a"] == %{
+             "zoom" => 150
+           }
+
+    :ok = Beamdash.Plugin.put_setting(:plugin_a, "zoom", nil)
+    assert Beamdash.Plugin.get_setting(:plugin_a, "zoom", 100) == 100
+    refute Map.has_key?(Jason.decode!(File.read!(Settings.path()))["plugin_settings"], "plugin_a")
   end
 
   describe "kubeconfig directory" do

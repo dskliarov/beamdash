@@ -17,3 +17,6 @@ erl_crash.dump
 /.claude/settings.json
 /.claude/settings.json.graphify-bak
 /.codex/hooks.json
+
+# Optional tooling for rebuilding the vendored CodeMirror editor
+/assets/codemirror/node_modules/

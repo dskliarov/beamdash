@@ -179,6 +179,26 @@ defmodule Beamdash.Plugin do
     "/nodes?" <> URI.encode_query(query)
   end
 
+  @doc """
+  The plugin's saved value for `key`, or `default` when there is none.
+  `plugin` is the plugin's app name (`:my_plugin`), which keeps each
+  plugin's settings apart. Values survive beamdash restarts. Older
+  beamdash builds lack it: check
+  `function_exported?(Beamdash.Plugin, :get_setting, 3)` to support them.
+  """
+  @spec get_setting(atom(), String.t(), term()) :: term()
+  def get_setting(plugin, key, default \\ nil) when is_atom(plugin) and is_binary(key),
+    do: Beamdash.Settings.plugin_setting(plugin, key, default)
+
+  @doc """
+  Saves `value` for the plugin's `key` (see `get_setting/3`). `value` must
+  be JSON data: a string, number, boolean, list or map with string keys.
+  `nil` removes the key.
+  """
+  @spec put_setting(atom(), String.t(), term()) :: :ok
+  def put_setting(plugin, key, value) when is_atom(plugin) and is_binary(key),
+    do: Beamdash.Settings.put_plugin_setting(plugin, key, value)
+
   @doc "beamdash's own version, such as `\"0.1.0\"`."
   @spec version() :: String.t()
   def version, do: to_string(Application.spec(:beamdash, :vsn))

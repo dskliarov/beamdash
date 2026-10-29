@@ -9,6 +9,12 @@ defmodule BeamdashWeb.SettingsLive do
      socket
      |> assign(
        jev_enabled: Settings.jev_enabled?(),
+       jev_backend: Jev.backend(),
+       kev_port_error: nil,
+       ai_provider: Settings.ai_provider(),
+       ai_notice: nil,
+       ai_models: [],
+       ai_loading: nil,
        auto_reconnect: Settings.auto_reconnect?(),
        saved_connection: saved(),
        browser: nil,
@@ -242,6 +248,86 @@ defmodule BeamdashWeb.SettingsLive do
     {:noreply, assign(socket, jev_enabled: enabled)}
   end
 
+  def handle_event("set_kev_port", %{"port" => value}, socket) do
+    case {String.trim(value), Jev.port(value)} do
+      {"", _} ->
+        :ok = Settings.put_kev_port(nil)
+        {:noreply, assign(socket, kev_port_error: nil)}
+
+      {_, nil} ->
+        {:noreply, assign(socket, kev_port_error: "A port is a number from 1 to 65535.")}
+
+      {_, port} ->
+        :ok = Settings.put_kev_port(port)
+        {:noreply, assign(socket, kev_port_error: nil)}
+    end
+  end
+
+  def handle_event("set_backend", %{"backend" => value}, socket) do
+    case Enum.find(Jev.configured_backends(), &(Atom.to_string(&1) == value)) do
+      nil ->
+        {:noreply, socket}
+
+      backend ->
+        :ok = Settings.put_decision_backend(backend)
+        {:noreply, assign(socket, jev_backend: backend)}
+    end
+  end
+
+  def handle_event("save_ai_provider", %{"provider" => provider, "model" => model}, socket) do
+    case Settings.put_ai_provider(provider, model) do
+      :ok ->
+        {:noreply,
+         assign(socket, ai_provider: Settings.ai_provider(), ai_notice: "Settings saved.")}
+
+      {:error, message} ->
+        {:noreply, assign(socket, ai_notice: message)}
+    end
+  end
+
+  def handle_event("edit_ai_provider", %{"provider" => provider, "model" => model}, socket) do
+    changed = provider != socket.assigns.ai_provider["provider"]
+
+    {:noreply,
+     assign(socket,
+       ai_provider: %{"provider" => provider, "model" => model},
+       ai_models: if(changed, do: [], else: socket.assigns.ai_models),
+       ai_loading: if(changed, do: nil, else: socket.assigns.ai_loading),
+       ai_notice: if(changed, do: nil, else: socket.assigns.ai_notice)
+     )}
+  end
+
+  def handle_event("load_ai_models", _, socket) do
+    provider = socket.assigns.ai_provider["provider"]
+    ref = make_ref()
+
+    {:noreply,
+     socket
+     |> assign(ai_loading: ref, ai_notice: nil, ai_models: [])
+     |> start_async({:ai_models, ref}, fn -> Beamdash.AIModels.list(provider) end)}
+  end
+
+  @impl true
+  def handle_async({:ai_models, ref}, result, %{assigns: %{ai_loading: ref}} = socket) do
+    case result do
+      {:ok, {:ok, models}} ->
+        {:noreply,
+         assign(socket,
+           ai_models: models,
+           ai_loading: nil,
+           ai_notice: "Found #{length(models)} models."
+         )}
+
+      {:ok, {:error, error}} ->
+        {:noreply, assign(socket, ai_loading: nil, ai_notice: error)}
+
+      _ ->
+        {:noreply, assign(socket, ai_loading: nil, ai_notice: "Could not retrieve models.")}
+    end
+  end
+
+  def handle_async({:ai_models, _}, _, socket), do: {:noreply, socket}
+
   # an install's progress and a rebuild's result
   @impl true
   def handle_info(message, socket), do: PluginsSettings.handle_info(message, socket)
@@ -466,12 +552,60 @@ defmodule BeamdashWeb.SettingsLive do
         class="mem-panel settings-card"
         aria-labelledby="jev-setting-heading"
       >
-        <h3 id="jev-setting-heading">Jev</h3>
+        <h3 id="jev-setting-heading">Suggestions model</h3>
+        <div :if={length(Jev.configured_backends()) > 1} class="settings-toggle-row">
+          <div>
+            <strong id="jev-backend-label">Model</strong>
+            <p class="muted small">
+              Jev is TypeSafe's hosted model; Kev a self-hosted one with the same API.
+              Saved for the next start; the next request goes to the one chosen.
+            </p>
+          </div>
+          <div class="seg" role="radiogroup" aria-labelledby="jev-backend-label">
+            <button
+              :for={b <- Jev.configured_backends()}
+              type="button"
+              role="radio"
+              aria-checked={to_string(@jev_backend == b)}
+              class={["seg-btn", @jev_backend == b && "active"]}
+              phx-click="set_backend"
+              phx-value-backend={b}
+            >
+              {Jev.name(b)}
+            </button>
+          </div>
+        </div>
+        <form
+          :if={Jev.configured?(:kev)}
+          id="kev-port-form"
+          class="settings-toggle-row"
+          phx-submit="set_kev_port"
+        >
+          <div>
+            <label for="kev-port"><strong>Kev port</strong></label>
+            <p class="muted small">
+              Port of the Kev server at {Jev.endpoint(:kev)}. Saved for the next start;
+              empty goes back to KEV_URL or KEV_PORT.
+            </p>
+            <p :if={@kev_port_error} class="error small" role="alert">{@kev_port_error}</p>
+          </div>
+          <input
+            id="kev-port"
+            name="port"
+            type="number"
+            min="1"
+            max="65535"
+            value={Settings.kev_port() || Jev.kev_port()}
+            class="mono"
+            style="width: 7em"
+          />
+          <button type="submit" class="small-btn">Save</button>
+        </form>
         <div class="settings-toggle-row">
           <div>
-            <strong id="jev-setting-label">Enable Jev analysis</strong>
+            <strong id="jev-setting-label">Enable {Jev.name(@jev_backend)} analysis</strong>
             <p id="jev-setting-help" class="muted small">
-              Use Jev for investigation suggestions on the Processes and GC pages.
+              Use {Jev.name(@jev_backend)} for investigation suggestions on the Processes and GC pages.
             </p>
           </div>
           <button
@@ -485,24 +619,93 @@ defmodule BeamdashWeb.SettingsLive do
           ><span class="settings-switch-knob" aria-hidden="true"></span></button>
           <span class="small" role="status">{if @jev_enabled, do: "Enabled", else: "Disabled"}</span>
         </div>
-        <p class="guide small">
+        <p :if={@jev_backend == :jev} class="guide small">
           When on, clicking Analyze in a process panel (Processes or GC tab) sends
           measurements computed from that process to TypeSafe's Jev model: trends, shares,
           status, OTP kind and rank on the node. Never names, pids, modules, stacks, messages
           or state. Nothing is sent while you only browse. TypeSafe's documentation does not
           state how long it keeps requests; calls may be charged.
         </p>
+        <p :if={@jev_backend == :kev} class="guide small">
+          When on, clicking Analyze in a process panel (Processes or GC tab) sends
+          measurements computed from that process to the Kev server at {Jev.endpoint(:kev)}:
+          trends, shares, status, OTP kind and rank on the node. Never names, pids, modules,
+          stacks, messages or state. Nothing is sent while you only browse.
+        </p>
         <p class="muted small">
-          Applies at once to every open tab. Until switched here, Jev is on only when an API
-          key is configured; the switch resets when beamdash restarts. Turning it off cancels
+          Applies at once to every open tab. Until switched here, it is on only when a model
+          is configured; the switch resets when beamdash restarts. Turning it off cancels
           pending results; requests already sent cannot be recalled.
         </p>
         <p class="muted small">
-          {if Jev.configured?(),
-            do: "API key configured · model #{Jev.model()}.",
-            else:
-              "No API key. Set TYPESAFE_API_KEY in the environment and restart beamdash to use Jev."}
+          {cond do
+            @jev_backend == :kev ->
+              "Kev server #{Jev.endpoint(:kev)} · model #{Jev.model(:kev)}."
+
+            Jev.configured?(:jev) ->
+              "API key configured · model #{Jev.model(:jev)}."
+
+            true ->
+              "No API key. Set TYPESAFE_API_KEY in the environment and restart beamdash to use Jev."
+          end}
+          <span :if={not Jev.configured?(:kev)}>
+            Set KEV_URL (or KEV_PORT, for a server on this machine) to try Kev instead.
+          </span>
         </p>
+      </section>
+      <section class="mem-panel settings-card" aria-labelledby="ai-provider-heading">
+        <h3 id="ai-provider-heading">AI provider</h3>
+        <p class="muted small">
+          Save a provider and model for future AI analysis. Connecting these providers to Analyze is not yet implemented.
+        </p>
+        <form id="ai-provider-form" phx-change="edit_ai_provider" phx-submit="save_ai_provider">
+          <label for="ai-provider">Provider</label>
+          <select id="ai-provider" name="provider">
+            <option
+              :for={
+                {value, label} <- [
+                  {"none", "None"},
+                  {"anthropic", "Claude (Anthropic)"},
+                  {"openai", "ChatGPT (OpenAI API)"},
+                  {"gemini", "Gemini (Google)"}
+                ]
+              }
+              value={value}
+              selected={@ai_provider["provider"] == value}
+            >
+              {label}
+            </option>
+          </select>
+          <label for="ai-model">Model ID</label>
+          <input
+            id="ai-model"
+            name="model"
+            value={@ai_provider["model"]}
+            maxlength="256"
+            placeholder="Provider model ID"
+            list="ai-model-list"
+            autocomplete="off"
+          />
+          <datalist id="ai-model-list"><option :for={model <- @ai_models} value={model}></option></datalist>
+          <button
+            type="button"
+            class="secondary"
+            phx-click="load_ai_models"
+            disabled={@ai_loading != nil or @ai_provider["provider"] == "none"}
+          >{if @ai_loading, do: "Loading…", else: "Load models"}</button>
+          <button type="submit">Save</button>
+        </form>
+        <p class="muted small">
+          Configure credentials in the environment: ANTHROPIC_API_KEY, OPENAI_API_KEY, or GEMINI_API_KEY. Keys are not stored in settings.
+        </p>
+        <p :if={@ai_provider["provider"] == "gemini"} class="muted small">
+          Without a Gemini API key, model lookup uses a Google account signed in with Google Cloud application-default credentials and the GOOGLE_CLOUD_PROJECT environment variable. Configure a Google Cloud project and OAuth client first; see <a
+            href="https://ai.google.dev/gemini-api/docs/oauth"
+            target="_blank"
+            rel="noopener noreferrer"
+          >Google's OAuth setup</a>.
+        </p>
+        <p :if={@ai_notice} role="status">{@ai_notice}</p>
       </section>
       <PluginsSettings.card
         plugins={@plugins}

@@ -39,6 +39,7 @@ defmodule BeamdashWeb.HomeLive do
     socket =
       assign(socket,
         jev_enabled: Settings.jev_enabled?(),
+        jev_backend: Beamdash.Jev.backend(),
         process_advice: nil,
         process_advice_error: nil,
         process_advice_request: nil,
@@ -724,6 +725,7 @@ defmodule BeamdashWeb.HomeLive do
               readiness={TriageAdvisor.readiness(@triage_history)}
               enabled={@jev_enabled}
               configured={Beamdash.Jev.available?()}
+              backend={@jev_backend}
             />
 
             <table>
@@ -780,7 +782,7 @@ defmodule BeamdashWeb.HomeLive do
                     <span
                       :if={v = flag(@triage, p.pid)}
                       class="jev-flag"
-                      title={"Jev: #{v.label} (#{round(v.worth * 100)}% worth a look)#{if v.alternative, do: " or #{v.alternative.label}"}. Open the process for its own analysis."}
+                      title={"#{Beamdash.Jev.name(@jev_backend)}: #{v.label} (#{round(v.worth * 100)}% worth a look)#{if v.alternative, do: " or #{v.alternative.label}"}. Open the process for its own analysis."}
                     >
                       ⚑ {v.label}
                     </span>
@@ -964,6 +966,7 @@ defmodule BeamdashWeb.HomeLive do
   attr :readiness, :any, required: true
   attr :enabled, :boolean, required: true
   attr :configured, :boolean, required: true
+  attr :backend, :atom, required: true
 
   # Jev triage above the table: the button, then how many processes were
   # flagged, with "only flagged" and what is sent.
@@ -985,12 +988,12 @@ defmodule BeamdashWeb.HomeLive do
         class="small-btn"
         phx-click="triage"
         disabled={@triage.request != nil or not @ready}
-        title={"Ask Jev which of the busiest processes (up to #{TriageAdvisor.max_candidates()}) are worth a look"}
+        title={"Ask #{Beamdash.Jev.name(@backend)} which of the busiest processes (up to #{TriageAdvisor.max_candidates()}) are worth a look"}
       >
         {cond do
           @triage.request -> "Triaging…"
           @triage.result -> "Triage again"
-          true -> "Jev: triage busiest processes"
+          true -> "#{Beamdash.Jev.name(@backend)}: triage busiest processes"
         end}
       </button>
       <span :if={not @ready and @triage.request == nil} class="muted small">
@@ -1020,7 +1023,7 @@ defmodule BeamdashWeb.HomeLive do
         id="jev-triage-sent"
         phx-mounted={Phoenix.LiveView.JS.ignore_attributes(["open"])}
       >
-        <summary class="small muted">What is sent to TypeSafe</summary>
+        <summary class="small muted">What is sent to {Beamdash.Jev.destination(@backend)}</summary>
         <p class="small muted">
           For each of the busiest processes, as an anonymous id (p1, p2, …): memory and queue trends, reductions rate, status, a wait category, OTP kind and rank on the node. Never pids, names, modules, stacks, messages or state. Sent only when you click; calls may be charged.
         </p>

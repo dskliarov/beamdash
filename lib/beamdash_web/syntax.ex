@@ -19,6 +19,7 @@ defmodule BeamdashWeb.Syntax do
       socket
       |> assign(:syntax, Settings.syntax())
       |> assign(:jev_enabled, Settings.jev_enabled?())
+      |> assign(:jev_backend, Beamdash.Jev.backend())
       |> attach_hook(:syntax_event, :handle_event, &handle_event/3)
       |> attach_hook(:syntax_info, :handle_info, &handle_info/2)
 
@@ -48,6 +49,11 @@ defmodule BeamdashWeb.Syntax do
 
     {:halt, socket}
   end
+
+  # The next request goes to the new backend; answers already shown keep
+  # the model that gave them.
+  defp handle_info({:beamdash_backend, _backend}, socket),
+    do: {:halt, assign(socket, :jev_backend, Beamdash.Jev.backend())}
 
   defp handle_info(_message, socket), do: {:cont, socket}
 

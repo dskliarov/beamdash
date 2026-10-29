@@ -39,6 +39,7 @@ defmodule BeamdashWeb.MemoryLive do
 
     socket =
       assign(socket,
+        jev_backend: Beamdash.Jev.backend(),
         status: status,
         node: node,
         snap: nil,
@@ -461,7 +462,7 @@ defmodule BeamdashWeb.MemoryLive do
           <BeamdashWeb.JevSection.section
             id="jev-memory"
             event="analyze_memory"
-            title="Jev: node memory health"
+            title={"#{Beamdash.Jev.name(@jev_backend)}: node memory health"}
             sends="Per kind of memory: size, share of the total, change and growth per second over the window; atom, process and ETS-table counts against their limits; allocated vs used."
             enabled={@jev_enabled}
             configured={Beamdash.Jev.configured?()}
