@@ -336,6 +336,11 @@ defmodule Beamdash.Target do
     {:noreply, state |> maybe_reconnect() |> drop_current(:tunnel_failed)}
   end
 
+  # A closed or superseded port-forward can report its exit after the
+  # tunnel was cleared or a new connection was established.
+  def handle_info({port, {:exit_status, _status}}, state) when is_port(port),
+    do: {:noreply, state}
+
   def handle_info({:reconnect_try, ref}, %{reconnect: %{ref: ref} = r} = state) do
     if state.auto_reconnect.() do
       owner = self()

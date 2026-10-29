@@ -80,6 +80,58 @@ defmodule Beamdash.TargetTest do
     assert {:error, :not_connected} = Target.processes(ctx.server)
   end
 
+  for {order, first_reason} <- [{:node_first, :nodedown}, {:port_first, :tunnel_failed}] do
+    test "#{order}: late port exits do not crash the target or cancel reconnect", ctx do
+      server = ctx.server
+      :ok = Target.subscribe(server)
+      assert {:ok, _} = Target.connect(Atom.to_string(ctx.node), @cookie, server)
+      assert_receive {:beamdash_target, {:connected, _}}
+
+      port1 =
+        Port.open({:spawn_executable, System.find_executable("cat")}, [:binary, :exit_status])
+
+      port2 =
+        Port.open({:spawn_executable, System.find_executable("cat")}, [:binary, :exit_status])
+
+      tunnel = %Beamdash.Kubectl.Tunnel{epmd_port: port1, dist_port: port2}
+
+      :sys.replace_state(server, fn state ->
+        %{state | tunnel: tunnel, auto_reconnect: fn -> true end, reconnect_delays: [60_000]}
+      end)
+
+      pid = GenServer.whereis(server)
+      ref = Process.monitor(pid)
+
+      case unquote(order) do
+        :node_first -> send(pid, {:nodedown, ctx.node})
+        :port_first -> send(pid, {port1, {:exit_status, 1}})
+      end
+
+      assert_receive {:beamdash_target, {:disconnected, unquote(first_reason)}}, 5_000
+      assert %{node: node, attempt: 1} = Target.reconnecting(server)
+      assert node == ctx.node
+      send(pid, {port1, {:exit_status, 1}})
+      send(pid, {port2, {:exit_status, 1}})
+      send(pid, {:nodedown, ctx.node})
+      assert %{status: :disconnected} = Target.status(server)
+      assert %{node: ^node, attempt: 1} = Target.reconnecting(server)
+      assert GenServer.whereis(server) == pid
+      refute_receive {:DOWN, ^ref, :process, _, _}, 100
+      refute_receive {:beamdash_target, {:disconnected, _}}, 100
+    end
+  end
+
+  test "a stale port exit cannot disconnect a newer connection", ctx do
+    assert {:ok, _} = Target.connect(Atom.to_string(ctx.node), @cookie, ctx.server)
+    stale = Port.open({:spawn_executable, System.find_executable("cat")}, [:binary, :exit_status])
+    Port.close(stale)
+    pid = GenServer.whereis(ctx.server)
+    send(pid, {stale, {:exit_status, 1}})
+    assert %{status: :connected, node: node} = Target.status(ctx.server)
+    assert node == ctx.node
+    assert GenServer.whereis(ctx.server) == pid
+  end
+
   test "a bare name gets this host appended" do
     {:ok, host} = :inet.gethostname()
     assert {:ok, node} = Target.parse_node("foo")
