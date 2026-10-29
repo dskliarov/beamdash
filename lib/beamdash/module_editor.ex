@@ -1,6 +1,6 @@
 defmodule Beamdash.ModuleEditor do
   @moduledoc "Compiles Erlang modules and replaces a loaded module with a best-effort digest check."
-  alias Beamdash.Target
+  alias Beamdash.{AgentLoader, Target}
 
   def compile(source) when is_binary(source) do
     with [_, name] <- Regex.run(~r/-module\s*\(\s*([a-z][a-zA-Z0-9_@]*)\s*\)\s*\./, source) do
@@ -253,12 +253,10 @@ defmodule Beamdash.ModuleEditor do
   end
 
   def load(node, mod, beam, expected_digest) do
-    # This check and load are separate RPCs. Callers must coordinate with
-    # other code loaders; the code server does not provide a compare-and-load.
-    with {:ok, ^expected_digest} <- Target.rpc(node, mod, :module_info, [:md5]),
-         {:ok, {^mod, digest}} <- :beam_lib.md5(beam),
-         {:ok, {:module, ^mod}} <-
-           Target.rpc(node, :code, :load_binary, [mod, ~c"beamdash", beam]) do
+    with {:ok, {^mod, digest}} <- :beam_lib.md5(beam),
+         :ok <- AgentLoader.ensure_loaded(node, &Target.rpc/4, :beamdash_module_deploy),
+         {:ok, {:ok, ^digest}} <-
+           Target.rpc(node, :beamdash_module_deploy, :load, [mod, beam, expected_digest, digest]) do
       {:ok, digest}
     else
       other -> {:error, "Module changed or could not be loaded: #{inspect(other)}"}

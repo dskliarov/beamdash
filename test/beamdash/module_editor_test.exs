@@ -61,6 +61,73 @@ defmodule Beamdash.ModuleEditorTest do
     end
   end
 
+  test "rejects overlapping beamdash deployments and detects a changed running module" do
+    mod = :beamdash_editor_race_fixture
+    source = "-module(beamdash_editor_race_fixture).\n-export([value/0]).\nvalue() -> original.\n"
+    {:ok, ^mod, original, _} = Beamdash.ModuleEditor.compile(source)
+
+    {:ok, ^mod, changed, _} =
+      Beamdash.ModuleEditor.compile(String.replace(source, "original", "changed"))
+
+    {:ok, {^mod, digest}} = :beam_lib.md5(original)
+    {:module, ^mod} = :code.load_binary(mod, ~c"original", original)
+    parent = self()
+
+    holder =
+      spawn(fn ->
+        id = {{:beamdash_module_deploy, mod}, self()}
+        true = :global.set_lock(id, [node()], 0)
+        send(parent, :locked)
+
+        receive do
+          :release -> :global.del_lock(id, [node()])
+        end
+
+        send(parent, :released)
+      end)
+
+    try do
+      assert_receive :locked
+      assert {:error, message} = Beamdash.ModuleEditor.load(node(), mod, changed, digest)
+      assert message =~ "another beamdash deployment"
+      assert apply(mod, :value, []) == :original
+      send(holder, :release)
+      assert_receive :released
+      {:module, ^mod} = :code.load_binary(mod, ~c"external", changed)
+      assert {:error, _} = Beamdash.ModuleEditor.load(node(), mod, original, digest)
+      assert apply(mod, :value, []) == :changed
+    after
+      send(holder, :release)
+      :code.purge(mod)
+      :code.delete(mod)
+    end
+  end
+
+  test "loads the deployment coordinator on the connected node" do
+    {peer, target} = Beamdash.Test.Fixture.start_peer()
+    on_exit(fn -> Beamdash.Test.Fixture.stop_peer(peer) end)
+    {:ok, _} = Beamdash.Target.connect(Atom.to_string(target), Beamdash.Test.Fixture.cookie())
+    on_exit(fn -> Beamdash.Target.disconnect() end)
+    mod = :beamdash_remote_deploy_fixture
+
+    source =
+      "-module(beamdash_remote_deploy_fixture).\n-export([value/0]).\nvalue() -> original.\n"
+
+    {:ok, ^mod, original, _} = Beamdash.ModuleEditor.compile(source)
+
+    {:ok, ^mod, changed, _} =
+      Beamdash.ModuleEditor.compile(String.replace(source, "original", "changed"))
+
+    {:ok, {^mod, digest}} = :beam_lib.md5(original)
+
+    assert {:module, ^mod} =
+             :erpc.call(target, :code, :load_binary, [mod, ~c"original", original])
+
+    assert {:ok, _} = Beamdash.ModuleEditor.load(target, mod, changed, digest)
+    assert :changed = :erpc.call(target, mod, :value, [])
+    assert :erpc.call(target, :code, :is_loaded, [:beamdash_module_deploy]) != false
+  end
+
   test "compiles Elixir in a separate VM without loading it into the dashboard" do
     mod = BeamdashEditorIsolatedFixture
     source = "defmodule BeamdashEditorIsolatedFixture do\n  def value, do: :ok\nend"
