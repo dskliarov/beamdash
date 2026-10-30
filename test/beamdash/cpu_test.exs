@@ -48,6 +48,36 @@ defmodule Beamdash.CPUTest do
     end
   end
 
+  test "an unmatched scheduling-out event marks that process as unknown" do
+    {:ok, {_, [abstract_code: {:raw_abstract_v1, forms}]}} =
+      :beam_lib.chunks(:code.which(:beamdash_cpu), [:abstract_code])
+
+    module = :beamdash_cpu_accounting_test
+
+    forms =
+      Enum.flat_map(forms, fn
+        {:attribute, line, :module, :beamdash_cpu} ->
+          [{:attribute, line, :module, module}, {:attribute, line, :export, [add_time: 5]}]
+
+        form ->
+          [form]
+      end)
+
+    assert {:ok, ^module, binary} = :compile.forms(forms, [:binary])
+    assert {:module, ^module} = :code.load_binary(module, ~c"accounting_test", binary)
+
+    on_exit(fn ->
+      :code.purge(module)
+      :code.delete(module)
+    end)
+
+    pid = self()
+    {running, totals} = apply(module, :add_time, [pid, 50, 100, %{}, %{}])
+    assert totals[pid] == :unknown
+    {_, totals} = apply(module, :add_time, [pid, 90, 100, Map.put(running, pid, 70), totals])
+    assert totals[pid] == :unknown
+  end
+
   test "samples a connected remote node" do
     {peer, node} = Beamdash.Test.Fixture.start_peer()
     on_exit(fn -> Beamdash.Test.Fixture.stop_peer(peer) end)

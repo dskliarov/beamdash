@@ -29,15 +29,22 @@ measure() ->
     end.
 
 measure_registered() ->
-    Existing = maps:from_list([{Pid, true} || Pid <- erlang:processes(), idle_at_boundary(Pid)]),
     Session = trace:session_create(beamdash_cpu, self(), []),
     try
         trace:process(Session, all, true, [running, monotonic_timestamp]),
+        Pids = erlang:processes(),
+        Existing = maps:from_list([{Pid, true} || Pid <- Pids, idle_at_boundary(Pid)]),
+        Unknown = maps:from_list([{Pid, unknown} || Pid <- Pids, not maps:is_key(Pid, Existing)]),
+        %% Observe a short lead-in so normal scheduler switches establish
+        %% which processes were already running at the sample boundary.
+        receive after 10 -> ok end,
         Start = erlang:monotonic_time(nanosecond),
-        case collect(Session, Start, Start + ?SAMPLE_NS, #{}, #{}, 0) of
-            {ok, Values} ->
+        case collect(Session, Start, Start + ?SAMPLE_NS, #{}, Unknown, 0) of
+            {ok, Values, Missing} ->
                 Idle = maps:from_list([{Pid, 0.0} || Pid <- erlang:processes(),
-                                                    maps:is_key(Pid, Existing), idle_at_boundary(Pid)]),
+                                                    maps:is_key(Pid, Existing),
+                                                    not maps:is_key(Pid, Missing),
+                                                    idle_at_boundary(Pid)]),
                 {ok, maps:merge(Idle, Values)};
             Error -> Error
         end
@@ -50,7 +57,6 @@ measure_registered() ->
 idle_at_boundary(Pid) ->
     case process_info(Pid, status) of
         {status, waiting} -> true;
-        {status, runnable} -> true;
         {status, suspended} -> true;
         _ -> false
     end.
@@ -67,9 +73,10 @@ collect(Session, Start, End, Running, Totals, Count) ->
        true ->
            receive
                {trace_ts, Pid, in, _, Ts} ->
-                   collect(Session, Start, End, maps:put(Pid, max(Start, Ts), Running), Totals, Count + 1);
+                   {NextRunning, NextTotals} = record_in(Pid, Ts, Start, Running, Totals),
+                   collect(Session, Start, End, NextRunning, NextTotals, Count + 1);
                {trace_ts, Pid, out, _, Ts} ->
-                   {NextRunning, NextTotals} = add_time(Pid, Ts, End, Running, Totals),
+                   {NextRunning, NextTotals} = record_out(Pid, Ts, Start, End, Running, Totals),
                    collect(Session, Start, End, NextRunning, NextTotals, Count + 1)
            after 5 -> collect(Session, Start, End, Running, Totals, Count)
            end
@@ -78,23 +85,42 @@ collect(Session, Start, End, Running, Totals, Count) ->
 drain(Start, End, Ref, Running, Totals, Count) when Count < ?MAX_EVENTS ->
     receive
         {trace_ts, Pid, in, _, Ts} ->
-            drain(Start, End, Ref, maps:put(Pid, max(Start, Ts), Running), Totals, Count + 1);
+            {NextRunning, NextTotals} = record_in(Pid, Ts, Start, Running, Totals),
+            drain(Start, End, Ref, NextRunning, NextTotals, Count + 1);
         {trace_ts, Pid, out, _, Ts} ->
-            {NextRunning, NextTotals} = add_time(Pid, Ts, End, Running, Totals),
+            {NextRunning, NextTotals} = record_out(Pid, Ts, Start, End, Running, Totals),
             drain(Start, End, Ref, NextRunning, NextTotals, Count + 1);
         {trace_delivered, all, Ref} ->
             Final = maps:fold(fun(Pid, Ts, Acc) ->
-                maps:update_with(Pid, fun(V) -> V + max(0, End - Ts) end, max(0, End - Ts), Acc)
+                add_total(Pid, max(0, End - Ts), Acc)
             end, Totals, Running),
-            {ok, maps:map(fun(_, Ns) -> min(100.0, Ns * 100.0 / (End - Start)) end, Final)}
+            {Values, Missing} = maps:fold(fun(Pid, unknown, {V, M}) ->
+                                                {V, maps:put(Pid, true, M)};
+                                             (Pid, Ns, {V, M}) ->
+                                                {maps:put(Pid, min(100.0, Ns * 100.0 / (End - Start)), V), M}
+                                          end, {#{}, #{}}, Final),
+            {ok, Values, Missing}
     after 1000 -> {error, timeout}
     end;
 drain(_, _, _, _, _, _) -> {error, overloaded}.
+
+record_in(Pid, Ts, Start, Running, Totals) when Ts =< Start ->
+    {maps:put(Pid, Start, Running), maps:remove(Pid, Totals)};
+record_in(Pid, Ts, _Start, Running, Totals) ->
+    {maps:put(Pid, Ts, Running), Totals}.
+
+record_out(Pid, Ts, Start, _End, Running, Totals) when Ts =< Start ->
+    {maps:remove(Pid, Running), maps:remove(Pid, Totals)};
+record_out(Pid, Ts, _Start, End, Running, Totals) ->
+    add_time(Pid, Ts, End, Running, Totals).
 
 add_time(Pid, Ts, End, Running, Totals) ->
     case maps:take(Pid, Running) of
         {From, NextRunning} ->
             Elapsed = max(0, min(Ts, End) - From),
-            {NextRunning, maps:update_with(Pid, fun(V) -> V + Elapsed end, Elapsed, Totals)};
-        error -> {Running, Totals}
+            {NextRunning, add_total(Pid, Elapsed, Totals)};
+        error -> {Running, maps:put(Pid, unknown, Totals)}
     end.
+
+add_total(Pid, Elapsed, Totals) ->
+    maps:update_with(Pid, fun(unknown) -> unknown; (V) -> V + Elapsed end, Elapsed, Totals).
