@@ -1241,6 +1241,8 @@ button.danger { background: var(--error); border-color: var(--error); color: #ff
 .console-entry pre { white-space: pre-wrap; overflow-wrap: anywhere; background: none; padding: 4px 0; margin: 0; font: 12.5px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; }
 .console-command { color: var(--accent); }
 .console-output { color: var(--muted); }
+.console-terminal .console-result { margin: 4px 0; padding: 8px 12px; border-left: 3px solid var(--accent); border-radius: 0 6px 6px 0; background: var(--row-alt); }
+.console-result code { font: inherit; }
 .console-input { margin-top: 16px; }
 .console-input label { display: block; margin-bottom: 6px; }
 .console-input textarea { box-sizing: border-box; width: 100%; min-height: 100px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--fg); resize: vertical; font: 12.5px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; }

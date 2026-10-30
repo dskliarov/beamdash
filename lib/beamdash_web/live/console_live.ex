@@ -330,7 +330,13 @@ defmodule BeamdashWeb.ConsoleLive do
               </div>
               <pre class="console-command"><span class="repl-prompt">{prompt(entry.language, @node, Map.get(entry, :number, index + 1))}</span> {entry.command}</pre>
               <pre :if={entry.output != ""} class="console-output">{entry.output}</pre>
-              <pre class={entry.status == :error && "error"}>{if entry.status == :running, do: "Running…", else: entry.result}</pre>
+              <pre :if={entry.status == :ok} class="console-result"><code
+                id={"console-result-#{Base.url_encode64(:erlang.term_to_binary(entry.id), padding: false)}"}
+                class={"language-#{entry.language}"}
+                phx-hook="Highlight"
+                phx-update="ignore"
+              >{entry.result}</code></pre>
+              <pre :if={entry.status != :ok} class={entry.status == :error && "error"}>{if entry.status == :running, do: "Running…", else: entry.result}</pre>
             </article>
           </div>
           <form phx-change="command" phx-submit="execute" class="console-input">
