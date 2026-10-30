@@ -28,7 +28,8 @@ defmodule Beamdash.Jev do
   machine. Each backend's key goes only to its own server.
 
   Or to beamdash's own model (`Beamdash.Insights.Model`), trained with Nx
-  and run inside beamdash: `NX_MODEL=true` turns it on. Nothing is sent
+  and run inside beamdash: the switch in Settings turns it on or off
+  (`Beamdash.Settings.nx_enabled/0`), or `NX_MODEL=true` until switched. Nothing is sent
   anywhere and answers are instant; it answers the panels' fixed
   questions, not "Ask beamdash".
 
@@ -116,8 +117,15 @@ defmodule Beamdash.Jev do
   def configured?(:jev), do: present?(config()[:api_key])
   def configured?(:kev), do: kev_url() != nil
 
-  def configured?(:nx),
-    do: config()[:nx] in [true, "true", "1"] and Beamdash.Insights.Model.available?()
+  def configured?(:nx), do: nx_on?() and Beamdash.Insights.Model.available?()
+
+  # the Settings switch, else NX_MODEL
+  defp nx_on? do
+    case Beamdash.Settings.nx_enabled() do
+      nil -> config()[:nx] in [true, "true", "1"]
+      enabled -> enabled
+    end
+  end
 
   @doc "The backends that can be asked, Jev first."
   def configured_backends, do: Enum.filter(@backends, &configured?/1)
@@ -221,7 +229,7 @@ defmodule Beamdash.Jev do
         {:error, "Set KEV_URL and restart beamdash to use Kev."}
 
       backend == :nx and not configured?(:nx) ->
-        {:error, "Set NX_MODEL=true and restart beamdash to use the local Nx model."}
+        {:error, "Turn on the local Nx model in Settings to use it."}
 
       backend == :nx ->
         with {:ok, decoded} <- Beamdash.Insights.Model.answer(state, questions),

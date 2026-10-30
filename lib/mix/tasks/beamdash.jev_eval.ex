@@ -45,10 +45,13 @@ defmodule Mix.Tasks.Beamdash.JevEval do
         other -> Mix.raise("--backend is jev, kev or nx, not #{other}")
       end
 
-    # asked for by name, the local model needs no NX_MODEL
+    # asked for by name, the local model needs neither NX_MODEL nor the
+    # Settings switch (whose saved value is not read, nor written)
     if backend == :nx do
       config = Application.get_env(:beamdash, Jev, [])
       Application.put_env(:beamdash, Jev, Keyword.put(config, :nx, true))
+      Application.put_env(:beamdash, :settings_file, false)
+      Beamdash.Settings.reload()
     end
 
     unless Jev.configured?(backend) do

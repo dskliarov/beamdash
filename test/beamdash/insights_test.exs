@@ -276,7 +276,7 @@ defmodule Beamdash.InsightsTest do
       assert flagged == triage.expect
     end
 
-    test "Ask is declined, and the backend needs NX_MODEL" do
+    test "Ask is declined, and the backend needs to be turned on" do
       Fixture.put_jev_config(enabled: true, nx: true)
       Settings.put_jev_enabled(true)
 
@@ -287,7 +287,53 @@ defmodule Beamdash.InsightsTest do
       refute Jev.configured?(:nx)
       [s | _] = Scenarios.process()
       assert {:error, msg} = ProcessAdvisor.analyze(s.evidence, backend: :nx)
-      assert msg =~ "NX_MODEL"
+      assert msg =~ "Turn on the local Nx model in Settings"
+    end
+
+    test "the Settings switch turns the local model on and off, saved, over NX_MODEL" do
+      Fixture.put_jev_config(enabled: true, api_key: nil, kev_url: nil, kev_port: nil, nx: nil)
+      Settings.put_nx_enabled(nil)
+      Settings.put_decision_backend(nil)
+
+      on_exit(fn ->
+        Settings.put_nx_enabled(nil)
+        Settings.put_decision_backend(nil)
+      end)
+
+      refute Jev.available?()
+
+      # with no model at all, the card still shows, with the switch
+      view = BeamdashWeb.SettingsLive
+      {:ok, socket} = view.mount(%{}, %{}, %Phoenix.LiveView.Socket{})
+      html = render_settings(socket)
+      assert html =~ ~s(id="nx-setting-label")
+      assert html =~ "No model configured"
+      refute html =~ ~s(id="jev-setting-label")
+
+      Phoenix.PubSub.subscribe(Beamdash.PubSub, "settings")
+      {:noreply, socket} = view.handle_event("toggle_nx", %{}, socket)
+      assert socket.assigns.nx_on
+      assert socket.assigns.models == [:nx]
+      assert_receive {:beamdash_backend, :nx}
+      assert_receive {:beamdash_jev, true}
+      assert Jev.available?() and Jev.backend() == :nx
+      assert render_settings(socket) =~ "Enable Nx analysis"
+
+      # saved for the next start
+      Settings.reload()
+      assert Settings.nx_enabled() == true
+
+      # off in Settings wins over NX_MODEL=true, and is saved too
+      Fixture.put_jev_config(nx: "true")
+      {:noreply, socket} = view.handle_event("toggle_nx", %{}, socket)
+      refute socket.assigns.nx_on
+      Settings.reload()
+      assert Settings.nx_enabled() == false
+      refute Jev.configured?(:nx)
+
+      # never switched: NX_MODEL decides
+      Settings.put_nx_enabled(nil)
+      assert Jev.configured?(:nx)
     end
 
     test "Nx is a backend like the others: named, chosen and nothing sent" do
@@ -301,6 +347,13 @@ defmodule Beamdash.InsightsTest do
       assert Jev.destination() =~ "nothing leaves beamdash"
       assert Jev.endpoint() == "local"
     end
+  end
+
+  defp render_settings(socket) do
+    socket.assigns
+    |> Map.merge(%{syntax: :erlang, ask: nil})
+    |> BeamdashWeb.SettingsLive.render()
+    |> Phoenix.LiveViewTest.rendered_to_string()
   end
 
   test "the Insights page renders before connecting and lists findings" do

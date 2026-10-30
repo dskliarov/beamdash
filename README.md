@@ -425,8 +425,12 @@ nothing new.
 
   The seq pattern check also sends Jev these two numbers, never the
   processes themselves.
-- **Local suggestion model**: a third backend next to Jev and Kev, turned
-  on with `NX_MODEL=true` and chosen in **Settings → Suggestions model**.
+- **Local suggestion model**: a third backend next to Jev and Kev, needing
+  no API key. Turn it on with **Settings → Suggestions model → Use
+  beamdash's local model (Nx)**. The switch applies to every open tab at
+  once and is saved for the next start. `NX_MODEL=true` turns it on until
+  it is switched in Settings. With Jev or Kev also configured, the same
+  card chooses between them.
   It is a logistic regression per question (process, GC, node memory, seq
   pattern, triage), trained on generated examples and shipped in
   `priv/nx/models.etf` (7 KB). Answers are instant (well under 1 ms) and
