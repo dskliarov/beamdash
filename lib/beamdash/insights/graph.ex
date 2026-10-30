@@ -1,7 +1,7 @@
 defmodule Beamdash.Insights.Graph do
   @moduledoc """
-  The message graph of a seq trace, with Nx: who sends to whom, as a
-  process × process matrix of message counts.
+  The message graph of a seq trace: who sends to whom, as sparse edges
+  with message counts. Memory is proportional to processes and edges.
 
   From it: **reciprocity** (the share of messages that go both ways
   between a pair: chatty exchanges and call/reply score high, fan-out and
@@ -23,24 +23,19 @@ defmodule Beamdash.Insights.Graph do
   def metrics(sends) do
     nodes = sends |> Enum.flat_map(&[&1.from, &1.to]) |> Enum.uniq()
     n = length(nodes)
-    index = nodes |> Enum.with_index() |> Map.new()
+    counts = Enum.frequencies_by(sends, &{&1.from, &1.to})
+    total = length(sends)
 
-    counts = Enum.frequencies_by(sends, &{index[&1.from], index[&1.to]})
+    reciprocal =
+      Enum.reduce(counts, 0, fn {{from, to}, count}, acc ->
+        acc + min(count, Map.get(counts, {to, from}, 0))
+      end)
 
-    a =
-      Nx.indexed_put(
-        Nx.broadcast(0.0, {n, n}),
-        Nx.tensor(Enum.map(Map.keys(counts), &Tuple.to_list/1)),
-        Nx.tensor(Map.values(counts), type: :f32)
-      )
-
-    total = Nx.sum(a) |> Nx.to_number()
-    reciprocal = a |> Nx.min(Nx.transpose(a)) |> Nx.sum() |> Nx.to_number()
-    rank = page_rank(a, n) |> Nx.to_flat_list()
+    rank = page_rank(nodes, counts, n)
 
     hubs =
       nodes
-      |> Enum.zip(rank)
+      |> Enum.map(&{&1, Map.fetch!(rank, &1)})
       |> Enum.sort_by(&elem(&1, 1), :desc)
       |> Enum.take(3)
       |> Enum.map(fn {node, r} -> {node, Float.round(r * 100, 1)} end)
@@ -53,16 +48,29 @@ defmodule Beamdash.Insights.Graph do
     }
   end
 
-  # PageRank by power iteration: rows are senders, a process without
-  # outgoing messages spreads its rank evenly
-  defp page_rank(a, n) do
-    out = Nx.sum(a, axes: [1], keep_axes: true)
-    dangling = out |> Nx.equal(0) |> Nx.broadcast({n, n})
-    p = Nx.select(dangling, 1 / n, Nx.divide(a, Nx.max(out, 1)))
-    teleport = (1 - @damping) / n
+  # A dangling node distributes its rank to every node. Accumulate its
+  # share once, then distribute the other shares only along existing edges.
+  defp page_rank(nodes, counts, n) do
+    out =
+      Enum.reduce(counts, %{}, fn {{from, _}, count}, acc ->
+        Map.update(acc, from, count, &(&1 + count))
+      end)
 
-    Enum.reduce(1..@iterations, Nx.broadcast(1 / n, {n}), fn _, r ->
-      r |> Nx.dot(p) |> Nx.multiply(@damping) |> Nx.add(teleport)
+    initial = Map.new(nodes, &{&1, 1 / n})
+
+    Enum.reduce(1..@iterations, initial, fn _, rank ->
+      dangling =
+        Enum.reduce(nodes, 0.0, fn node, sum ->
+          if Map.has_key?(out, node), do: sum, else: sum + rank[node]
+        end)
+
+      base = (1 - @damping) / n + @damping * dangling / n
+      next = Map.new(nodes, &{&1, base})
+
+      Enum.reduce(counts, next, fn {{from, to}, count}, acc ->
+        share = @damping * rank[from] * count / out[from]
+        Map.update!(acc, to, &(&1 + share))
+      end)
     end)
   end
 end

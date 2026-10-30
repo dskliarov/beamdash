@@ -225,6 +225,48 @@ defmodule Beamdash.InsightsTest do
     assert Graph.metrics([]) == nil
   end
 
+  test "a wide message graph remains practical at the trace buffer limit" do
+    sends = for i <- 1..2_000, do: %{from: 2 * i, to: 2 * i + 1}
+    task = Task.async(fn -> Graph.metrics(sends) end)
+    result = Task.yield(task, 5_000) || Task.shutdown(task, :brutal_kill)
+    assert {:ok, %{processes: 4_000, reciprocity_pct: reciprocity}} = result
+    assert reciprocity == 0.0
+  end
+
+  test "message graph weights repeated edges and counts self messages" do
+    sends = [
+      %{from: :a, to: :b},
+      %{from: :a, to: :b},
+      %{from: :a, to: :b},
+      %{from: :b, to: :a},
+      %{from: :c, to: :b},
+      %{from: :a, to: :a}
+    ]
+
+    assert %{processes: 3, reciprocity_pct: reciprocity, hubs: hubs} = Graph.metrics(sends)
+    assert reciprocity == 50.0
+    assert length(hubs) == 3
+  end
+
+  test "sequence analysis retains the evidence produced asynchronously" do
+    request = {:seq_advisor, make_ref()}
+
+    socket =
+      Phoenix.Component.assign(%Phoenix.LiveView.Socket{},
+        pattern: %{request: request, advice: nil, error: nil, evidence: nil}
+      )
+
+    evidence = %{messages: 10}
+    advice = %{choice: "chatty"}
+
+    assert {:noreply, updated} =
+             BeamdashWeb.SeqLive.handle_async(request, {:ok, {evidence, {:ok, advice}}}, socket)
+
+    assert updated.assigns.pattern.evidence == evidence
+    assert updated.assigns.pattern.advice == advice
+    assert updated.assigns.pattern.request == nil
+  end
+
   test "the seq advisor sends the graph's shape, never its processes" do
     [storm | _] = MoreScenarios.seq()
     assert %{reciprocity_pct: 100.0, top_centrality_share_pct: _} = storm.evidence.graph

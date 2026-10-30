@@ -33,7 +33,7 @@ defmodule Mix.Tasks.Beamdash.NxTrain do
         iterations: opts[:iterations] || 150,
         seed: opts[:seed] || 1,
         alpha: opts[:alpha] || 0.01,
-        progress: &Mix.shell().info/1
+        progress: fn message -> Mix.shell().info(message) end
       ]
 
     {us, models} = :timer.tc(fn -> Training.train_all(train_opts) end)

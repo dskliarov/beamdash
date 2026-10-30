@@ -29,7 +29,8 @@ defmodule BeamdashWeb.SeqLive do
         pattern: %{request: nil, advice: nil, error: nil, evidence: nil},
         # Nx: the message graph, on request
         graph: nil,
-        graphing: false
+        graphing: false,
+        graph_request: nil
       )
 
     if connected?(socket) do
@@ -56,27 +57,33 @@ defmodule BeamdashWeb.SeqLive do
 
   def handle_event("clear", _params, socket) do
     :ok = SeqTracer.clear()
-    {:noreply, socket |> assign(events: [], selected: nil, graph: nil) |> reset_pattern()}
+    {:noreply, socket |> assign(events: [], selected: nil) |> reset_graph() |> reset_pattern()}
   end
 
-  def handle_event("graph", _params, socket) do
+  def handle_event("graph", _params, %{assigns: %{graphing: false}} = socket) do
     sends = Enum.filter(socket.assigns.events, &(&1.type == :send))
+    request = {:graph, make_ref()}
 
     {:noreply,
      socket
-     |> assign(graphing: true)
-     |> start_async(:graph, fn -> {length(sends), Beamdash.Insights.Graph.metrics(sends)} end)}
+     |> assign(graphing: true, graph_request: request)
+     |> start_async(request, fn -> {length(sends), Beamdash.Insights.Graph.metrics(sends)} end)}
   end
+
+  def handle_event("graph", _, socket), do: {:noreply, socket}
 
   def handle_event("analyze_seq", _params, %{assigns: %{pattern: %{request: nil}}} = socket) do
     if match?({:ready, _}, SeqAdvisor.readiness(socket.assigns.events)) do
-      evidence = SeqAdvisor.evidence(socket.assigns.events)
+      events = socket.assigns.events
       request = {:seq_advisor, make_ref()}
 
       {:noreply,
        socket
-       |> assign(pattern: %{request: request, advice: nil, error: nil, evidence: evidence})
-       |> start_async(request, fn -> SeqAdvisor.analyze(evidence) end)}
+       |> assign(pattern: %{request: request, advice: nil, error: nil, evidence: nil})
+       |> start_async(request, fn ->
+         evidence = SeqAdvisor.evidence(events)
+         {evidence, SeqAdvisor.analyze(evidence)}
+       end)}
     else
       {:noreply,
        put_pattern(socket,
@@ -97,22 +104,41 @@ defmodule BeamdashWeb.SeqLive do
   end
 
   @impl true
-  def handle_async(:graph, {:ok, {count, graph}}, socket),
-    do:
-      {:noreply,
-       assign(socket, graph: graph && Map.put(graph, :messages, count), graphing: false)}
+  def handle_async(
+        {:graph, _} = request,
+        {:ok, {count, graph}},
+        %{assigns: %{graph_request: request}} = socket
+      ),
+      do:
+        {:noreply,
+         assign(socket,
+           graph: graph && Map.put(graph, :messages, count),
+           graphing: false,
+           graph_request: nil
+         )}
 
-  def handle_async(:graph, {:exit, _reason}, socket),
-    do: {:noreply, assign(socket, graph: nil, graphing: false)}
+  def handle_async(
+        {:graph, _} = request,
+        {:exit, _reason},
+        %{assigns: %{graph_request: request}} = socket
+      ),
+      do: {:noreply, assign(socket, graph: nil, graphing: false, graph_request: nil)}
+
+  def handle_async({:graph, _}, _, socket), do: {:noreply, socket}
 
   def handle_async({:seq_advisor, _} = request, result, socket) do
     if request == socket.assigns.pattern.request do
       socket = put_pattern(socket, request: nil)
 
       case result do
-        {:ok, {:ok, advice}} -> {:noreply, put_pattern(socket, advice: advice)}
-        {:ok, {:error, message}} -> {:noreply, put_pattern(socket, error: message)}
-        {:exit, _} -> {:noreply, put_pattern(socket, error: "The analysis failed. Try again.")}
+        {:ok, {evidence, {:ok, advice}}} ->
+          {:noreply, put_pattern(socket, evidence: evidence, advice: advice)}
+
+        {:ok, {evidence, {:error, message}}} ->
+          {:noreply, put_pattern(socket, evidence: evidence, error: message)}
+
+        {:exit, _} ->
+          {:noreply, put_pattern(socket, error: "The analysis failed. Try again.")}
       end
     else
       {:noreply, socket}
@@ -128,6 +154,13 @@ defmodule BeamdashWeb.SeqLive do
     assign(socket, pattern: %{request: nil, advice: nil, error: nil, evidence: nil})
   end
 
+  defp reset_graph(socket) do
+    socket =
+      if request = socket.assigns.graph_request, do: cancel_async(socket, request), else: socket
+
+    assign(socket, graph: nil, graphing: false, graph_request: nil)
+  end
+
   defp put_pattern(socket, changes),
     do: assign(socket, pattern: Map.merge(socket.assigns.pattern, Map.new(changes)))
 
@@ -139,13 +172,18 @@ defmodule BeamdashWeb.SeqLive do
     do: {:noreply, assign(socket, traces: SeqTracer.traces())}
 
   def handle_info({:beamdash_seq, :cleared}, socket),
-    do: {:noreply, socket |> assign(events: [], selected: nil) |> reset_pattern()}
+    do:
+      {:noreply, socket |> assign(events: [], selected: nil) |> reset_graph() |> reset_pattern()}
 
   def handle_info({:beamdash_target, {:connected, node}}, socket),
-    do: {:noreply, assign(socket, status: :connected, node: node)}
+    do:
+      {:noreply,
+       socket |> assign(status: :connected, node: node) |> reset_graph() |> reset_pattern()}
 
   def handle_info({:beamdash_target, {:disconnected, _}}, socket),
-    do: {:noreply, assign(socket, status: :disconnected, traces: [])}
+    do:
+      {:noreply,
+       socket |> assign(status: :disconnected, traces: []) |> reset_graph() |> reset_pattern()}
 
   @impl true
   def render(assigns) do
@@ -237,7 +275,7 @@ defmodule BeamdashWeb.SeqLive do
           </button>
         </div>
         <p class="muted small">
-          Who sends to whom, as a matrix of message counts (with Nx): how much goes both ways
+          Who sends to whom, using message counts: how much goes both ways
           between a pair (calls with replies and chatty exchanges score high, fan-out and chains
           low), and where messages end up when followed through the graph (PageRank).
         </p>

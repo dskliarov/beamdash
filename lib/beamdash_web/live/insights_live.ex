@@ -34,9 +34,13 @@ defmodule BeamdashWeb.InsightsLive do
         history: nil,
         findings: [],
         detecting: false,
+        detect_request: nil,
         checked_at: nil,
         groups: nil,
         grouping: false,
+        group_request: nil,
+        group_total: nil,
+        group_sampled: nil,
         k: 5,
         error: nil
       )
@@ -50,15 +54,29 @@ defmodule BeamdashWeb.InsightsLive do
   end
 
   @impl true
-  def handle_event("group", %{"k" => k}, socket) do
+  def handle_event(
+        "group",
+        %{"k" => k},
+        %{assigns: %{status: :connected, grouping: false}} = socket
+      ) do
     k = if k in ~w(3 4 5 6 7 8), do: String.to_integer(k), else: 5
     %{procs: procs, rates: rates} = socket.assigns
+    request = {:groups, make_ref()}
 
     {:noreply,
      socket
-     |> assign(k: k, grouping: true)
-     |> start_async(:groups, fn -> Groups.group(procs, rates, k) end)}
+     |> assign(
+       k: k,
+       grouping: true,
+       group_request: request,
+       group_total: length(procs),
+       group_sampled: nil,
+       groups: nil
+     )
+     |> start_async(request, fn -> Groups.group(procs, rates, k) end)}
   end
+
+  def handle_event("group", _, socket), do: {:noreply, socket}
 
   @impl true
   def handle_info(:tick, socket) do
@@ -75,31 +93,87 @@ defmodule BeamdashWeb.InsightsLive do
   end
 
   def handle_info({:beamdash_target, {:disconnected, _}}, socket),
-    do: {:noreply, socket |> assign(status: :disconnected) |> reset()}
+    do: {:noreply, socket |> assign(status: :disconnected, node: nil) |> reset()}
 
   def handle_info(_message, socket), do: {:noreply, socket}
 
   @impl true
-  def handle_async(:detect, {:ok, findings}, socket),
-    do:
-      {:noreply,
-       assign(socket, findings: findings, detecting: false, checked_at: DateTime.utc_now())}
+  def handle_async(
+        {:detect, _} = request,
+        {:ok, findings},
+        %{assigns: %{detect_request: request}} = socket
+      ),
+      do:
+        {:noreply,
+         assign(socket,
+           findings: findings,
+           detecting: false,
+           detect_request: nil,
+           checked_at: DateTime.utc_now()
+         )}
 
-  def handle_async(:detect, {:exit, reason}, socket),
-    do:
-      {:noreply,
-       assign(socket, detecting: false, error: "Anomaly check failed: #{inspect(reason)}")}
+  def handle_async(
+        {:detect, _} = request,
+        {:exit, reason},
+        %{assigns: %{detect_request: request}} = socket
+      ),
+      do:
+        {:noreply,
+         assign(socket,
+           detecting: false,
+           detect_request: nil,
+           error: "Anomaly check failed: #{inspect(reason)}"
+         )}
 
-  def handle_async(:groups, {:ok, {:ok, groups}}, socket),
-    do: {:noreply, assign(socket, groups: groups, grouping: false)}
+  def handle_async({:detect, _}, _, socket), do: {:noreply, socket}
 
-  def handle_async(:groups, {:ok, {:error, message}}, socket),
-    do: {:noreply, assign(socket, grouping: false, error: message)}
+  def handle_async(
+        {:groups, _} = request,
+        {:ok, {:ok, groups}},
+        %{assigns: %{group_request: request}} = socket
+      ),
+      do:
+        {:noreply,
+         assign(socket,
+           groups: groups,
+           grouping: false,
+           group_request: nil,
+           group_sampled: Enum.sum(Enum.map(groups, & &1.size))
+         )}
 
-  def handle_async(:groups, {:exit, reason}, socket),
-    do: {:noreply, assign(socket, grouping: false, error: "Grouping failed: #{inspect(reason)}")}
+  def handle_async(
+        {:groups, _} = request,
+        {:ok, {:error, message}},
+        %{assigns: %{group_request: request}} = socket
+      ),
+      do: {:noreply, assign(socket, grouping: false, group_request: nil, error: message)}
+
+  def handle_async(
+        {:groups, _} = request,
+        {:exit, reason},
+        %{assigns: %{group_request: request}} = socket
+      ),
+      do:
+        {:noreply,
+         assign(socket,
+           grouping: false,
+           group_request: nil,
+           error: "Grouping failed: #{inspect(reason)}"
+         )}
+
+  def handle_async({:groups, _}, _, socket), do: {:noreply, socket}
 
   defp reset(socket) do
+    socket =
+      if socket.assigns.detect_request,
+        do: cancel_async(socket, socket.assigns.detect_request),
+        else: socket
+
+    socket =
+      if socket.assigns.group_request,
+        do: cancel_async(socket, socket.assigns.group_request),
+        else: socket
+
     assign(socket,
       procs: [],
       by_pid: %{},
@@ -108,7 +182,13 @@ defmodule BeamdashWeb.InsightsLive do
       prev_at: nil,
       history: nil,
       findings: [],
+      detecting: false,
+      detect_request: nil,
       groups: nil,
+      grouping: false,
+      group_request: nil,
+      group_total: nil,
+      group_sampled: nil,
       checked_at: nil
     )
   end
@@ -151,9 +231,11 @@ defmodule BeamdashWeb.InsightsLive do
 
     case Anomaly.readiness(history) do
       {:ready, _} ->
+        request = {:detect, make_ref()}
+
         socket
-        |> assign(detecting: true)
-        |> start_async(:detect, fn -> Anomaly.detect(history, procs, rates) end)
+        |> assign(detecting: true, detect_request: request)
+        |> start_async(request, fn -> Anomaly.detect(history, procs, rates) end)
 
       _ ->
         socket
@@ -246,9 +328,14 @@ defmodule BeamdashWeb.InsightsLive do
           </form>
         </div>
         <p class="muted small">
-          The processes clustered by how they behave (memory, queue, reductions rate, running or
-          not, OTP kind) with k-means: a few groups instead of {length(@procs)} rows.
-          Values are each group's medians.
+          Processes clustered by how they behave (memory, queue, reductions rate, running or
+          not, OTP kind) with k-means. Values are each group's medians.
+        </p>
+        <p :if={@groups} class="muted small">
+          Grouped {Format.number(@group_sampled)} of {Format.number(@group_total)} processes from the snapshot.
+          <span :if={@group_sampled < @group_total}>
+            The selection contains the largest by memory; percentages describe that subset.
+          </span>
         </p>
         <table :if={@groups} class="insights-table">
           <thead>
