@@ -28,8 +28,10 @@ defmodule Beamdash.Jev do
   machine. Each backend's key goes only to its own server.
 
   Or to beamdash's own model (`Beamdash.Insights.Model`), trained with Nx
-  and run inside beamdash: the switch in Settings turns it on or off
-  (`Beamdash.Settings.nx_enabled/0`), or `NX_MODEL=true` until switched. Nothing is sent
+  and run inside beamdash, on by default: the switch in Settings turns it
+  off or on again (`Beamdash.Settings.nx_enabled/0`). `NX_MODEL=false` (or
+  `nx: false` in `config/config.exs`) turns it off entirely, whatever was
+  switched: it is neither offered nor shown in Settings. Nothing is sent
   anywhere and answers are instant; it answers the panels' fixed
   questions, not "Ask beamdash".
 
@@ -119,11 +121,27 @@ defmodule Beamdash.Jev do
 
   def configured?(:nx), do: nx_on?() and Beamdash.Insights.Model.available?()
 
-  # the Settings switch, else NX_MODEL
+  @doc "Whether `NX_MODEL=false` (or `nx: false` in the config) turned the local model off."
+  def nx_disabled_in_config?, do: config()[:nx] in [false, "false", "0", "no", "off"]
+
+  # off in the config wins; else the Settings switch; else on
   defp nx_on? do
-    case Beamdash.Settings.nx_enabled() do
-      nil -> config()[:nx] in [true, "true", "1"]
-      enabled -> enabled
+    cond do
+      nx_disabled_in_config?() -> false
+      is_boolean(Beamdash.Settings.nx_enabled()) -> Beamdash.Settings.nx_enabled()
+      true -> true
+    end
+  end
+
+  @doc """
+  The backend that answers "Ask beamdash": the one in use, or when that is
+  the local model (which cannot), the first of Jev and Kev configured.
+  `nil` when none can, and Ask is then hidden.
+  """
+  def ask_backend do
+    case backend() do
+      :nx -> Enum.find([:jev, :kev], &configured?/1)
+      backend -> if configured?(backend), do: backend
     end
   end
 
@@ -219,9 +237,6 @@ defmodule Beamdash.Jev do
       not enabled_in_config?() ->
         {:error, "Jev is disabled in the configuration."}
 
-      not Beamdash.Settings.jev_enabled?() ->
-        {:error, "#{name(backend)} is off in Settings."}
-
       backend == :jev and not present?(key) ->
         {:error, "Set TYPESAFE_API_KEY and restart beamdash to use Jev."}
 
@@ -229,7 +244,15 @@ defmodule Beamdash.Jev do
         {:error, "Set KEV_URL and restart beamdash to use Kev."}
 
       backend == :nx and not configured?(:nx) ->
-        {:error, "Turn on the local Nx model in Settings to use it."}
+        {:error,
+         if(nx_disabled_in_config?(),
+           do: "The local Nx model is turned off (NX_MODEL=false).",
+           else: "Turn on the local Nx model in Settings to use it."
+         )}
+
+      # set up but switched off: said after what is missing from the setup
+      not Beamdash.Settings.jev_enabled?() ->
+        {:error, "#{name(backend)} is off in Settings."}
 
       backend == :nx ->
         with {:ok, decoded} <- Beamdash.Insights.Model.answer(state, questions),

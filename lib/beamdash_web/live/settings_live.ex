@@ -355,7 +355,7 @@ defmodule BeamdashWeb.SettingsLive do
         syntax={@syntax}
         conn={assigns[:conn]}
         ask={assigns[:ask]}
-        ask_on={BeamdashWeb.JevSection.show?(assigns[:jev_enabled])}
+        ask_on={BeamdashWeb.JevSection.ask_on?(assigns[:jev_enabled])}
       />
       <h2>Settings</h2>
       <section class="mem-panel settings-card" aria-labelledby="conn-setting-heading">
@@ -567,13 +567,17 @@ defmodule BeamdashWeb.SettingsLive do
         aria-labelledby="jev-setting-heading"
       >
         <h3 id="jev-setting-heading">Suggestions model</h3>
-        <div :if={Beamdash.Insights.Model.available?()} class="settings-toggle-row">
+        <div
+          :if={Beamdash.Insights.Model.available?() and not Jev.nx_disabled_in_config?()}
+          class="settings-toggle-row"
+        >
           <div>
             <strong id="nx-setting-label">Use beamdash's local model (Nx)</strong>
             <p id="nx-setting-help" class="muted small">
               A small model trained with Nx that runs inside beamdash: no API key, nothing sent
-              anywhere, instant answers. It answers the panels' questions, not Ask. Saved for
-              the next start.
+              anywhere, instant answers. It answers the panels' questions, not Ask. On by
+              default; switching it is saved for the next start. NX_MODEL=false turns it off
+              entirely.
             </p>
           </div>
           <button
@@ -588,8 +592,9 @@ defmodule BeamdashWeb.SettingsLive do
           <span class="small" role="status">{if @nx_on, do: "On", else: "Off"}</span>
         </div>
         <p :if={@models == []} class="muted small">
-          No model configured: turn on the local model above, or set TYPESAFE_API_KEY (Jev) or
-          KEV_URL (Kev) in the environment and restart beamdash.
+          No model configured: {if Jev.nx_disabled_in_config?(),
+            do: "the local model is off (NX_MODEL=false); ",
+            else: "turn on the local model above, or "}set TYPESAFE_API_KEY (Jev) or KEV_URL (Kev) in the environment and restart beamdash.
         </p>
         <div :if={@models != []}>
           <div :if={length(@models) > 1} class="settings-toggle-row">

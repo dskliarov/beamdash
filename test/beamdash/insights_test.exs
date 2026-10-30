@@ -276,21 +276,42 @@ defmodule Beamdash.InsightsTest do
       assert flagged == triage.expect
     end
 
-    test "Ask is declined, and the backend needs to be turned on" do
-      Fixture.put_jev_config(enabled: true, nx: true)
+    test "Ask goes to Jev or Kev, never the local model, and is hidden without them" do
+      Fixture.put_jev_config(enabled: true, api_key: nil, kev_url: nil, kev_port: nil, nx: true)
       Settings.put_jev_enabled(true)
+      Settings.put_nx_enabled(nil)
+      Settings.put_decision_backend(nil)
 
-      assert {:error, msg} = Beamdash.AskAdvisor.ask("who leaks binaries?", nil, backend: :nx)
+      on_exit(fn ->
+        Settings.put_nx_enabled(nil)
+        Settings.put_decision_backend(nil)
+      end)
+
+      # only the local model: Ask is hidden, and declined if asked
+      assert Jev.backend() == :nx
+      assert Jev.ask_backend() == nil
+      assert BeamdashWeb.JevSection.show?(true)
+      refute BeamdashWeb.JevSection.ask_on?(true)
+      assert {:error, msg} = Beamdash.AskAdvisor.ask("who leaks binaries?", nil)
       assert msg =~ "Ask needs Jev or Kev"
 
-      Fixture.put_jev_config(nx: nil)
-      refute Jev.configured?(:nx)
-      [s | _] = Scenarios.process()
-      assert {:error, msg} = ProcessAdvisor.analyze(s.evidence, backend: :nx)
-      assert msg =~ "Turn on the local Nx model in Settings"
+      # Nx chosen, Jev configured too: Ask goes to Jev
+      Fixture.put_jev_config(api_key: "k")
+      :ok = Settings.put_decision_backend(:nx)
+      assert Jev.backend() == :nx
+      assert Jev.ask_backend() == :jev
+      assert BeamdashWeb.JevSection.ask_on?(true)
+
+      request = fn :post, {url, _, _, _}, _, _ ->
+        send(self(), {:asked, List.to_string(url)})
+        {:ok, {{~c"HTTP/1.1", 500, ~c"E"}, [], ""}}
+      end
+
+      assert {:error, _} = Beamdash.AskAdvisor.ask("who leaks binaries?", nil, request: request)
+      assert_received {:asked, "https://api.typesafe.ai/v1/systemone"}
     end
 
-    test "the Settings switch turns the local model on and off, saved, over NX_MODEL" do
+    test "on by default; switched off and on in Settings, saved; NX_MODEL=false turns it off" do
       Fixture.put_jev_config(enabled: true, api_key: nil, kev_url: nil, kev_port: nil, nx: nil)
       Settings.put_nx_enabled(nil)
       Settings.put_decision_backend(nil)
@@ -300,40 +321,54 @@ defmodule Beamdash.InsightsTest do
         Settings.put_decision_backend(nil)
       end)
 
-      refute Jev.available?()
+      # NX_MODEL unset, never switched: on, and the only model
+      assert Jev.configured?(:nx)
+      assert Jev.available?() and Jev.backend() == :nx
 
-      # with no model at all, the card still shows, with the switch
       view = BeamdashWeb.SettingsLive
       {:ok, socket} = view.mount(%{}, %{}, %Phoenix.LiveView.Socket{})
+      assert socket.assigns.nx_on
       html = render_settings(socket)
       assert html =~ ~s(id="nx-setting-label")
-      assert html =~ "No model configured"
-      refute html =~ ~s(id="jev-setting-label")
+      assert html =~ "Enable Nx analysis"
 
+      # switched off: no model left, the card says how to get one
       Phoenix.PubSub.subscribe(Beamdash.PubSub, "settings")
       {:noreply, socket} = view.handle_event("toggle_nx", %{}, socket)
-      assert socket.assigns.nx_on
-      assert socket.assigns.models == [:nx]
-      assert_receive {:beamdash_backend, :nx}
-      assert_receive {:beamdash_jev, true}
-      assert Jev.available?() and Jev.backend() == :nx
-      assert render_settings(socket) =~ "Enable Nx analysis"
+      refute socket.assigns.nx_on
+      assert socket.assigns.models == []
+      assert_receive {:beamdash_jev, _}
+      refute Jev.available?()
+      html = render_settings(socket)
+      assert html =~ "No model configured"
+      assert html =~ "turn on the local model above"
+      refute html =~ ~s(id="jev-setting-label")
 
       # saved for the next start
-      Settings.reload()
-      assert Settings.nx_enabled() == true
-
-      # off in Settings wins over NX_MODEL=true, and is saved too
-      Fixture.put_jev_config(nx: "true")
-      {:noreply, socket} = view.handle_event("toggle_nx", %{}, socket)
-      refute socket.assigns.nx_on
       Settings.reload()
       assert Settings.nx_enabled() == false
       refute Jev.configured?(:nx)
 
-      # never switched: NX_MODEL decides
-      Settings.put_nx_enabled(nil)
-      assert Jev.configured?(:nx)
+      # and back on
+      {:noreply, socket} = view.handle_event("toggle_nx", %{}, socket)
+      assert socket.assigns.nx_on and socket.assigns.models == [:nx]
+      assert_receive {:beamdash_backend, :nx}
+      Settings.reload()
+      assert Settings.nx_enabled() == true
+
+      # NX_MODEL=false: off whatever was switched, no switch in Settings
+      Fixture.put_jev_config(nx: false)
+      assert Jev.nx_disabled_in_config?()
+      refute Jev.configured?(:nx)
+      refute Jev.available?()
+      {:ok, socket} = view.mount(%{}, %{}, %Phoenix.LiveView.Socket{})
+      html = render_settings(socket)
+      refute html =~ ~s(id="nx-setting-label")
+      assert html =~ "NX_MODEL=false"
+
+      [s | _] = Scenarios.process()
+      assert {:error, msg} = ProcessAdvisor.analyze(s.evidence, backend: :nx)
+      assert msg =~ "turned off (NX_MODEL=false)"
     end
 
     test "Nx is a backend like the others: named, chosen and nothing sent" do

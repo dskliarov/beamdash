@@ -799,7 +799,7 @@ defmodule BeamdashWeb.LogsLive do
         syntax={assigns[:syntax] || :erlang}
         conn={assigns[:conn]}
         ask={assigns[:ask]}
-        ask_on={BeamdashWeb.JevSection.show?(assigns[:jev_enabled])}
+        ask_on={BeamdashWeb.JevSection.ask_on?(assigns[:jev_enabled])}
       />
 
       <p :if={@status != :connected and @total == 0 and @view == :live} class="help">

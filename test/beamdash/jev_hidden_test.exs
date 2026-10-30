@@ -136,7 +136,9 @@ defmodule Beamdash.JevHiddenTest do
   end
 
   test "runtime.exs only overrides Jev settings that the environment sets" do
-    vars = ~w(JEV_ENABLED TYPESAFE_API_KEY TYPESAFE_MODEL TYPESAFE_CACERTFILE TYPESAFE_ENDPOINT)
+    vars =
+      ~w(JEV_ENABLED TYPESAFE_API_KEY TYPESAFE_MODEL TYPESAFE_CACERTFILE TYPESAFE_ENDPOINT NX_MODEL)
+
     saved = Map.new(vars, &{&1, System.get_env(&1)})
 
     on_exit(fn ->
@@ -158,10 +160,17 @@ defmodule Beamdash.JevHiddenTest do
     assert jev.() == [enabled: false]
     System.put_env("JEV_ENABLED", "true")
     assert jev.() == [enabled: true]
+    System.delete_env("JEV_ENABLED")
 
-    assert Config.Reader.read!("config/config.exs", env: :dev)[:beamdash][Beamdash.Jev][
-             :enabled
-           ]
+    # the local model: on in config.exs, NX_MODEL=false turns it off
+    System.put_env("NX_MODEL", " No ")
+    assert jev.() == [nx: false]
+    System.put_env("NX_MODEL", "true")
+    assert jev.() == [nx: true]
+
+    dev = Config.Reader.read!("config/config.exs", env: :dev)[:beamdash][Beamdash.Jev]
+    assert dev[:enabled]
+    assert dev[:nx] == true
   end
 
   test "the process panel has no Jev section" do

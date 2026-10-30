@@ -121,6 +121,9 @@ defmodule Beamdash.AskAdvisor do
   def ask(text, module, opts \\ []) do
     state = %{question: String.slice(text, 0, 300), names_a_loaded_module: module != nil}
 
+    # the local model cannot answer free text: Jev or Kev does, when set up
+    opts = Keyword.put_new_lazy(opts, :backend, fn -> Jev.ask_backend() || Jev.backend() end)
+
     with {:ok, a} <- Jev.ask(state, @question, @choices, opts) do
       options =
         a.ranking

@@ -268,7 +268,7 @@ defmodule BeamdashWeb.ConsoleLive do
         syntax={@syntax}
         conn={assigns[:conn]}
         ask={assigns[:ask]}
-        ask_on={BeamdashWeb.JevSection.show?(assigns[:jev_enabled])}
+        ask_on={BeamdashWeb.JevSection.ask_on?(assigns[:jev_enabled])}
       />
       <h1>Remote console</h1>
       <nav class="seg" aria-label="Console mode">

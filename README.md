@@ -293,7 +293,9 @@ to the browser or the inspected node.
 environment, disables Jev entirely: on every tab, every Jev element (the Ask
 box, triage, the process, GC, memory and sequence sections, and the Settings
 switch) is hidden and no request is ever made. The environment variable wins
-when both are set. Without `TYPESAFE_API_KEY` the UI is hidden the same way.
+when both are set. Without `TYPESAFE_API_KEY`, the panels are answered by
+beamdash's local Nx model (see [Insights](#insights-nx)), which is on by
+default; with `NX_MODEL=false` as well, the UI is hidden the same way.
 Turning the Settings switch off hides the same elements on every tab; only
 the switch itself stays, so Jev can be turned back on.
 
@@ -426,11 +428,19 @@ nothing new.
   The seq pattern check also sends Jev these two numbers, never the
   processes themselves.
 - **Local suggestion model**: a third backend next to Jev and Kev, needing
-  no API key. Turn it on with **Settings → Suggestions model → Use
-  beamdash's local model (Nx)**. The switch applies to every open tab at
-  once and is saved for the next start. `NX_MODEL=true` turns it on until
-  it is switched in Settings. With Jev or Kev also configured, the same
-  card chooses between them.
+  no API key, and **on by default**. Without Jev or Kev, the suggestion
+  panels use it out of the box.
+  - **Settings → Suggestions model → Use beamdash's local model (Nx)**
+    switches it off or back on, for every open tab at once, and is saved
+    for the next start.
+  - `NX_MODEL=false` (or `0`, `no`, `off`; or `nx: false` under
+    `config :beamdash, Beamdash.Jev`) turns it off entirely, like
+    `JEV_ENABLED=false` does for everything: it is neither offered nor
+    shown in Settings, whatever was saved.
+  - With Jev or Kev also configured, Jev stays the default, and the same
+    card chooses between them.
+  - **Ask beamdash** always goes to Jev or Kev, even with Nx chosen, and is
+    hidden when neither is configured.
   It is a logistic regression per question (process, GC, node memory, seq
   pattern, triage), trained on generated examples and shipped in
   `priv/nx/models.etf` (7 KB). Answers are instant (well under 1 ms) and

@@ -13,6 +13,12 @@ defmodule BeamdashWeb.JevSection do
   """
   def show?(enabled), do: enabled == true and Beamdash.Jev.available?()
 
+  @doc """
+  Whether the Ask box shows: as `show?/1`, and a model that answers free
+  text (Jev or Kev, not the local model) is configured.
+  """
+  def ask_on?(enabled), do: show?(enabled) and Beamdash.Jev.ask_backend() != nil
+
   attr :id, :string, required: true
   attr :event, :string, required: true, doc: "phx-click event that starts an analysis"
   attr :title, :string, required: true
