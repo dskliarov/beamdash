@@ -7,6 +7,7 @@ defmodule BeamdashWeb.HomeLive do
 
   alias Beamdash.{
     Apps,
+    CPU,
     Format,
     ProcessAdvisor,
     ProcessStats,
@@ -24,7 +25,17 @@ defmodule BeamdashWeb.HomeLive do
   @message_limit 100
   @message_limit_max 10_000
   @max_rows 500
+  @cpu_refresh_ms 1_750
+  @top_limits [10, 25, 50, 100, 500]
+  @top_metrics [
+    {"cpu", "CPU %", :cpu},
+    {"rate", "CPU activity (reds/s)", :reds_per_sec},
+    {"reductions", "Reductions", :reductions},
+    {"memory", "Memory", :memory},
+    {"mq", "Message queue", :message_queue_len}
+  ]
   @sort_columns %{
+    "cpu" => :cpu,
     "name" => :name,
     "memory" => :memory,
     "reductions" => :reductions,
@@ -57,8 +68,15 @@ defmodule BeamdashWeb.HomeLive do
         procs: [],
         sort_by: :reductions,
         sort_dir: :desc,
+        row_limit: @max_rows,
         filter: "",
         rates: %{},
+        cpu_values: %{},
+        cpu_request: nil,
+        cpu_enabled: false,
+        cpu_generation: nil,
+        cpu_error: nil,
+        cpu_sampled: false,
         prev_sample: %{},
         prev_at: nil,
         selected: nil,
@@ -153,6 +171,52 @@ defmodule BeamdashWeb.HomeLive do
       end
 
     {:noreply, assign(socket, sort_by: col, sort_dir: dir)}
+  end
+
+  def handle_event("top_metric", %{"metric" => metric}, socket) do
+    case Enum.find(@top_metrics, fn {key, _, _} -> key == metric end) do
+      {_, _, column} -> {:noreply, assign(socket, sort_by: column, sort_dir: :desc)}
+      nil -> {:noreply, socket}
+    end
+  end
+
+  def handle_event("top_limit", %{"limit" => limit}, socket) when is_binary(limit) do
+    case Integer.parse(limit) do
+      {count, ""} when count in @top_limits -> {:noreply, assign(socket, row_limit: count)}
+      _ -> {:noreply, socket}
+    end
+  end
+
+  def handle_event("top_limit", _, socket), do: {:noreply, socket}
+
+  def handle_event(
+        "start_cpu",
+        _,
+        %{assigns: %{status: :connected, node: node, cpu_request: nil}} = socket
+      ) do
+    {:noreply,
+     socket
+     |> assign(cpu_enabled: true, cpu_generation: make_ref(), cpu_error: nil)
+     |> start_cpu_sample(node)}
+  end
+
+  def handle_event("start_cpu", _, socket), do: {:noreply, socket}
+
+  def handle_event("stop_cpu", _, socket) do
+    socket =
+      if socket.assigns.cpu_request,
+        do: cancel_async(socket, socket.assigns.cpu_request),
+        else: socket
+
+    {:noreply,
+     assign(socket,
+       cpu_enabled: false,
+       cpu_generation: nil,
+       cpu_request: nil,
+       cpu_values: %{},
+       cpu_sampled: false,
+       cpu_error: nil
+     )}
   end
 
   # the selected process's module: its Source button opens it in a tab (see
@@ -342,6 +406,18 @@ defmodule BeamdashWeb.HomeLive do
 
   def handle_event("analyze_process", _, socket), do: {:noreply, socket}
 
+  defp start_cpu_sample(socket, node) do
+    request = {:cpu_sample, make_ref()}
+
+    socket
+    |> assign(cpu_request: request)
+    |> start_async(request, fn ->
+      if Target.status() == %{status: :connected, node: node},
+        do: CPU.sample(node),
+        else: {:error, :not_connected}
+    end)
+  end
+
   defp sys_error(:timeout, false),
     do: "The process did not answer within 5 s (busy or blocked), so tracing was not switched on."
 
@@ -352,6 +428,65 @@ defmodule BeamdashWeb.HomeLive do
   defp sys_error(reason, _), do: "sys:trace failed: #{Format.error(reason)}"
 
   @impl true
+  def handle_async(
+        {:cpu_sample, _} = request,
+        result,
+        %{assigns: %{cpu_request: request}} = socket
+      ) do
+    socket = assign(socket, cpu_request: nil)
+
+    case result do
+      {:ok, {:ok, values}} when is_map(values) ->
+        if socket.assigns.cpu_enabled do
+          Process.send_after(self(), {:cpu_tick, socket.assigns.cpu_generation}, @cpu_refresh_ms)
+        end
+
+        {:noreply, assign(socket, cpu_values: values, cpu_sampled: true, cpu_error: nil)}
+
+      {:ok, {:error, :unsupported_otp}} ->
+        {:noreply,
+         assign(socket,
+           cpu_enabled: false,
+           cpu_generation: nil,
+           cpu_values: %{},
+           cpu_sampled: false,
+           cpu_error: "CPU sampling requires OTP 27 or newer on the target."
+         )}
+
+      {:ok, {:error, :overloaded}} ->
+        {:noreply,
+         assign(socket,
+           cpu_enabled: false,
+           cpu_generation: nil,
+           cpu_values: %{},
+           cpu_sampled: false,
+           cpu_error: "CPU sample stopped because the target produced too many trace events."
+         )}
+
+      {:ok, {:error, :busy}} ->
+        {:noreply,
+         assign(socket,
+           cpu_enabled: false,
+           cpu_generation: nil,
+           cpu_values: %{},
+           cpu_sampled: false,
+           cpu_error: "A CPU sample is already running on the target."
+         )}
+
+      _ ->
+        {:noreply,
+         assign(socket,
+           cpu_enabled: false,
+           cpu_generation: nil,
+           cpu_values: %{},
+           cpu_sampled: false,
+           cpu_error: "CPU sampling failed; try again."
+         )}
+    end
+  end
+
+  def handle_async({:cpu_sample, _}, _, socket), do: {:noreply, socket}
+
   def handle_async({:triage, _} = request, result, socket) do
     if request == socket.assigns.triage.request do
       socket = put_triage(socket, request: nil)
@@ -467,6 +602,23 @@ defmodule BeamdashWeb.HomeLive do
   ## Messages
 
   @impl true
+  def handle_info(
+        {:cpu_tick, generation},
+        %{
+          assigns: %{
+            cpu_enabled: true,
+            cpu_generation: generation,
+            cpu_request: nil,
+            status: :connected,
+            node: node
+          }
+        } = socket
+      ) do
+    {:noreply, start_cpu_sample(socket, node)}
+  end
+
+  def handle_info({:cpu_tick, _}, socket), do: {:noreply, socket}
+
   def handle_info(:tick, socket) do
     Process.send_after(self(), :tick, @refresh_ms)
     {:noreply, if(socket.assigns.status == :connected, do: refresh(socket), else: socket)}
@@ -522,6 +674,14 @@ defmodule BeamdashWeb.HomeLive do
      |> reset_process_advisor()
      |> reset_triage()
      |> SourceTabs.init()
+     |> assign(
+       cpu_values: %{},
+       cpu_request: nil,
+       cpu_error: nil,
+       cpu_sampled: false,
+       cpu_enabled: false,
+       cpu_generation: nil
+     )
      |> assign(triage_history: nil, prev_sample: %{}, prev_at: nil, rates: %{}, module_info: nil)
      |> assign(
        status: :connected,
@@ -540,6 +700,14 @@ defmodule BeamdashWeb.HomeLive do
      |> reset_process_advisor()
      |> reset_triage()
      |> SourceTabs.init()
+     |> assign(
+       cpu_values: %{},
+       cpu_request: nil,
+       cpu_error: nil,
+       cpu_sampled: false,
+       cpu_enabled: false,
+       cpu_generation: nil
+     )
      |> assign(triage_history: nil, prev_sample: %{}, prev_at: nil, rates: %{}, module_info: nil)
      |> assign(
        selected: nil,
@@ -559,6 +727,14 @@ defmodule BeamdashWeb.HomeLive do
      |> reset_process_advisor()
      |> reset_triage()
      |> SourceTabs.init()
+     |> assign(
+       cpu_values: %{},
+       cpu_request: nil,
+       cpu_error: nil,
+       cpu_sampled: false,
+       cpu_enabled: false,
+       cpu_generation: nil
+     )
      |> assign(triage_history: nil, prev_sample: %{}, prev_at: nil, rates: %{}, module_info: nil)
      |> assign(
        status: :disconnected,
@@ -617,7 +793,13 @@ defmodule BeamdashWeb.HomeLive do
         do: Enum.filter(matching, &flag(assigns.triage, &1.pid)),
         else: matching
 
-    assigns = assign(assigns, rows: sort_rows(matching, assigns), match_count: length(matching))
+    assigns =
+      assign(assigns,
+        rows: sort_rows(matching, assigns),
+        match_count: length(matching),
+        top_metrics: @top_metrics,
+        top_limits: @top_limits
+      )
 
     dock_panels =
       dock_panels(assigns.procs, assigns.sys_traced, assigns.dock_extra, assigns.syntax)
@@ -666,6 +848,54 @@ defmodule BeamdashWeb.HomeLive do
 
         <div :if={@status == :connected} class={["proc-layout", @selected && "with-panel"]}>
           <section class="proc-table">
+            <div class="top-processes">
+              <span>Top processes by</span>
+              <div class="seg" role="group" aria-label="Rank processes by">
+                <button
+                  :for={{key, label, column} <- @top_metrics}
+                  type="button"
+                  class={["seg-btn", (@sort_by == column and @sort_dir == :desc) && "active"]}
+                  aria-pressed={to_string(@sort_by == column and @sort_dir == :desc)}
+                  phx-click="top_metric"
+                  phx-value-metric={key}
+                >{label}</button>
+              </div>
+              <form phx-change="top_limit">
+                <label>
+                  Show
+                  <select name="limit">
+                    <option :for={count <- @top_limits} value={count} selected={@row_limit == count}>
+                      {count}
+                    </option>
+                  </select>
+                </label>
+              </form>
+              <button
+                type="button"
+                class="secondary small-btn"
+                phx-click={if @cpu_enabled, do: "stop_cpu", else: "start_cpu"}
+              >
+                {if @cpu_enabled, do: "Stop CPU sampling", else: "Start CPU sampling"}
+              </button>
+            </div>
+            <p class="muted small">
+              CPU % estimates time scheduled in (100% is one scheduler). A 250 ms sample refreshes about every 2 seconds,
+              adds tracing overhead, and requires OTP 27 or newer. {if @cpu_enabled and
+                                                                         not @cpu_sampled,
+                                                                       do:
+                                                                         "Collecting the first sample…",
+                                                                       else:
+                                                                         if(@cpu_enabled,
+                                                                           do: "Sampling is active.",
+                                                                           else:
+                                                                             "Start CPU sampling to measure."
+                                                                         )}
+            </p>
+            <p :if={@cpu_error} class="error" role="alert">{@cpu_error}</p>
+            <p :if={@sort_by == :reds_per_sec} class="muted small">
+              Reductions per second indicate BEAM activity; they are not per-process CPU time or CPU percentage.
+              New processes need another sample before their rate is available.
+            </p>
             <form phx-change="filter" phx-submit="filter" class="filter">
               <input
                 name="q"
@@ -743,6 +973,9 @@ defmodule BeamdashWeb.HomeLive do
                   <th class="num sortable" phx-click="sort" phx-value-col="memory">
                     Memory{arrow(@sort_by, @sort_dir, :memory)}
                   </th>
+                  <th class="num sortable" phx-click="sort" phx-value-col="cpu">
+                    CPU %{arrow(@sort_by, @sort_dir, :cpu)}
+                  </th>
                   <th class="num sortable" phx-click="sort" phx-value-col="reductions">
                     Reductions{arrow(@sort_by, @sort_dir, :reductions)}
                   </th>
@@ -791,6 +1024,7 @@ defmodule BeamdashWeb.HomeLive do
                   <td>{p.status}</td>
                   <td class="num">{Format.number(p.message_queue_len)}</td>
                   <td class="num">{Format.bytes(p.memory)}</td>
+                  <td class="num">{cpu_text(@cpu_values[p.pid])}</td>
                   <td class="num">{Format.number(p.reductions)}</td>
                   <td class="num">{Format.number(@rates[p.pid])}</td>
                 </tr>
@@ -950,17 +1184,27 @@ defmodule BeamdashWeb.HomeLive do
     end)
   end
 
-  defp sort_rows(procs, %{sort_by: :name, sort_dir: dir}) do
-    procs |> Enum.sort_by(&String.downcase(Format.label(&1)), dir) |> Enum.take(@max_rows)
+  defp sort_rows(procs, %{sort_by: :name, sort_dir: dir, row_limit: limit}) do
+    procs |> Enum.sort_by(&String.downcase(Format.label(&1)), dir) |> Enum.take(limit)
   end
 
-  defp sort_rows(procs, %{sort_by: :reds_per_sec, sort_dir: dir, rates: rates}) do
-    procs |> Enum.sort_by(&(rates[&1.pid] || -1), dir) |> Enum.take(@max_rows)
+  defp sort_rows(procs, %{sort_by: :reds_per_sec, sort_dir: dir, rates: rates, row_limit: limit}) do
+    procs |> Enum.sort_by(&(rates[&1.pid] || -1), dir) |> Enum.take(limit)
   end
 
-  defp sort_rows(procs, %{sort_by: col, sort_dir: dir}) do
-    procs |> Enum.sort_by(&Map.get(&1, col), dir) |> Enum.take(@max_rows)
+  defp sort_rows(procs, %{sort_by: :cpu, sort_dir: dir, cpu_values: values, row_limit: limit}) do
+    {known, missing} = Enum.split_with(procs, &is_number(values[&1.pid]))
+    (Enum.sort_by(known, &values[&1.pid], dir) ++ missing) |> Enum.take(limit)
   end
+
+  defp sort_rows(procs, %{sort_by: col, sort_dir: dir, row_limit: limit}) do
+    procs |> Enum.sort_by(&Map.get(&1, col), dir) |> Enum.take(limit)
+  end
+
+  defp cpu_text(value) when is_number(value),
+    do: :erlang.float_to_binary(value / 1, decimals: 1) <> "%"
+
+  defp cpu_text(_), do: "—"
 
   attr :triage, :map, required: true
   attr :readiness, :any, required: true

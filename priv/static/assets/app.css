@@ -104,6 +104,10 @@ button {
 
 button.secondary { background: transparent; color: var(--accent); }
 
+.top-processes { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 12px; margin: 0 0 10px; }
+.top-processes .seg { flex-wrap: wrap; }
+.top-processes form { margin: 0; }
+
 .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--ok); }
 
 .muted { color: var(--muted); }
