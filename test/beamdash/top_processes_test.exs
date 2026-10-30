@@ -1,0 +1,155 @@
+defmodule Beamdash.TopProcessesTest do
+  use ExUnit.Case, async: true
+
+  alias BeamdashWeb.HomeLive
+
+  test "CPU sampling repeats until stopped and clears the displayed sample" do
+    socket = %Phoenix.LiveView.Socket{
+      private: %{lifecycle: %Phoenix.LiveView.Lifecycle{}, live_temp: %{}}
+    }
+
+    {:ok, socket} = HomeLive.mount(%{}, %{}, socket)
+    request = {:cpu_sample, make_ref()}
+    generation = make_ref()
+
+    socket =
+      Phoenix.Component.assign(socket,
+        status: :connected,
+        node: :target,
+        cpu_enabled: true,
+        cpu_generation: generation,
+        cpu_request: request
+      )
+
+    {:noreply, socket} = HomeLive.handle_async(request, {:ok, {:ok, %{self() => 42.0}}}, socket)
+    assert socket.assigns.cpu_values[self()] == 42.0
+    assert_receive {:cpu_tick, ^generation}, 2_500
+    {:noreply, socket} = HomeLive.handle_event("stop_cpu", %{}, socket)
+    refute socket.assigns.cpu_enabled
+    assert socket.assigns.cpu_values == %{}
+    {:noreply, unchanged} = HomeLive.handle_info({:cpu_tick, generation}, socket)
+    assert unchanged.assigns.cpu_request == nil
+  end
+
+  test "ignores CPU results after the target changes" do
+    socket = %Phoenix.LiveView.Socket{
+      private: %{lifecycle: %Phoenix.LiveView.Lifecycle{}, live_temp: %{}}
+    }
+
+    {:ok, socket} = HomeLive.mount(%{}, %{}, socket)
+    request = {:cpu_sample, make_ref()}
+
+    socket =
+      Phoenix.Component.assign(socket, status: :connected, node: :old, cpu_request: request)
+
+    {:noreply, socket} =
+      HomeLive.handle_info({:beamdash_target, {:disconnected, :nodedown}}, socket)
+
+    {:noreply, socket} = HomeLive.handle_async(request, {:ok, {:ok, %{self() => 100.0}}}, socket)
+    assert socket.assigns.cpu_values == %{}
+    refute socket.assigns.cpu_sampled
+  end
+
+  test "sorts measured CPU percentages and leaves missing samples last" do
+    socket = %Phoenix.LiveView.Socket{
+      private: %{lifecycle: %Phoenix.LiveView.Lifecycle{}, live_temp: %{}}
+    }
+
+    {:ok, socket} = HomeLive.mount(%{}, %{}, socket)
+    pids = for n <- 20..22, do: :c.pid(0, n, 0)
+
+    procs =
+      for {pid, n} <- Enum.with_index(pids) do
+        %{
+          pid: pid,
+          registered_name: Enum.at([:cpu_first, :cpu_second, :cpu_unknown], n),
+          initial_call: nil,
+          current_function: nil,
+          status: :waiting,
+          message_queue_len: 0,
+          memory: 1000,
+          reductions: 100
+        }
+      end
+
+    socket =
+      Phoenix.Component.assign(socket,
+        syntax: :erlang,
+        status: :connected,
+        node: :sample_node,
+        procs: procs,
+        cpu_values: %{Enum.at(pids, 0) => 20.0, Enum.at(pids, 1) => 70.0}
+      )
+
+    {:noreply, socket} = HomeLive.handle_event("top_metric", %{"metric" => "cpu"}, socket)
+    html = socket.assigns |> HomeLive.render() |> Phoenix.LiveViewTest.rendered_to_string()
+    assert html =~ "CPU %"
+    assert html =~ "70.0%"
+    assert elem(:binary.match(html, "cpu_second"), 0) < elem(:binary.match(html, "cpu_first"), 0)
+    assert elem(:binary.match(html, "cpu_first"), 0) < elem(:binary.match(html, "cpu_unknown"), 0)
+
+    {:noreply, socket} = HomeLive.handle_event("sort", %{"col" => "cpu"}, socket)
+    html = socket.assigns |> HomeLive.render() |> Phoenix.LiveViewTest.rendered_to_string()
+    assert elem(:binary.match(html, "cpu_first"), 0) < elem(:binary.match(html, "cpu_second"), 0)
+
+    assert elem(:binary.match(html, "cpu_second"), 0) <
+             elem(:binary.match(html, "cpu_unknown"), 0)
+  end
+
+  test "ranks processes by the chosen metric and limits the results" do
+    socket = %Phoenix.LiveView.Socket{
+      private: %{lifecycle: %Phoenix.LiveView.Lifecycle{}, live_temp: %{}}
+    }
+
+    {:ok, socket} = HomeLive.mount(%{}, %{}, socket)
+
+    procs =
+      for n <- 1..12 do
+        %{
+          pid: :c.pid(0, n, 0),
+          registered_name: String.to_atom("ranked_proc_#{n}"),
+          initial_call: nil,
+          current_function: nil,
+          status: :waiting,
+          message_queue_len: n,
+          memory: n * 1_000,
+          reductions: (13 - n) * 100
+        }
+      end
+
+    rates = Map.new(Enum.with_index(procs, 1), fn {p, n} -> {p.pid, n * 10} end)
+
+    socket =
+      Phoenix.Component.assign(socket,
+        syntax: :erlang,
+        status: :connected,
+        procs: procs,
+        rates: rates
+      )
+
+    {:noreply, socket} = HomeLive.handle_event("top_metric", %{"metric" => "rate"}, socket)
+    {:noreply, socket} = HomeLive.handle_event("top_limit", %{"limit" => "10"}, socket)
+    html = socket.assigns |> HomeLive.render() |> Phoenix.LiveViewTest.rendered_to_string()
+
+    assert html =~ "ranked_proc_12"
+    refute html =~ ~r/ranked_proc_1\b/
+    assert html =~ "showing first 10"
+    assert socket.assigns.sort_by == :reds_per_sec
+    assert socket.assigns.sort_dir == :desc
+
+    {:noreply, socket} = HomeLive.handle_event("top_metric", %{"metric" => "reductions"}, socket)
+    html = socket.assigns |> HomeLive.render() |> Phoenix.LiveViewTest.rendered_to_string()
+    assert html =~ ~r/ranked_proc_1\b/
+    refute html =~ ~r/ranked_proc_12\b/
+
+    for metric <- ["memory", "mq"] do
+      {:noreply, ranked} = HomeLive.handle_event("top_metric", %{"metric" => metric}, socket)
+      html = ranked.assigns |> HomeLive.render() |> Phoenix.LiveViewTest.rendered_to_string()
+      assert html =~ ~r/ranked_proc_12\b/
+      refute html =~ ~r/ranked_proc_1\b/
+    end
+
+    {:noreply, same} = HomeLive.handle_event("top_limit", %{"limit" => "999999"}, socket)
+    assert same.assigns.row_limit == 10
+  end
+end
