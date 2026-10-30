@@ -32,24 +32,64 @@ measure_registered() ->
     Session = trace:session_create(beamdash_cpu, self(), []),
     try
         trace:process(Session, all, true, [running, monotonic_timestamp]),
-        Pids = erlang:processes(),
-        Existing = maps:from_list([{Pid, true} || Pid <- Pids, idle_at_boundary(Pid)]),
-        Unknown = maps:from_list([{Pid, unknown} || Pid <- Pids, not maps:is_key(Pid, Existing)]),
-        %% Observe a short lead-in so normal scheduler switches establish
-        %% which processes were already running at the sample boundary.
-        receive after 10 -> ok end,
-        Start = erlang:monotonic_time(nanosecond),
-        case collect(Session, Start, Start + ?SAMPLE_NS, #{}, Unknown, 0) of
-            {ok, Values, Missing} ->
-                Idle = maps:from_list([{Pid, 0.0} || Pid <- erlang:processes(),
-                                                    maps:is_key(Pid, Existing),
-                                                    not maps:is_key(Pid, Missing),
-                                                    idle_at_boundary(Pid)]),
-                {ok, maps:merge(Idle, Values)};
-            Error -> Error
+        Owner = self(),
+        Scanner = spawn_link(fun() ->
+            Pids = erlang:processes(),
+            Existing = maps:from_list([{Pid, true} || Pid <- Pids, idle_at_boundary(Pid)]),
+            Unknown = maps:from_list([{Pid, unknown} || Pid <- Pids, not maps:is_key(Pid, Existing)]),
+            Owner ! {cpu_boundary, self(), Existing, Unknown}
+        end),
+        try warmup(Session, Scanner, [], 0)
+        after stop_scanner(Scanner)
         end
     catch Class:Reason -> {error, {Class, Reason}}
     after trace:session_destroy(Session)
+    end.
+
+stop_scanner(Scanner) ->
+    unlink(Scanner),
+    exit(Scanner, kill).
+
+%% Drain and bound the trace mailbox while the initial process scan runs.
+%% Keep only a bounded lead-in, then replay it at the sample boundary.
+warmup(Session, Scanner, Events, Count) ->
+    {message_queue_len, Queue} = process_info(self(), message_queue_len),
+    if Count >= ?MAX_EVENTS orelse Queue >= ?MAX_QUEUE -> {error, overloaded};
+       true ->
+           receive
+               {trace_ts, _, in, _, _} = Event -> warmup(Session, Scanner, [Event | Events], Count + 1);
+               {trace_ts, _, out, _, _} = Event -> warmup(Session, Scanner, [Event | Events], Count + 1);
+               {cpu_boundary, Scanner, Existing, Unknown} ->
+                   erlang:send_after(10, self(), {cpu_start, Scanner, Existing, Unknown}),
+                   warmup(Session, Scanner, Events, Count);
+               {cpu_start, Scanner, Existing, Unknown} ->
+                   Start = erlang:monotonic_time(nanosecond),
+                   case replay(Session, Start, Start + ?SAMPLE_NS, lists:reverse(Events), #{}, Unknown, Count) of
+                       {ok, Values, Missing} ->
+                           Idle = maps:from_list([{Pid, 0.0} || Pid <- erlang:processes(),
+                                                               maps:is_key(Pid, Existing),
+                                                               not maps:is_key(Pid, Missing),
+                                                               idle_at_boundary(Pid)]),
+                           {ok, maps:merge(Idle, Values)};
+                       Error -> Error
+                   end
+           after 1000 -> {error, timeout}
+           end
+    end.
+
+replay(Session, Start, End, Events, Running, Totals, Count) ->
+    {message_queue_len, Queue} = process_info(self(), message_queue_len),
+    if Queue >= ?MAX_QUEUE -> {error, overloaded};
+       true ->
+           case Events of
+               [] -> collect(Session, Start, End, Running, Totals, Count);
+               [{trace_ts, Pid, in, _, Ts} | Rest] ->
+                   {NextRunning, NextTotals} = record_in(Pid, Ts, Start, Running, Totals),
+                   replay(Session, Start, End, Rest, NextRunning, NextTotals, Count);
+               [{trace_ts, Pid, out, _, Ts} | Rest] ->
+                   {NextRunning, NextTotals} = record_out(Pid, Ts, Start, End, Running, Totals),
+                   replay(Session, Start, End, Rest, NextRunning, NextTotals, Count)
+           end
     end.
 
 %% A process already running at a boundary may stay inside native code for

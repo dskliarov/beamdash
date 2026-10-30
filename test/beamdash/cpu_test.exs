@@ -48,6 +48,32 @@ defmodule Beamdash.CPUTest do
     end
   end
 
+  test "a burst of trace events aborts sampling and releases the trace session" do
+    if Code.ensure_loaded?(:trace) do
+      before = :trace.session_info(:all)
+      task = Task.async(fn -> :beamdash_cpu.sample() end)
+      sampler = await_sampler(100)
+      timestamp = System.monotonic_time(:nanosecond)
+      event = {:trace_ts, self(), :in, :unknown, timestamp}
+      for _ <- 1..70_000, do: send(sampler, event)
+      assert {:error, :overloaded} = Task.await(task, 3_000)
+      assert :trace.session_info(:all) == before
+    end
+  end
+
+  defp await_sampler(0), do: flunk("CPU sampler did not start")
+
+  defp await_sampler(attempts) do
+    case Process.whereis(:beamdash_cpu_sampler) do
+      nil ->
+        Process.sleep(2)
+        await_sampler(attempts - 1)
+
+      pid ->
+        pid
+    end
+  end
+
   test "an unmatched scheduling-out event marks that process as unknown" do
     {:ok, {_, [abstract_code: {:raw_abstract_v1, forms}]}} =
       :beam_lib.chunks(:code.which(:beamdash_cpu), [:abstract_code])
@@ -76,6 +102,38 @@ defmodule Beamdash.CPUTest do
     assert totals[pid] == :unknown
     {_, totals} = apply(module, :add_time, [pid, 90, 100, Map.put(running, pid, 70), totals])
     assert totals[pid] == :unknown
+  end
+
+  test "stopping an active boundary scanner does not kill its linked sampler" do
+    {:ok, {_, [abstract_code: {:raw_abstract_v1, forms}]}} =
+      :beam_lib.chunks(:code.which(:beamdash_cpu), [:abstract_code])
+
+    module = :beamdash_cpu_scanner_test
+
+    forms =
+      Enum.flat_map(forms, fn
+        {:attribute, line, :module, :beamdash_cpu} ->
+          [{:attribute, line, :module, module}, {:attribute, line, :export, [stop_scanner: 1]}]
+
+        form ->
+          [form]
+      end)
+
+    assert {:ok, ^module, binary} = :compile.forms(forms, [:binary])
+    assert {:module, ^module} = :code.load_binary(module, ~c"scanner_test", binary)
+
+    on_exit(fn ->
+      :code.purge(module)
+      :code.delete(module)
+    end)
+
+    previous = Process.flag(:trap_exit, true)
+    scanner = spawn_link(fn -> Process.sleep(:infinity) end)
+    monitor = Process.monitor(scanner)
+    apply(module, :stop_scanner, [scanner])
+    assert_receive {:DOWN, ^monitor, :process, ^scanner, :killed}
+    refute_receive {:EXIT, ^scanner, :killed}, 100
+    Process.flag(:trap_exit, previous)
   end
 
   test "samples a connected remote node" do
