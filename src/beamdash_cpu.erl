@@ -29,19 +29,30 @@ measure() ->
     end.
 
 measure_registered() ->
-    Existing = maps:from_list([{Pid, true} || Pid <- erlang:processes()]),
+    Existing = maps:from_list([{Pid, true} || Pid <- erlang:processes(), idle_at_boundary(Pid)]),
     Session = trace:session_create(beamdash_cpu, self(), []),
     try
         trace:process(Session, all, true, [running, monotonic_timestamp]),
         Start = erlang:monotonic_time(nanosecond),
         case collect(Session, Start, Start + ?SAMPLE_NS, #{}, #{}, 0) of
             {ok, Values} ->
-                Idle = maps:from_list([{Pid, 0.0} || Pid <- erlang:processes(), maps:is_key(Pid, Existing)]),
+                Idle = maps:from_list([{Pid, 0.0} || Pid <- erlang:processes(),
+                                                    maps:is_key(Pid, Existing), idle_at_boundary(Pid)]),
                 {ok, maps:merge(Idle, Values)};
             Error -> Error
         end
     catch Class:Reason -> {error, {Class, Reason}}
     after trace:session_destroy(Session)
+    end.
+
+%% A process already running at a boundary may stay inside native code for
+%% the entire window without producing an in/out pair. Its time is unknown.
+idle_at_boundary(Pid) ->
+    case process_info(Pid, status) of
+        {status, waiting} -> true;
+        {status, runnable} -> true;
+        {status, suspended} -> true;
+        _ -> false
     end.
 
 collect(Session, Start, End, Running, Totals, Count) ->

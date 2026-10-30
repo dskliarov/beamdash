@@ -63,6 +63,26 @@ defmodule Beamdash.CPUTest do
     end
   end
 
+  test "does not report an unobserved running native operation as idle" do
+    if Code.ensure_loaded?(:trace) do
+      owner = self()
+
+      pid =
+        spawn(fn ->
+          send(owner, :native_started)
+          :crypto.pbkdf2_hmac(:sha256, "secret", "salt", 10_000_000, 32)
+        end)
+
+      on_exit(fn -> Process.exit(pid, :kill) end)
+      assert_receive :native_started
+      Process.sleep(50)
+      assert Process.info(pid, :status) == {:status, :running}
+      assert {:ok, values} = Beamdash.CPU.sample(node())
+      assert Process.info(pid, :status) == {:status, :running}
+      refute Map.get(values, pid) == 0.0
+    end
+  end
+
   defp burn do
     :erlang.phash2({self(), 1})
     burn()
