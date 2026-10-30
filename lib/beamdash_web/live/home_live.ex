@@ -813,6 +813,7 @@ defmodule BeamdashWeb.HomeLive do
     ~H"""
     <main class={[
       "wrap",
+      "processes-page",
       (@status == :connected and @dock_panels != []) &&
         if(@dock_collapsed, do: "has-dock-collapsed", else: "has-dock")
     ]}>
@@ -848,107 +849,118 @@ defmodule BeamdashWeb.HomeLive do
 
         <div :if={@status == :connected} class={["proc-layout", @selected && "with-panel"]}>
           <section class="proc-table">
-            <div class="top-processes">
-              <span>Top processes by</span>
-              <div class="seg" role="group" aria-label="Rank processes by">
-                <button
-                  :for={{key, label, column} <- @top_metrics}
-                  type="button"
-                  class={["seg-btn", (@sort_by == column and @sort_dir == :desc) && "active"]}
-                  aria-pressed={to_string(@sort_by == column and @sort_dir == :desc)}
-                  phx-click="top_metric"
-                  phx-value-metric={key}
-                >{label}</button>
+            <div class="processes-heading">
+              <div>
+                <h2>Processes</h2>
+                <p>Inspect and compare processes on the connected node.</p>
               </div>
-              <form phx-change="top_limit">
-                <label>
-                  Show
-                  <select name="limit">
-                    <option :for={count <- @top_limits} value={count} selected={@row_limit == count}>
-                      {count}
-                    </option>
-                  </select>
-                </label>
-              </form>
-              <button
-                type="button"
-                class="secondary small-btn"
-                phx-click={if @cpu_enabled, do: "stop_cpu", else: "start_cpu"}
-              >
-                {if @cpu_enabled, do: "Stop CPU sampling", else: "Start CPU sampling"}
-              </button>
+              <span class="process-count">{Format.number(length(@procs))} processes</span>
             </div>
-            <p class="muted small">
-              CPU % estimates time scheduled in (100% is one scheduler). A 250 ms sample refreshes about every 2 seconds,
-              adds tracing overhead, and requires OTP 27 or newer. {if @cpu_enabled and
-                                                                         not @cpu_sampled,
-                                                                       do:
-                                                                         "Collecting the first sample…",
-                                                                       else:
-                                                                         if(@cpu_enabled,
-                                                                           do: "Sampling is active.",
-                                                                           else:
-                                                                             "Start CPU sampling to measure."
-                                                                         )}
-            </p>
-            <p :if={@cpu_error} class="error" role="alert">{@cpu_error}</p>
-            <p :if={@sort_by == :reds_per_sec} class="muted small">
-              Reductions per second indicate BEAM activity; they are not per-process CPU time or CPU percentage.
-              New processes need another sample before their rate is available.
-            </p>
-            <form phx-change="filter" phx-submit="filter" class="filter">
-              <input
-                name="q"
-                value={@filter}
-                placeholder="Filter by name, pid or function"
-                phx-debounce="200"
-                autocomplete="off"
-              />
-              <span class="legend small" aria-label="Legend">
+            <div class="process-controls">
+              <div class="top-processes">
+                <span class="process-control-label">Rank by</span>
+                <div class="seg" role="group" aria-label="Rank processes by">
+                  <button
+                    :for={{key, label, column} <- @top_metrics}
+                    type="button"
+                    class={["seg-btn", (@sort_by == column and @sort_dir == :desc) && "active"]}
+                    aria-pressed={to_string(@sort_by == column and @sort_dir == :desc)}
+                    phx-click="top_metric"
+                    phx-value-metric={key}
+                  >{label}</button>
+                </div>
+                <form phx-change="top_limit">
+                  <label>
+                    Show
+                    <select name="limit">
+                      <option :for={count <- @top_limits} value={count} selected={@row_limit == count}>
+                        {count}
+                      </option>
+                    </select>
+                  </label>
+                </form>
                 <button
-                  :for={kind <- BeamdashWeb.Icons.marked_kinds()}
                   type="button"
-                  class={["legend-item", kind_filter(@filter) == kind && "active"]}
-                  phx-click="filter_kind"
-                  phx-value-kind={kind}
-                  title={
-                    if kind_filter(@filter) == kind,
-                      do: "Show all processes",
-                      else: "Show only #{kind} processes"
-                  }
+                  class="secondary small-btn"
+                  phx-click={if @cpu_enabled, do: "stop_cpu", else: "start_cpu"}
                 >
-                  <BeamdashWeb.Icons.kind kind={kind} />
-                  {kind}
-                  <span class="muted">{Format.number(
-                    Enum.count(@procs, &(Map.get(&1, :kind) == kind))
-                  )}</span>
+                  {if @cpu_enabled, do: "Stop CPU sampling", else: "Start CPU sampling"}
                 </button>
-                <button
-                  :if={MapSet.size(@sys_traced) > 0 or kind_filter(@filter) == :tracing}
-                  type="button"
-                  class={["legend-item", kind_filter(@filter) == :tracing && "active"]}
-                  phx-click="filter_kind"
-                  phx-value-kind="tracing"
-                  title={
-                    if kind_filter(@filter) == :tracing,
-                      do: "Show all processes",
-                      else: "Show only processes with sys:trace on"
-                  }
-                >
-                  <span class="swatch-traced" aria-hidden="true"></span>
-                  tracing
-                  <span class="muted">{Format.number(
-                    Enum.count(@procs, &MapSet.member?(@sys_traced, &1.pid))
-                  )}</span>
-                </button>
-              </span>
-              <span class="muted">
-                {Format.number(@match_count)} of {Format.number(length(@procs))}{if @match_count >
-                                                                                      length(@rows),
-                                                                                    do:
-                                                                                      " · showing first #{length(@rows)}"}
-              </span>
-            </form>
+              </div>
+              <p class="process-sampling-note small">
+                CPU % estimates time scheduled in (100% is one scheduler). A 250 ms sample refreshes about every 2 seconds,
+                adds tracing overhead, and requires OTP 27 or newer. {if @cpu_enabled and
+                                                                           not @cpu_sampled,
+                                                                         do:
+                                                                           "Collecting the first sample…",
+                                                                         else:
+                                                                           if(@cpu_enabled,
+                                                                             do:
+                                                                               "Sampling is active.",
+                                                                             else:
+                                                                               "Start CPU sampling to measure."
+                                                                           )}
+              </p>
+              <p :if={@cpu_error} class="error" role="alert">{@cpu_error}</p>
+              <p :if={@sort_by == :reds_per_sec} class="muted small">
+                Reductions per second indicate BEAM activity; they are not per-process CPU time or CPU percentage.
+                New processes need another sample before their rate is available.
+              </p>
+              <form phx-change="filter" phx-submit="filter" class="filter process-filter">
+                <input
+                  name="q"
+                  aria-label="Search processes"
+                  value={@filter}
+                  placeholder="Filter by name, pid or function"
+                  phx-debounce="200"
+                  autocomplete="off"
+                />
+                <span class="legend small" aria-label="Legend">
+                  <button
+                    :for={kind <- BeamdashWeb.Icons.marked_kinds()}
+                    type="button"
+                    class={["legend-item", kind_filter(@filter) == kind && "active"]}
+                    phx-click="filter_kind"
+                    phx-value-kind={kind}
+                    title={
+                      if kind_filter(@filter) == kind,
+                        do: "Show all processes",
+                        else: "Show only #{kind} processes"
+                    }
+                  >
+                    <BeamdashWeb.Icons.kind kind={kind} />
+                    {kind}
+                    <span class="muted">{Format.number(
+                      Enum.count(@procs, &(Map.get(&1, :kind) == kind))
+                    )}</span>
+                  </button>
+                  <button
+                    :if={MapSet.size(@sys_traced) > 0 or kind_filter(@filter) == :tracing}
+                    type="button"
+                    class={["legend-item", kind_filter(@filter) == :tracing && "active"]}
+                    phx-click="filter_kind"
+                    phx-value-kind="tracing"
+                    title={
+                      if kind_filter(@filter) == :tracing,
+                        do: "Show all processes",
+                        else: "Show only processes with sys:trace on"
+                    }
+                  >
+                    <span class="swatch-traced" aria-hidden="true"></span>
+                    tracing
+                    <span class="muted">{Format.number(
+                      Enum.count(@procs, &MapSet.member?(@sys_traced, &1.pid))
+                    )}</span>
+                  </button>
+                </span>
+                <span class="process-match-count">
+                  {Format.number(@match_count)} of {Format.number(length(@procs))}{if @match_count >
+                                                                                        length(@rows),
+                                                                                      do:
+                                                                                        " · showing first #{length(@rows)}"}
+                </span>
+              </form>
+            </div>
 
             <.triage_bar
               triage={@triage}
@@ -958,78 +970,117 @@ defmodule BeamdashWeb.HomeLive do
               backend={@jev_backend}
             />
 
-            <table>
-              <thead>
-                <tr>
-                  <th>Pid</th>
-                  <th class="sortable" phx-click="sort" phx-value-col="name">
-                    Name / initial call{arrow(@sort_by, @sort_dir, :name)}
-                  </th>
-                  <th>Current function</th>
-                  <th>Status</th>
-                  <th class="num sortable" phx-click="sort" phx-value-col="mq">
-                    Msg queue{arrow(@sort_by, @sort_dir, :message_queue_len)}
-                  </th>
-                  <th class="num sortable" phx-click="sort" phx-value-col="memory">
-                    Memory{arrow(@sort_by, @sort_dir, :memory)}
-                  </th>
-                  <th class="num sortable" phx-click="sort" phx-value-col="cpu">
-                    CPU %{arrow(@sort_by, @sort_dir, :cpu)}
-                  </th>
-                  <th class="num sortable" phx-click="sort" phx-value-col="reductions">
-                    Reductions{arrow(@sort_by, @sort_dir, :reductions)}
-                  </th>
-                  <th
-                    class="num sortable"
-                    phx-click="sort"
-                    phx-value-col="rate"
-                    title="Reductions per second since the last refresh"
+            <div class="process-table-scroll" role="region" aria-label="Process table" tabindex="0">
+              <table class="processes-table">
+                <caption class="process-table-caption">Processes on the connected node</caption>
+                <thead>
+                  <tr>
+                    <th>Pid</th>
+                    <th aria-sort={sort_aria(@sort_by, @sort_dir, :name)}>
+                      <button type="button" class="process-sort" phx-click="sort" phx-value-col="name">Name / initial call<span aria-hidden="true">{arrow(
+                        @sort_by,
+                        @sort_dir,
+                        :name
+                      )}</span></button>
+                    </th>
+                    <th>Current function</th>
+                    <th>Status</th>
+                    <th class="num" aria-sort={sort_aria(@sort_by, @sort_dir, :message_queue_len)}>
+                      <button type="button" class="process-sort" phx-click="sort" phx-value-col="mq">Msg queue<span aria-hidden="true">{arrow(
+                        @sort_by,
+                        @sort_dir,
+                        :message_queue_len
+                      )}</span></button>
+                    </th>
+                    <th class="num" aria-sort={sort_aria(@sort_by, @sort_dir, :memory)}>
+                      <button
+                        type="button"
+                        class="process-sort"
+                        phx-click="sort"
+                        phx-value-col="memory"
+                      >Memory<span aria-hidden="true">{arrow(@sort_by, @sort_dir, :memory)}</span></button>
+                    </th>
+                    <th
+                      :if={@cpu_enabled}
+                      class="num"
+                      aria-sort={sort_aria(@sort_by, @sort_dir, :cpu)}
+                    >
+                      <button type="button" class="process-sort" phx-click="sort" phx-value-col="cpu">CPU %<span aria-hidden="true">{arrow(
+                        @sort_by,
+                        @sort_dir,
+                        :cpu
+                      )}</span></button>
+                    </th>
+                    <th class="num" aria-sort={sort_aria(@sort_by, @sort_dir, :reductions)}>
+                      <button
+                        type="button"
+                        class="process-sort"
+                        phx-click="sort"
+                        phx-value-col="reductions"
+                      >Reductions<span aria-hidden="true">{arrow(@sort_by, @sort_dir, :reductions)}</span></button>
+                    </th>
+                    <th
+                      class="num"
+                      aria-sort={sort_aria(@sort_by, @sort_dir, :reds_per_sec)}
+                      title="Reductions per second since the last refresh"
+                    >
+                      <button type="button" class="process-sort" phx-click="sort" phx-value-col="rate">Reds/s<span aria-hidden="true">{arrow(
+                        @sort_by,
+                        @sort_dir,
+                        :reds_per_sec
+                      )}</span></button>
+                    </th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr :if={@rows == []}>
+                    <td colspan={if @cpu_enabled, do: 9, else: 8} class="process-empty">
+                      No processes match the current filters.
+                    </td>
+                  </tr>
+                  <tr
+                    :for={p <- @rows}
+                    class={[
+                      "clickable",
+                      p.message_queue_len > 0 && "queued",
+                      p.pid == @selected && "selected",
+                      MapSet.member?(@sys_traced, p.pid) && "traced"
+                    ]}
+                    phx-click="select"
+                    phx-value-pid={Format.pid(p.pid, :erlang)}
                   >
-                    Reds/s{arrow(@sort_by, @sort_dir, :reds_per_sec)}
-                  </th>
-                </tr>
-              </thead>
-              <tbody>
-                <tr
-                  :for={p <- @rows}
-                  class={[
-                    "clickable",
-                    p.message_queue_len > 0 && "queued",
-                    p.pid == @selected && "selected",
-                    MapSet.member?(@sys_traced, p.pid) && "traced"
-                  ]}
-                  phx-click="select"
-                  phx-value-pid={Format.pid(p.pid, :erlang)}
-                >
-                  <td class="mono">{Format.pid(p.pid, @syntax)}</td>
-                  <td class={if p.registered_name, do: "named"}>
-                    <BeamdashWeb.Icons.kind kind={Map.get(p, :kind)} />
-                    {Format.label(p, @syntax)}
-                    <span
-                      :if={MapSet.member?(@sys_traced, p.pid)}
-                      class="badge-trace"
-                      title="sys:trace is on"
-                    >
-                      tracing
-                    </span>
-                    <span
-                      :if={v = flag(@triage, p.pid)}
-                      class="jev-flag"
-                      title={"#{Beamdash.Jev.name(@jev_backend)}: #{v.label} (#{round(v.worth * 100)}% worth a look)#{if v.alternative, do: " or #{v.alternative.label}"}. Open the process for its own analysis."}
-                    >
-                      ⚑ {v.label}
-                    </span>
-                  </td>
-                  <td class="mono muted">{Format.mfa(p.current_function, @syntax)}</td>
-                  <td>{p.status}</td>
-                  <td class="num">{Format.number(p.message_queue_len)}</td>
-                  <td class="num">{Format.bytes(p.memory)}</td>
-                  <td class="num">{cpu_text(@cpu_values[p.pid])}</td>
-                  <td class="num">{Format.number(p.reductions)}</td>
-                  <td class="num">{Format.number(@rates[p.pid])}</td>
-                </tr>
-              </tbody>
-            </table>
+                    <td class="mono">{Format.pid(p.pid, @syntax)}</td>
+                    <td class={if p.registered_name, do: "named"}>
+                      <BeamdashWeb.Icons.kind kind={Map.get(p, :kind)} />
+                      {Format.label(p, @syntax)}
+                      <span
+                        :if={MapSet.member?(@sys_traced, p.pid)}
+                        class="badge-trace"
+                        title="sys:trace is on"
+                      >
+                        tracing
+                      </span>
+                      <span
+                        :if={v = flag(@triage, p.pid)}
+                        class="jev-flag"
+                        title={"#{Beamdash.Jev.name(@jev_backend)}: #{v.label} (#{round(v.worth * 100)}% worth a look)#{if v.alternative, do: " or #{v.alternative.label}"}. Open the process for its own analysis."}
+                      >
+                        ⚑ {v.label}
+                      </span>
+                    </td>
+                    <td class="mono muted">{Format.mfa(p.current_function, @syntax)}</td>
+                    <td>
+                      <span class={["process-status", "process-status-#{p.status}"]}>{p.status}</span>
+                    </td>
+                    <td class="num">{Format.number(p.message_queue_len)}</td>
+                    <td class="num">{Format.bytes(p.memory)}</td>
+                    <td :if={@cpu_enabled} class="num">{cpu_text(@cpu_values[p.pid])}</td>
+                    <td class="num">{Format.number(p.reductions)}</td>
+                    <td class="num">{Format.number(@rates[p.pid])}</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
           </section>
 
           <div :if={@selected} class="proc-side">
@@ -1161,6 +1212,10 @@ defmodule BeamdashWeb.HomeLive do
   defp arrow(col, :asc, col), do: " ▲"
   defp arrow(col, :desc, col), do: " ▼"
   defp arrow(_sort_by, _dir, _col), do: ""
+
+  defp sort_aria(col, :asc, col), do: "ascending"
+  defp sort_aria(col, :desc, col), do: "descending"
+  defp sort_aria(_, _, _), do: nil
 
   defp matching(procs, "", _traced), do: procs
 

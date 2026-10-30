@@ -328,6 +328,45 @@ table.crash-table th:nth-child(3) { width: auto; }
 }
 .proc-table { min-width: 0; overflow-x: auto; }
 .proc-side { position: sticky; top: 8px; max-height: calc(100vh - 16px); overflow-y: auto; }
+.processes-page .proc-table { overflow: visible; }
+.processes-heading { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px 16px; margin: 18px 0 12px; }
+.processes-heading h2 { margin: 0; font-size: 20px; line-height: 1.2; }
+.processes-heading p { margin: 4px 0 0; color: var(--muted); font-size: 13px; }
+.process-count { padding: 4px 9px; border: 1px solid var(--line); border-radius: 999px; color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.process-controls { padding: 14px 16px; border: 1px solid var(--line); border-radius: 10px; background: var(--row-alt); }
+.process-controls .top-processes { margin: 0; }
+.process-control-label { font-size: 12px; font-weight: 600; color: var(--muted); }
+.process-controls .top-processes .seg { background: var(--bg); }
+.process-controls .top-processes select { background: var(--bg); padding: 4px 8px; }
+.process-sampling-note { margin: 10px 0 0; color: var(--muted); line-height: 1.45; }
+.process-filter { margin: 14px 0 0; padding-top: 12px; border-top: 1px solid var(--line); }
+.process-filter input { flex: 1 1 240px; max-width: 420px; background: var(--bg); }
+.process-match-count { margin-left: auto; color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+.process-table-scroll { margin-top: 14px; overflow-x: auto; border: 1px solid var(--line); border-radius: 10px; background: var(--bg); }
+.process-table-scroll:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.processes-table { min-width: 900px; font-size: 13px; }
+.process-table-caption { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
+.processes-table th { padding: 9px 10px; background: var(--row-alt); color: var(--muted); font-size: 12px; }
+.processes-table td { padding: 9px 10px; }
+.processes-table tr:last-child td { border-bottom: 0; }
+.processes-table th[aria-sort] { color: var(--accent); }
+.process-sort { padding: 0; border: 0; border-radius: 2px; background: transparent; color: inherit; font: inherit; font-weight: 600; white-space: nowrap; }
+.process-sort:hover { color: var(--accent); }
+.process-sort:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+.process-status { display: inline-block; padding: 2px 7px; border: 1px solid var(--line); border-radius: 999px; color: var(--muted); font-size: 11px; line-height: 1.4; }
+.process-status-running, .process-status-runnable { border-color: var(--ok); color: var(--ok); }
+.processes-table .process-empty { padding: 28px 16px; color: var(--muted); text-align: center; white-space: normal; }
+@media (max-width: 760px) {
+  .processes-page .proc-layout.with-panel { display: flex; flex-direction: column; }
+  .processes-page .proc-table, .processes-page .proc-side { width: 100%; }
+  .processes-page .proc-side { order: -1; position: static; max-height: none; }
+  .processes-page .proc-side #panel-resizer { display: none; }
+}
+@media (max-width: 640px) {
+  .process-controls { padding: 12px; }
+  .process-filter input { max-width: none; }
+  .process-match-count { margin-left: 0; }
+}
 .proc-panel { position: relative; min-width: 0; border: 1px solid var(--line); border-radius: 6px; padding: 12px 14px; }
 .proc-panel section { border-top: 1px solid var(--line); padding-top: 10px; margin-top: 12px; }
 .proc-panel h3 { margin: 0; font-size: 15px; }
