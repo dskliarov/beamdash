@@ -60,6 +60,8 @@ defmodule BeamdashWeb.MemoryLive do
         ets_sort: {:memory, :desc},
         ets_filter: "",
         inspect: nil,
+        # Nx: where memory and the limits are heading
+        forecast: nil,
         # Jev: which kind of memory needs attention
         health: %{request: nil, advice: nil, error: nil, evidence: nil},
         # ?check=1: run the health check as soon as there is enough history
@@ -89,11 +91,22 @@ defmodule BeamdashWeb.MemoryLive do
   defp refresh(socket) do
     case Memory.snapshot(socket.assigns.node) do
       {:ok, snap} ->
-        point = %{at: snap.sampled_at_ms, memory: snap.memory}
+        point = %{
+          at: snap.sampled_at_ms,
+          memory: snap.memory,
+          counts: %{
+            atom_count: snap.atom_count,
+            process_count: snap.process_count,
+            ets_count: snap.ets_count
+          }
+        }
+
+        history = Enum.take(socket.assigns.history ++ [point], -@history)
 
         assign(socket,
           snap: snap,
-          history: Enum.take(socket.assigns.history ++ [point], -@history),
+          history: history,
+          forecast: Beamdash.Insights.Forecast.forecast(history, snap),
           error: nil
         )
 
@@ -458,6 +471,8 @@ defmodule BeamdashWeb.MemoryLive do
           </div>
         </div>
 
+        <.forecast forecast={@forecast} />
+
         <div :if={BeamdashWeb.JevSection.show?(@jev_enabled)} class="jev-card">
           <BeamdashWeb.JevSection.section
             id="jev-memory"
@@ -601,6 +616,70 @@ defmodule BeamdashWeb.MemoryLive do
   end
 
   ## Components
+
+  attr :forecast, :any, required: true
+
+  # Nx: a straight line through each measure's history (Insights.Forecast)
+  defp forecast(assigns) do
+    ~H"""
+    <section :if={@forecast} class="insights-card" aria-labelledby="forecast-heading">
+      <div class="section-head">
+        <h3 id="forecast-heading">Forecast</h3>
+        <span :if={match?({:collecting, _, _}, @forecast)} class="muted small" role="status">
+          collecting history · {elem(@forecast, 1)} of {elem(@forecast, 2)} s
+        </span>
+      </div>
+      <p class="muted small">
+        A straight line through the last few minutes of each measure (linear regression, with Nx),
+        and where it leads in an hour. Bold rows fit the line (R² ≥ 0.6) and grow by 5% an hour
+        or more; the rest are flat or too noisy to say.
+      </p>
+      <table :if={match?({:ok, _}, @forecast)} class="insights-table">
+        <thead>
+          <tr>
+            <th>Measure</th>
+            <th class="num">Now</th>
+            <th class="num">Per minute</th>
+            <th class="num" title="How well a straight line fits (1 = perfectly)">R²</th>
+            <th class="num">In an hour</th>
+            <th>Limit</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr :for={f <- elem(@forecast, 1)} class={f.growing && "forecast-growing"}>
+            <td>{f.label}</td>
+            <td class="num mono">{forecast_value(f, f.now)}</td>
+            <td class="num mono">{forecast_rate(f)}</td>
+            <td class="num">{f.r2}</td>
+            <td class="num mono">{if f.growing, do: forecast_value(f, f.in_1h), else: "–"}</td>
+            <td class="small">
+              {cond do
+                f.limit_in_s -> "reached in about #{in_time(f.limit_in_s)}"
+                f.limit -> "#{Format.number(f.limit)} (not approaching)"
+                true -> ""
+              end}
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+    """
+  end
+
+  defp in_time(s) when s < 90, do: "#{s} s"
+  defp in_time(s) when s < 5_400, do: "#{round(s / 60)} min"
+  defp in_time(s) when s < 172_800, do: "#{round(s / 3600)} h"
+  defp in_time(s), do: "#{round(s / 86_400)} days"
+
+  defp forecast_value(%{key: key}, v) when key in [:atom_count, :process_count, :ets_count],
+    do: Format.number(round(v))
+
+  defp forecast_value(_f, v), do: Format.bytes(round(v))
+
+  defp forecast_rate(%{per_min: per_min} = f) do
+    sign = if per_min >= 0, do: "+", else: "−"
+    sign <> forecast_value(f, abs(per_min))
+  end
 
   attr :label, :string, required: true
   attr :used, :integer, required: true

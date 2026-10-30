@@ -102,6 +102,9 @@ defmodule BeamdashWeb.JevSection do
         <p :if={@backend == :jev} class="small muted">
           {@sends} Never names, pids, modules, stacks, messages or state. Sent only when you click, to TypeSafe's API; its docs do not state how long requests are kept. Calls may be charged.
         </p>
+        <p :if={@backend == :nx} class="small muted">
+          {@sends} Nothing is sent: beamdash's own model (Nx) answers inside beamdash.
+        </p>
         <p :if={@backend == :kev} class="small muted">
           {@sends} Never names, pids, modules, stacks, messages or state. Sent only when you click, to the Kev server at {Beamdash.Jev.endpoint(
             :kev

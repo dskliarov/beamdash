@@ -23,7 +23,7 @@ defmodule Beamdash.NavTest do
 
     assert Enum.sort(paths) ==
              Enum.sort(
-               ~w(/system /nodes /load /apps /modules /console /memory /logs / /gc /crashes /trace /seq /profile)
+               ~w(/system /nodes /load /apps /modules /console /memory /logs / /gc /crashes /insights /trace /seq /profile)
              )
 
     keys = Enum.map(tabs, &elem(&1, 4)) ++ [","]

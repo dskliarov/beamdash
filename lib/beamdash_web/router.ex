@@ -35,6 +35,7 @@ defmodule BeamdashWeb.Router do
       live "/seq", SeqLive
       live "/profile", ProfileLive
       live "/crashes", CrashLive
+      live "/insights", InsightsLive
       live "/settings", SettingsLive
       live "/plugins/:plugin/:page", PluginLive
     end

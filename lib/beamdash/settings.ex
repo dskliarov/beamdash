@@ -94,7 +94,7 @@ defmodule Beamdash.Settings do
   end
 
   @doc """
-  The decision backend chosen in Settings (`:jev` or `:kev`), or `nil`
+  The decision backend chosen in Settings (`:jev`, `:kev` or `:nx`), or `nil`
   when none was chosen (`Beamdash.Jev.backend/0` then decides). Saved for
   the next start.
   """
@@ -105,6 +105,7 @@ defmodule Beamdash.Settings do
           case read()["decision_backend"] do
             "jev" -> :jev
             "kev" -> :kev
+            "nx" -> :nx
             _ -> nil
           end
 
@@ -116,8 +117,8 @@ defmodule Beamdash.Settings do
     end
   end
 
-  @doc "Chooses `:jev` or `:kev`; `nil` forgets the choice."
-  def put_decision_backend(backend) when backend in [:jev, :kev, nil] do
+  @doc "Chooses `:jev`, `:kev` or `:nx`; `nil` forgets the choice."
+  def put_decision_backend(backend) when backend in [:jev, :kev, :nx, nil] do
     :persistent_term.put(@backend_key, backend)
     save("decision_backend", backend && Atom.to_string(backend))
     Phoenix.PubSub.broadcast(Beamdash.PubSub, "settings", {:beamdash_backend, backend})

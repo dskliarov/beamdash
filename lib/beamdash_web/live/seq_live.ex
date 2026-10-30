@@ -26,7 +26,10 @@ defmodule BeamdashWeb.SeqLive do
         show_receives: false,
         selected: nil,
         # Jev: the pattern of the recorded messages
-        pattern: %{request: nil, advice: nil, error: nil, evidence: nil}
+        pattern: %{request: nil, advice: nil, error: nil, evidence: nil},
+        # Nx: the message graph, on request
+        graph: nil,
+        graphing: false
       )
 
     if connected?(socket) do
@@ -53,7 +56,16 @@ defmodule BeamdashWeb.SeqLive do
 
   def handle_event("clear", _params, socket) do
     :ok = SeqTracer.clear()
-    {:noreply, socket |> assign(events: [], selected: nil) |> reset_pattern()}
+    {:noreply, socket |> assign(events: [], selected: nil, graph: nil) |> reset_pattern()}
+  end
+
+  def handle_event("graph", _params, socket) do
+    sends = Enum.filter(socket.assigns.events, &(&1.type == :send))
+
+    {:noreply,
+     socket
+     |> assign(graphing: true)
+     |> start_async(:graph, fn -> {length(sends), Beamdash.Insights.Graph.metrics(sends)} end)}
   end
 
   def handle_event("analyze_seq", _params, %{assigns: %{pattern: %{request: nil}}} = socket) do
@@ -85,6 +97,14 @@ defmodule BeamdashWeb.SeqLive do
   end
 
   @impl true
+  def handle_async(:graph, {:ok, {count, graph}}, socket),
+    do:
+      {:noreply,
+       assign(socket, graph: graph && Map.put(graph, :messages, count), graphing: false)}
+
+  def handle_async(:graph, {:exit, _reason}, socket),
+    do: {:noreply, assign(socket, graph: nil, graphing: false)}
+
   def handle_async({:seq_advisor, _} = request, result, socket) do
     if request == socket.assigns.pattern.request do
       socket = put_pattern(socket, request: nil)
@@ -204,6 +224,42 @@ defmodule BeamdashWeb.SeqLive do
           }
         />
       </div>
+
+      <section :if={@events != []} class="insights-card" aria-labelledby="graph-heading">
+        <div class="section-head">
+          <h3 id="graph-heading">Message graph</h3>
+          <button type="button" class="small-btn" phx-click="graph" disabled={@graphing}>
+            {cond do
+              @graphing -> "Computing…"
+              @graph -> "Recompute"
+              true -> "Compute"
+            end}
+          </button>
+        </div>
+        <p class="muted small">
+          Who sends to whom, as a matrix of message counts (with Nx): how much goes both ways
+          between a pair (calls with replies and chatty exchanges score high, fan-out and chains
+          low), and where messages end up when followed through the graph (PageRank).
+        </p>
+        <table :if={@graph} class="kv">
+          <tr>
+            <th>Messages · processes</th>
+            <td>{@graph.messages} · {@graph.processes}</td>
+          </tr>
+          <tr>
+            <th>Both ways (reciprocity)</th>
+            <td>{@graph.reciprocity_pct}%</td>
+          </tr>
+          <tr>
+            <th>Most central</th>
+            <td>
+              <span :for={{proc, share} <- @graph.hubs} class="mono graph-hub">
+                {graph_node(proc, @syntax)} <span class="muted">{share}%</span>
+              </span>
+            </td>
+          </tr>
+        </table>
+      </section>
 
       <p :if={@events == []} class="muted">
         No messages yet. Every call of a seq-traced function starts a trace token; the messages it sends, and the messages those cause, show up here.
@@ -353,4 +409,9 @@ defmodule BeamdashWeb.SeqLive do
 
   # JevSection shows {:collecting, have, need}; here they are messages
   defp seq_readiness(events), do: SeqAdvisor.readiness(events)
+
+  defp graph_node(pid, syntax) when is_pid(pid), do: Format.pid(pid, syntax)
+  defp graph_node(name, syntax) when is_atom(name), do: Format.name(name, syntax)
+  defp graph_node(other, _syntax) when is_binary(other), do: other
+  defp graph_node(other, syntax), do: Format.term(other, syntax)
 end

@@ -390,6 +390,53 @@ compare (`--model jev-latest`; `--only memory,seq,route,triage` to run
 some sets; `--strict` exits 1 on any miss). `TYPESAFE_ENDPOINT` points
 beamdash at a stand-in instead of TypeSafe's API, for testing only.
 
+## Insights (Nx)
+
+beamdash uses [Nx](https://hex.pm/packages/nx) and
+[Scholar](https://hex.pm/packages/scholar) for statistics and a small model
+of its own. Everything runs inside beamdash, on Nx's built-in backend: no
+model is asked, nothing is sent anywhere, and the inspected node needs
+nothing new.
+
+- **Insights tab** (`g i`):
+  - **Anomalies**, re-checked every refresh over the last two minutes. For
+    each of the busiest processes, it looks at memory, queue length and
+    reductions rate, and reports:
+    - a level that **shifted** and stayed (the strongest change point, by
+      t statistic);
+    - a **steady rise** (a straight line fits well and the rise is large);
+    - a **spike** in the latest sample;
+    - a process far above its **peers**: those with the same OTP behaviour
+      started from the same module, compared by median absolute deviation.
+
+    Each finding links to the process.
+  - **Groups**: on request, the processes clustered by behaviour with
+    k-means (memory, queue, reductions rate, running, OTP kind). Each group
+    shows its size, medians, most common kind and initial call, and its
+    biggest members.
+- **Forecast** (Memory tab): a straight line through the last few minutes
+  of each kind of memory and of the atom, process and ETS table counts. It
+  shows growth per minute, how well the line fits (R²), the value in an
+  hour, and when a count reaches the node's limit ("reached in about
+  9 min").
+- **Message graph** (Seq trace page): from who sends to whom:
+  - **reciprocity**: how much goes both ways between a pair;
+  - the most **central** processes, by PageRank over the message counts.
+
+  The seq pattern check also sends Jev these two numbers, never the
+  processes themselves.
+- **Local suggestion model**: a third backend next to Jev and Kev, turned
+  on with `NX_MODEL=true` and chosen in **Settings → Suggestions model**.
+  It is a logistic regression per question (process, GC, node memory, seq
+  pattern, triage), trained on generated examples and shipped in
+  `priv/nx/models.etf` (7 KB). Answers are instant (well under 1 ms) and
+  nothing leaves beamdash. It cannot answer **Ask beamdash** (free text).
+  `mix beamdash.nx_train` retrains it, reproducibly, in about a minute.
+  `mix beamdash.jev_eval --backend nx` checks it on the same fixed
+  scenarios as Jev and Kev; it gets all 27 that it can answer right.
+  Those scenarios come from the same builders as its training examples,
+  so this says more about consistency than about real nodes.
+
 ## Plugins
 
 A plugin adds pages for one application (riak_core, say) to a **Plugins**

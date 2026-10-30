@@ -557,7 +557,8 @@ defmodule BeamdashWeb.SettingsLive do
           <div>
             <strong id="jev-backend-label">Model</strong>
             <p class="muted small">
-              Jev is TypeSafe's hosted model; Kev a self-hosted one with the same API.
+              Jev is TypeSafe's hosted model; Kev a self-hosted one with the same API;
+              Nx beamdash's own small model, run here (it cannot answer Ask).
               Saved for the next start; the next request goes to the one chosen.
             </p>
           </div>
@@ -626,6 +627,11 @@ defmodule BeamdashWeb.SettingsLive do
           or state. Nothing is sent while you only browse. TypeSafe's documentation does not
           state how long it keeps requests; calls may be charged.
         </p>
+        <p :if={@jev_backend == :nx} class="guide small">
+          When on, clicking Analyze in a process panel (Processes or GC tab) asks beamdash's own
+          model, trained with Nx and run inside beamdash: nothing is sent anywhere and answers
+          are instant. It knows the panels' fixed questions only; Ask needs Jev or Kev.
+        </p>
         <p :if={@jev_backend == :kev} class="guide small">
           When on, clicking Analyze in a process panel (Processes or GC tab) sends
           measurements computed from that process to the Kev server at {Jev.endpoint(:kev)}:
@@ -639,6 +645,9 @@ defmodule BeamdashWeb.SettingsLive do
         </p>
         <p class="muted small">
           {cond do
+            @jev_backend == :nx ->
+              "Local model #{Jev.model(:nx)}, trained with mix beamdash.nx_train."
+
             @jev_backend == :kev ->
               "Kev server #{Jev.endpoint(:kev)} · model #{Jev.model(:kev)}."
 
@@ -650,6 +659,9 @@ defmodule BeamdashWeb.SettingsLive do
           end}
           <span :if={not Jev.configured?(:kev)}>
             Set KEV_URL (or KEV_PORT, for a server on this machine) to try Kev instead.
+          </span>
+          <span :if={not Jev.configured?(:nx)}>
+            Set NX_MODEL=true to use beamdash's own local model.
           </span>
         </p>
       </section>
