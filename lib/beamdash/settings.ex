@@ -18,6 +18,7 @@ defmodule Beamdash.Settings do
   @key {__MODULE__, :syntax}
   @jev_key {__MODULE__, :jev_enabled}
   @backend_key {__MODULE__, :decision_backend}
+  @nx_key {__MODULE__, :nx_enabled}
   @kev_port_key {__MODULE__, :kev_port}
   @kube_key {__MODULE__, :kubeconfig_dir}
   @reconnect_key {__MODULE__, :auto_reconnect}
@@ -94,7 +95,7 @@ defmodule Beamdash.Settings do
   end
 
   @doc """
-  The decision backend chosen in Settings (`:jev` or `:kev`), or `nil`
+  The decision backend chosen in Settings (`:jev`, `:kev` or `:nx`), or `nil`
   when none was chosen (`Beamdash.Jev.backend/0` then decides). Saved for
   the next start.
   """
@@ -105,6 +106,7 @@ defmodule Beamdash.Settings do
           case read()["decision_backend"] do
             "jev" -> :jev
             "kev" -> :kev
+            "nx" -> :nx
             _ -> nil
           end
 
@@ -116,8 +118,8 @@ defmodule Beamdash.Settings do
     end
   end
 
-  @doc "Chooses `:jev` or `:kev`; `nil` forgets the choice."
-  def put_decision_backend(backend) when backend in [:jev, :kev, nil] do
+  @doc "Chooses `:jev`, `:kev` or `:nx`; `nil` forgets the choice."
+  def put_decision_backend(backend) when backend in [:jev, :kev, :nx, nil] do
     :persistent_term.put(@backend_key, backend)
     save("decision_backend", backend && Atom.to_string(backend))
     Phoenix.PubSub.broadcast(Beamdash.PubSub, "settings", {:beamdash_backend, backend})
@@ -144,6 +146,43 @@ defmodule Beamdash.Settings do
   def put_kev_port(port) when port == nil or (is_integer(port) and port in 1..65_535) do
     :persistent_term.put(@kev_port_key, port)
     save("kev_port", port)
+    :ok
+  end
+
+  @doc """
+  Whether beamdash's local model (Nx) was switched on (`true`) or off
+  (`false`) in Settings, or `nil` when never switched: `NX_MODEL` then
+  decides (see `Beamdash.Jev.configured?/1`). Saved for the next start.
+  """
+  def nx_enabled do
+    case :persistent_term.get(@nx_key, :unset) do
+      :unset ->
+        enabled = if is_boolean(read()["nx_enabled"]), do: read()["nx_enabled"]
+        :persistent_term.put(@nx_key, enabled)
+        enabled
+
+      enabled ->
+        enabled
+    end
+  end
+
+  @doc """
+  Switches the local model on or off (`nil` goes back to `NX_MODEL`). Open
+  tabs follow: the backend in use and whether suggestions show are
+  broadcast as on any other change.
+  """
+  def put_nx_enabled(enabled) when is_boolean(enabled) or enabled == nil do
+    :persistent_term.put(@nx_key, enabled)
+    # false must be saved too: it overrides NX_MODEL=true
+    save("nx_enabled", enabled)
+
+    Phoenix.PubSub.broadcast(
+      Beamdash.PubSub,
+      "settings",
+      {:beamdash_backend, Beamdash.Jev.backend()}
+    )
+
+    Phoenix.PubSub.broadcast(Beamdash.PubSub, "settings", {:beamdash_jev, jev_enabled?()})
     :ok
   end
 
@@ -287,6 +326,7 @@ defmodule Beamdash.Settings do
   # Drops the in-memory copy so the next read loads the file (tests).
   def reload do
     :persistent_term.erase(@backend_key)
+    :persistent_term.erase(@nx_key)
     :persistent_term.erase(@kev_port_key)
     :persistent_term.erase(@kube_key)
     :persistent_term.erase(@reconnect_key)
@@ -319,7 +359,7 @@ defmodule Beamdash.Settings do
   defp save(key, value) do
     with path when is_binary(path) <- path(),
          :ok <- File.mkdir_p(Path.dirname(path)),
-         saved = if(value, do: Map.put(read(), key, value), else: Map.delete(read(), key)),
+         saved = if(value == nil, do: Map.delete(read(), key), else: Map.put(read(), key, value)),
          tmp = path <> ".tmp",
          :ok <- File.write(tmp, Jason.encode!(saved)),
          :ok <- File.rename(tmp, path) do

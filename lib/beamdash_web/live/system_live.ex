@@ -62,7 +62,7 @@ defmodule BeamdashWeb.SystemLive do
         syntax={@syntax}
         conn={assigns[:conn]}
         ask={assigns[:ask]}
-        ask_on={BeamdashWeb.JevSection.show?(assigns[:jev_enabled])}
+        ask_on={BeamdashWeb.JevSection.ask_on?(assigns[:jev_enabled])}
       />
 
       <p :if={@status != :connected} class="help">

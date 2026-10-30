@@ -136,8 +136,24 @@ defmodule Beamdash.SeqAdvisor do
         longest: F.max_of(depths),
         mean: F.mean(depths)
       },
-      burstiness: burstiness(times)
+      burstiness: burstiness(times),
+      graph: graph(sends)
     }
+  end
+
+  # the message graph's shape (Beamdash.Insights.Graph), without the hubs:
+  # they are processes, and nothing identifying is sent
+  defp graph(sends) do
+    case Beamdash.Insights.Graph.metrics(sends) do
+      nil ->
+        nil
+
+      g ->
+        %{
+          reciprocity_pct: g.reciprocity_pct,
+          top_centrality_share_pct: g.top_centrality_share_pct
+        }
+    end
   end
 
   defp kind({:"$gen_call", _from, _req}), do: :call

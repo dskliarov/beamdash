@@ -480,7 +480,7 @@ defmodule BeamdashWeb.ModulesLive do
         syntax={@syntax}
         conn={assigns[:conn]}
         ask={assigns[:ask]}
-        ask_on={BeamdashWeb.JevSection.show?(assigns[:jev_enabled])}
+        ask_on={BeamdashWeb.JevSection.ask_on?(assigns[:jev_enabled])}
       />
       <h1>Modules</h1>
       <p :if={@status != :connected} class="help">Connect to a node to edit modules.</p>

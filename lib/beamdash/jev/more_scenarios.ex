@@ -29,6 +29,10 @@ defmodule Beamdash.Jev.MoreScenarios do
     ]
   end
 
+  @doc false
+  # The builder, for the local model's training data.
+  def memory_case(name, expect, opts), do: mem(name, expect, opts)
+
   defp mem(name, expect, o) do
     o = Map.new(o)
     at = fn key, default, s -> if f = o[key], do: f.(s), else: default end

@@ -293,7 +293,9 @@ to the browser or the inspected node.
 environment, disables Jev entirely: on every tab, every Jev element (the Ask
 box, triage, the process, GC, memory and sequence sections, and the Settings
 switch) is hidden and no request is ever made. The environment variable wins
-when both are set. Without `TYPESAFE_API_KEY` the UI is hidden the same way.
+when both are set. Without `TYPESAFE_API_KEY`, the panels are answered by
+beamdash's local Nx model (see [Insights](#insights-nx)), which is on by
+default; with `NX_MODEL=false` as well, the UI is hidden the same way.
 Turning the Settings switch off hides the same elements on every tab; only
 the switch itself stays, so Jev can be turned back on.
 
@@ -389,6 +391,65 @@ retained binaries, an idle memory hog, a blocked process, healthy ones),
 compare (`--model jev-latest`; `--only memory,seq,route,triage` to run
 some sets; `--strict` exits 1 on any miss). `TYPESAFE_ENDPOINT` points
 beamdash at a stand-in instead of TypeSafe's API, for testing only.
+
+## Insights (Nx)
+
+beamdash uses [Nx](https://hex.pm/packages/nx) and
+[Scholar](https://hex.pm/packages/scholar) for statistics and a small model
+of its own. Everything runs inside beamdash, on Nx's built-in backend: no
+model is asked, nothing is sent anywhere, and the inspected node needs
+nothing new.
+
+- **Insights tab** (`g i`):
+  - **Anomalies**, re-checked every refresh over the last two minutes. For
+    each of the busiest processes, it looks at memory, queue length and
+    reductions rate, and reports:
+    - a level that **shifted** and stayed (the strongest change point, by
+      t statistic);
+    - a **steady rise** (a straight line fits well and the rise is large);
+    - a **spike** in the latest sample;
+    - a process far above its **peers**: those with the same OTP behaviour
+      started from the same module, compared by median absolute deviation.
+
+    Each finding links to the process.
+  - **Groups**: on request, the processes clustered by behaviour with
+    k-means (memory, queue, reductions rate, running, OTP kind). Each group
+    shows its size, medians, most common kind and initial call, and its
+    biggest members.
+- **Forecast** (Memory tab): a straight line through the last few minutes
+  of each kind of memory and of the atom, process and ETS table counts. It
+  shows growth per minute, how well the line fits (R²), the value in an
+  hour, and when a count reaches the node's limit ("reached in about
+  9 min").
+- **Message graph** (Seq trace page): from who sends to whom:
+  - **reciprocity**: how much goes both ways between a pair;
+  - the most **central** processes, by PageRank over the message counts.
+
+  The seq pattern check also sends Jev these two numbers, never the
+  processes themselves.
+- **Local suggestion model**: a third backend next to Jev and Kev, needing
+  no API key, and **on by default**. Without Jev or Kev, the suggestion
+  panels use it out of the box.
+  - **Settings → Suggestions model → Use beamdash's local model (Nx)**
+    switches it off or back on, for every open tab at once, and is saved
+    for the next start.
+  - `NX_MODEL=false` (or `0`, `no`, `off`; or `nx: false` under
+    `config :beamdash, Beamdash.Jev`) turns it off entirely, like
+    `JEV_ENABLED=false` does for everything: it is neither offered nor
+    shown in Settings, whatever was saved.
+  - With Jev or Kev also configured, Jev stays the default, and the same
+    card chooses between them.
+  - **Ask beamdash** always goes to Jev or Kev, even with Nx chosen, and is
+    hidden when neither is configured.
+  It is a logistic regression per question (process, GC, node memory, seq
+  pattern, triage), trained on generated examples and shipped in
+  `priv/nx/models.etf` (7 KB). Answers are instant (well under 1 ms) and
+  nothing leaves beamdash. It cannot answer **Ask beamdash** (free text).
+  `mix beamdash.nx_train` retrains it, reproducibly, in about a minute.
+  `mix beamdash.jev_eval --backend nx` checks it on the same fixed
+  scenarios as Jev and Kev; it gets all 27 that it can answer right.
+  Those scenarios come from the same builders as its training examples,
+  so this says more about consistency than about real nodes.
 
 ## Plugins
 

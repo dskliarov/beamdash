@@ -35,7 +35,11 @@ defmodule Beamdash.MixProject do
       {:jason, "~> 1.4"},
       {:earmark_parser, "~> 1.4"},
       # loaded into the target for the Memory page (unless it has its own)
-      {:recon, "~> 2.5"}
+      {:recon, "~> 2.5"},
+      # Insights (anomalies, groups, forecasts, message graph) and the local
+      # suggestion model; the default binary backend, no compiler needed
+      {:nx, "~> 1.0"},
+      {:scholar, "~> 0.5"}
     ]
   end
 

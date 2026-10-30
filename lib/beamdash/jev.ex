@@ -27,20 +27,30 @@ defmodule Beamdash.Jev do
   shown and `KEV_TIMEOUT` (ms, default #{120_000}) allows for a slower
   machine. Each backend's key goes only to its own server.
 
+  Or to beamdash's own model (`Beamdash.Insights.Model`), trained with Nx
+  and run inside beamdash, on by default: the switch in Settings turns it
+  off or on again (`Beamdash.Settings.nx_enabled/0`). `NX_MODEL=false` (or
+  `nx: false` in `config/config.exs`) turns it off entirely, whatever was
+  switched: it is neither offered nor shown in Settings. Nothing is sent
+  anywhere and answers are instant; it answers the panels' fixed
+  questions, not "Ask beamdash".
+
   `backend/0` is the one in use: the one chosen in Settings, else
-  `DECISION_BACKEND` (`jev` or `kev`), else Jev, else Kev, among those
-  configured. `:backend` in a request's options overrides it.
+  `DECISION_BACKEND` (`jev`, `kev` or `nx`), else Jev, else Kev, else Nx,
+  among those configured. `:backend` in a request's options overrides it.
   """
 
   @endpoint ~c"https://api.typesafe.ai/v1/systemone"
   @default_model "jev-1.13.0"
   @kev_default_model "kev-latest"
-  @backends [:jev, :kev]
+  @backends [:jev, :kev, :nx]
   @timeouts %{jev: 15_000, kev: 120_000}
   # top two closer than this: show both
   @close 0.15
 
-  def endpoint(backend \\ backend()), do: List.to_string(endpoint_url(backend))
+  def endpoint(backend \\ backend())
+  def endpoint(:nx), do: "local"
+  def endpoint(backend), do: List.to_string(endpoint_url(backend))
 
   # TYPESAFE_ENDPOINT points elsewhere (a stand-in for testing); default
   # TypeSafe's API. Kev: its server's /v1/systemone.
@@ -101,10 +111,39 @@ defmodule Beamdash.Jev do
 
   def backends, do: @backends
 
-  @doc "Whether `backend` (default: the one in use) can be asked: Jev needs its key, Kev its URL."
+  @doc """
+  Whether `backend` (default: the one in use) can be asked: Jev needs its
+  key, Kev its URL, Nx `NX_MODEL=true` and a trained model.
+  """
   def configured?(backend \\ backend())
   def configured?(:jev), do: present?(config()[:api_key])
   def configured?(:kev), do: kev_url() != nil
+
+  def configured?(:nx), do: nx_on?() and Beamdash.Insights.Model.available?()
+
+  @doc "Whether `NX_MODEL=false` (or `nx: false` in the config) turned the local model off."
+  def nx_disabled_in_config?, do: config()[:nx] in [false, "false", "0", "no", "off"]
+
+  # off in the config wins; else the Settings switch; else on
+  defp nx_on? do
+    cond do
+      nx_disabled_in_config?() -> false
+      is_boolean(Beamdash.Settings.nx_enabled()) -> Beamdash.Settings.nx_enabled()
+      true -> true
+    end
+  end
+
+  @doc """
+  The backend that answers "Ask beamdash": the one in use, or when that is
+  the local model (which cannot), the first of Jev and Kev configured.
+  `nil` when none can, and Ask is then hidden.
+  """
+  def ask_backend do
+    case backend() do
+      :nx -> Enum.find([:jev, :kev], &configured?/1)
+      backend -> if configured?(backend), do: backend
+    end
+  end
 
   @doc "The backends that can be asked, Jev first."
   def configured_backends, do: Enum.filter(@backends, &configured?/1)
@@ -123,26 +162,31 @@ defmodule Beamdash.Jev do
       b when b in @backends -> b
       "kev" -> :kev
       "jev" -> :jev
+      "nx" -> :nx
       _ -> nil
     end
   end
 
-  @doc "The name shown in the UI: \"Jev\" or \"Kev\"."
+  @doc "The name shown in the UI: \"Jev\", \"Kev\" or \"Nx\"."
   def name(backend \\ backend())
   def name(:jev), do: "Jev"
   def name(:kev), do: "Kev"
+  def name(:nx), do: "Nx"
 
   @doc "Where requests go, for \"What is sent to …\": TypeSafe, or Kev's host."
   def destination(backend \\ backend())
   def destination(:jev), do: "TypeSafe"
   def destination(:kev), do: "Kev at " <> (URI.parse(endpoint(:kev)).authority || "?")
+  def destination(:nx), do: "the local Nx model (nothing leaves beamdash)"
 
   def model(backend \\ backend())
   def model(:jev), do: config()[:model] || @default_model
   def model(:kev), do: config()[:kev_model] || @kev_default_model
+  def model(:nx), do: Beamdash.Insights.Model.name()
 
   defp api_key(:jev), do: config()[:api_key]
   defp api_key(:kev), do: config()[:kev_api_key]
+  defp api_key(:nx), do: nil
 
   defp timeout(:kev), do: positive(config()[:kev_timeout]) || @timeouts.kev
   defp timeout(backend), do: @timeouts[backend]
@@ -193,14 +237,26 @@ defmodule Beamdash.Jev do
       not enabled_in_config?() ->
         {:error, "Jev is disabled in the configuration."}
 
-      not Beamdash.Settings.jev_enabled?() ->
-        {:error, "#{name(backend)} is off in Settings."}
-
       backend == :jev and not present?(key) ->
         {:error, "Set TYPESAFE_API_KEY and restart beamdash to use Jev."}
 
       backend == :kev and not configured?(:kev) ->
         {:error, "Set KEV_URL and restart beamdash to use Kev."}
+
+      backend == :nx and not configured?(:nx) ->
+        {:error,
+         if(nx_disabled_in_config?(),
+           do: "The local Nx model is turned off (NX_MODEL=false).",
+           else: "Turn on the local Nx model in Settings to use it."
+         )}
+
+      # set up but switched off: said after what is missing from the setup
+      not Beamdash.Settings.jev_enabled?() ->
+        {:error, "#{name(backend)} is off in Settings."}
+
+      backend == :nx ->
+        with {:ok, decoded} <- Beamdash.Insights.Model.answer(state, questions),
+             do: parse_all(decoded, questions)
 
       true ->
         request(backend, key, state, questions, opts)

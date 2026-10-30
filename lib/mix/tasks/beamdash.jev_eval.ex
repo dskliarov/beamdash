@@ -13,7 +13,9 @@ defmodule Mix.Tasks.Beamdash.JevEval do
   only those sets (process, gc, memory, seq, route, triage).
 
   `--backend kev` sends the same scenarios to the Kev server at `KEV_URL`
-  instead (`--backend jev` forces Jev); the default is the backend in use.
+  instead, `--backend nx` asks beamdash's local Nx model (`mix
+  beamdash.nx_train`; it cannot answer the typed questions) and
+  `--backend jev` forces Jev; the default is the backend in use.
   Each line shows how long its request took, and the summary the mean and
   slowest, to compare speed as well as answers.
 
@@ -39,11 +41,27 @@ defmodule Mix.Tasks.Beamdash.JevEval do
         nil -> Jev.backend()
         "jev" -> :jev
         "kev" -> :kev
-        other -> Mix.raise("--backend is jev or kev, not #{other}")
+        "nx" -> :nx
+        other -> Mix.raise("--backend is jev, kev or nx, not #{other}")
       end
 
+    # asked for by name, the local model needs neither NX_MODEL nor the
+    # Settings switch (whose saved value is not read, nor written)
+    if backend == :nx do
+      config = Application.get_env(:beamdash, Jev, [])
+      Application.put_env(:beamdash, Jev, Keyword.put(config, :nx, true))
+      Application.put_env(:beamdash, :settings_file, false)
+      Beamdash.Settings.reload()
+    end
+
     unless Jev.configured?(backend) do
-      Mix.raise(if backend == :kev, do: "Set KEV_URL first.", else: "Set TYPESAFE_API_KEY first.")
+      Mix.raise(
+        case backend do
+          :kev -> "Set KEV_URL first."
+          :nx -> "Train the local model first: mix beamdash.nx_train."
+          :jev -> "Set TYPESAFE_API_KEY first."
+        end
+      )
     end
 
     model = opts[:model] || Jev.model(backend)

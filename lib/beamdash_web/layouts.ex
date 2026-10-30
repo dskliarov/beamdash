@@ -349,7 +349,8 @@ defmodule BeamdashWeb.Layouts do
      [
        {"/", :processes, "Processes", "Processes", "p"},
        {"/gc", :gc, "GC", "Garbage collection", "c"},
-       {"/crashes", :crashes, "Crashes", "Crash reports", "x"}
+       {"/crashes", :crashes, "Crashes", "Crash reports", "x"},
+       {"/insights", :insights, "Insights", "Insights: anomalies and groups (Nx)", "i"}
      ]},
     {"Tracing",
      [

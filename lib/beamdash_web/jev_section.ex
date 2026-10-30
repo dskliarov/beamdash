@@ -13,6 +13,12 @@ defmodule BeamdashWeb.JevSection do
   """
   def show?(enabled), do: enabled == true and Beamdash.Jev.available?()
 
+  @doc """
+  Whether the Ask box shows: as `show?/1`, and a model that answers free
+  text (Jev or Kev, not the local model) is configured.
+  """
+  def ask_on?(enabled), do: show?(enabled) and Beamdash.Jev.ask_backend() != nil
+
   attr :id, :string, required: true
   attr :event, :string, required: true, doc: "phx-click event that starts an analysis"
   attr :title, :string, required: true
@@ -101,6 +107,9 @@ defmodule BeamdashWeb.JevSection do
         <summary class="small muted">What is sent to {Beamdash.Jev.destination(@backend)}</summary>
         <p :if={@backend == :jev} class="small muted">
           {@sends} Never names, pids, modules, stacks, messages or state. Sent only when you click, to TypeSafe's API; its docs do not state how long requests are kept. Calls may be charged.
+        </p>
+        <p :if={@backend == :nx} class="small muted">
+          {@sends} Nothing is sent: beamdash's own model (Nx) answers inside beamdash.
         </p>
         <p :if={@backend == :kev} class="small muted">
           {@sends} Never names, pids, modules, stacks, messages or state. Sent only when you click, to the Kev server at {Beamdash.Jev.endpoint(

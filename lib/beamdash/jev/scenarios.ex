@@ -96,6 +96,14 @@ defmodule Beamdash.Jev.Scenarios do
     ]
   end
 
+  @doc false
+  # The builders, for the local model's training data
+  # (`Beamdash.Insights.Training`): same options as the scenarios below.
+  def process_case(name, expect, opts), do: p(name, expect, opts)
+
+  @doc false
+  def gc_case(name, expect, opts), do: g(name, expect, opts)
+
   ## Process scenarios
 
   defp p(name, expect, o) do

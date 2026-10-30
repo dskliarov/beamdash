@@ -30,7 +30,14 @@ jev_env =
     kev_api_key: System.get_env("KEV_API_KEY"),
     kev_model: System.get_env("KEV_MODEL"),
     kev_timeout: System.get_env("KEV_TIMEOUT"),
-    # jev or kev, when both are configured and none is chosen in Settings
+    # beamdash's own model (Nx), run locally: on unless NX_MODEL=false, which
+    # turns it off entirely (not offered, not in Settings)
+    nx:
+      case System.get_env("NX_MODEL") do
+        nil -> nil
+        value -> String.downcase(String.trim(value)) not in ~w(false 0 no off)
+      end,
+    # jev, kev or nx, when several are configured and none is chosen in Settings
     backend: System.get_env("DECISION_BACKEND")
   ]
   |> Enum.reject(fn {_key, value} -> is_nil(value) end)

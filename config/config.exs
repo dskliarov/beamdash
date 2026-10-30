@@ -20,13 +20,19 @@ config :phoenix, :json_library, Jason
 # Jev analysis (TypeSafe). `enabled: false` here, or JEV_ENABLED=false in the
 # environment, turns it off entirely: no requests and nothing of it in the UI.
 # The API key normally comes from TYPESAFE_API_KEY (config/runtime.exs).
+# `nx: false` (NX_MODEL=false) turns off beamdash's own local model, which is
+# otherwise on: it can still be switched off in Settings.
 config :beamdash, Beamdash.Jev,
   enabled: true,
-  model: "jev-1.13.0"
+  model: "jev-1.13.0",
+  nx: true
 
 if config_env() == :test do
   config :beamdash, BeamdashWeb.Endpoint, server: false
   config :logger, level: :warning
+
+  # tests choose the local model themselves (Beamdash.Test.Fixture.put_jev_config/1)
+  config :beamdash, Beamdash.Jev, nx: false
 
   # Set here, not in test_helper.exs: Beamdash.Plugins loads the plugins
   # when the app starts, before the helper runs. Removed after the suite.
