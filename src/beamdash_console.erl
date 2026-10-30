@@ -79,7 +79,8 @@ evaluate(elixir, Code, {Bindings, Env}) ->
 
 format_value(elixir, Value) ->
     limit('Elixir.Kernel':inspect(Value, [{limit, 50}, {printable_limit, 4000}]), 8000);
-format_value(erlang, Value) -> format(Value).
+format_value(erlang, Value) ->
+    limit(unicode:characters_to_binary(io_lib:format("~60tP", [Value, 20], [{chars_limit, 4000}])), 8000).
 format(Value) -> limit(unicode:characters_to_binary(io_lib:format("~tP", [Value, 20], [{chars_limit, 4000}])), 8000).
 result(Status, Value, Output) -> #{status => Status, result => Value, output => Output}.
 

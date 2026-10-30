@@ -42,6 +42,60 @@ defmodule Beamdash.ConsoleTest do
     assert {:ok, %{result: "21"}} = Console.submit(node(), session, "X.")
   end
 
+  test "formats nested Erlang terms over readable lines" do
+    {:ok, session} = Console.start(node(), self(), :erlang)
+    on_exit(fn -> Console.stop(session) end)
+
+    assert {:ok, %{status: :ok, result: result}} =
+             Console.eval(
+               node(),
+               session,
+               ~S|#{alpha => lists:seq(1000, 1017), beta => #{nested => ok}}.|
+             )
+
+    assert result =~ "\n"
+    assert result =~ "alpha"
+    assert result =~ "nested"
+    assert Enum.all?(String.split(result, "\n"), &(String.length(&1) <= 60))
+  end
+
+  test "renders successful results as styled code and escapes their contents" do
+    socket = %Phoenix.LiveView.Socket{
+      private: %{lifecycle: %Phoenix.LiveView.Lifecycle{}, live_temp: %{}}
+    }
+
+    {:ok, socket} = BeamdashWeb.ConsoleLive.mount(%{}, %{}, socket)
+
+    entry = %{
+      id: make_ref(),
+      number: 1,
+      command: "test.",
+      language: :erlang,
+      status: :ok,
+      result: ~S(#{value => <<"<tag>">>}),
+      output: ""
+    }
+
+    socket =
+      Phoenix.Component.assign(socket,
+        syntax: :erlang,
+        status: :connected,
+        node: :remote@host,
+        entries: [entry]
+      )
+
+    html =
+      socket.assigns
+      |> Map.put(:socket, socket)
+      |> BeamdashWeb.ConsoleLive.render()
+      |> Phoenix.LiveViewTest.rendered_to_string()
+
+    assert html =~ "console-result"
+    assert html =~ "language-erlang"
+    assert html =~ "&lt;tag&gt;"
+    refute html =~ "<tag>"
+  end
+
   test "Elixir REPL continues blocks, operators and strings and preserves its environment" do
     {:ok, session} = Console.start(node(), self(), :elixir)
     on_exit(fn -> Console.stop(session) end)
