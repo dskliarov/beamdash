@@ -13,6 +13,12 @@
   --statem: #b45309;
   --traced-bg: #f3effe;
   --traced-bg-strong: #e6dcfd;
+  --status-running-fg: #166534; --status-running-bg: #dcfce7;
+  --status-runnable-fg: #1d4ed8; --status-runnable-bg: #dbeafe;
+  --status-waiting-fg: #475569; --status-waiting-bg: #f1f5f9;
+  --status-suspended-fg: #92400e; --status-suspended-bg: #fef3c7;
+  --status-exiting-fg: #991b1b; --status-exiting-bg: #fee2e2;
+  --status-gc-fg: #6b21a8; --status-gc-bg: #f3e8ff;
   /* memory kinds: categorical slots 1-6, validated on this surface */
   --mem-1: #2a78d6; --mem-2: #eb6834; --mem-3: #1baf7a;
   --mem-4: #eda100; --mem-5: #e87ba4; --mem-6: #008300;
@@ -38,6 +44,12 @@
     --statem: #fbbf24;
     --traced-bg: #2a2142;
     --traced-bg-strong: #3a2d5c;
+    --status-running-fg: #86efac; --status-running-bg: #14532d;
+    --status-runnable-fg: #93c5fd; --status-runnable-bg: #1e3a5f;
+    --status-waiting-fg: #cbd5e1; --status-waiting-bg: #1e293b;
+    --status-suspended-fg: #fcd34d; --status-suspended-bg: #78350f;
+    --status-exiting-fg: #fca5a5; --status-exiting-bg: #7f1d1d;
+    --status-gc-fg: #d8b4fe; --status-gc-bg: #581c87;
     --mem-1: #3987e5; --mem-2: #d95926; --mem-3: #199e70;
     --mem-4: #c98500; --mem-5: #d55181; --mem-6: #008300;
     --up: #f87171; --down: #4ade80;
@@ -106,7 +118,9 @@ button.secondary { background: transparent; color: var(--accent); }
 
 .top-processes { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 12px; margin: 0 0 10px; }
 .top-processes .seg { flex-wrap: wrap; }
-.top-processes form { margin: 0; }
+.top-processes form { margin: 0 0 0 12px; }
+.top-processes form label { display: inline-flex; align-items: center; gap: 10px; }
+.top-processes .cpu-sampling-button { margin-left: auto; }
 
 .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--ok); }
 
@@ -151,7 +165,7 @@ tr.queued td { background: var(--warn-bg); }
   .bar > .tabs { order: 1; flex: 1 0 100%; max-width: none; }
   .bar > .conn-line { order: 2; }
 }
-.settings-tab { font-size: 16px; line-height: 1; padding: 4px 7px; }
+.settings-tab { font-size: 32px; line-height: 1; padding: 4px 7px; }
 .help-btn { padding: 2px 8px; border-radius: 50%; background: transparent; color: var(--muted); border: 1px solid var(--line); font-size: 12px; line-height: 1.4; }
 .help-btn:hover { color: var(--fg); border-color: var(--accent); }
 .shortcuts { border: 1px solid var(--line); border-radius: 10px; padding: 16px 20px; background: var(--bg); color: var(--fg); max-width: 560px; }
@@ -328,6 +342,63 @@ table.crash-table th:nth-child(3) { width: auto; }
 }
 .proc-table { min-width: 0; overflow-x: auto; }
 .proc-side { position: sticky; top: 8px; max-height: calc(100vh - 16px); overflow-y: auto; }
+.processes-page .proc-table { overflow: visible; }
+.processes-heading { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px 16px; margin: 18px 0 12px; }
+.processes-heading h2 { margin: 0; font-size: 20px; line-height: 1.2; }
+.processes-heading p { margin: 4px 0 0; color: var(--muted); font-size: 13px; }
+.process-count { padding: 4px 9px; border: 1px solid var(--line); border-radius: 999px; color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.process-controls { padding: 14px 16px; border: 1px solid var(--line); border-radius: 10px; background: var(--row-alt); }
+.process-controls .top-processes { margin: 0; }
+.process-control-label { font-size: inherit; font-weight: 600; color: var(--fg); }
+.process-controls .top-processes .seg { gap: 6px; border: 0; border-radius: 0; overflow: visible; }
+.process-controls .top-processes .seg .seg-btn { padding: 6px 11px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); font-weight: 500; }
+.process-controls .top-processes .seg .seg-btn:hover { border-color: var(--accent); color: var(--accent); }
+.process-controls .top-processes .seg .seg-btn.active { border-color: var(--accent); background: var(--accent); color: var(--bg); font-weight: 700; }
+.process-controls .top-processes .seg .seg-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.process-controls .top-processes .seg .seg-btn:disabled { opacity: .5; cursor: not-allowed; }
+.process-controls .top-processes .seg .seg-btn:disabled:hover { border-color: var(--line); color: var(--fg); }
+.process-controls .top-processes select { background: var(--bg); padding: 4px 8px; }
+.process-sampling-note { margin: 10px 0 0; color: var(--muted); line-height: 1.45; }
+.process-filter { margin: 14px 0 0; padding-top: 12px; border-top: 1px solid var(--line); }
+.process-filter input { flex: 1 1 240px; max-width: 420px; background: var(--bg); }
+.process-match-count { margin-left: auto; color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+.process-status-filter { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; margin-top: 12px; }
+.process-status-filter .process-control-label { margin-right: 4px; }
+.status-filter-button { padding: 3px 9px; border: 1px solid var(--line); border-radius: 999px; background: var(--bg); color: var(--fg); font-size: 12px; }
+.status-filter-button.active { border-color: var(--accent); color: var(--accent); font-weight: 700; }
+.status-filter-button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.process-table-scroll { margin-top: 14px; overflow-x: auto; border: 1px solid var(--line); border-radius: 10px; background: var(--bg); }
+.process-table-scroll:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.processes-table { min-width: 900px; }
+.process-table-caption { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
+.processes-table td { padding: 9px 10px; }
+.processes-table tr:last-child td { border-bottom: 0; }
+.processes-table th[aria-sort], .processes-table th[aria-sort] .process-sort { color: var(--accent); }
+.process-sort { padding: 0; border: 0; border-radius: 2px; background: transparent; color: inherit; font: inherit; font-weight: 600; white-space: nowrap; }
+.processes-table th[aria-sort] .process-sort { font-weight: 700; }
+.process-sort:hover { color: var(--accent); }
+.process-sort:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+.process-status { display: inline-flex; align-items: center; gap: 5px; padding: 2px 7px; border: 1px solid var(--process-status-color, currentColor); border-radius: 999px; color: var(--muted); background: var(--row-alt); font-size: 11px; font-weight: 600; line-height: 1.4; }
+.process-status::before { content: ""; width: 6px; height: 6px; flex: none; border-radius: 50%; background: var(--process-status-color, currentColor); }
+.process-status-running { --process-status-color: #22c55e; color: var(--status-running-fg); background: var(--status-running-bg); }
+.process-status-runnable { --process-status-color: #3b82f6; color: var(--status-runnable-fg); background: var(--status-runnable-bg); }
+.process-status-waiting { --process-status-color: #94a3b8; color: var(--status-waiting-fg); background: var(--status-waiting-bg); }
+.process-status-suspended { --process-status-color: #f59e0b; color: var(--status-suspended-fg); background: var(--status-suspended-bg); }
+.process-status-exiting { --process-status-color: #ef4444; color: var(--status-exiting-fg); background: var(--status-exiting-bg); }
+.process-status-garbage_collecting { --process-status-color: #a855f7; color: var(--status-gc-fg); background: var(--status-gc-bg); }
+.processes-table .process-empty { padding: 28px 16px; color: var(--muted); text-align: center; white-space: normal; }
+@media (max-width: 760px) {
+  .processes-page .proc-layout.with-panel { display: flex; flex-direction: column; }
+  .processes-page .proc-table, .processes-page .proc-side { width: 100%; }
+  .processes-page .proc-side { order: -1; position: static; max-height: none; }
+  .processes-page .proc-side #panel-resizer { display: none; }
+}
+@media (max-width: 640px) {
+  .process-controls { padding: 12px; }
+  .top-processes form { margin-left: 0; }
+  .process-filter input { max-width: none; }
+  .process-match-count { margin-left: 0; }
+}
 .proc-panel { position: relative; min-width: 0; border: 1px solid var(--line); border-radius: 6px; padding: 12px 14px; }
 .proc-panel section { border-top: 1px solid var(--line); padding-top: 10px; margin-top: 12px; }
 .proc-panel h3 { margin: 0; font-size: 15px; }
