@@ -27,6 +27,7 @@ defmodule BeamdashWeb.HomeLive do
   @max_rows 500
   @cpu_refresh_ms 1_750
   @top_limits [10, 25, 50, 100, 500]
+  @process_statuses ~w(running runnable waiting garbage_collecting suspended exiting)
   @top_metrics [
     {"cpu", "CPU %", :cpu},
     {"rate", "CPU activity (reds/s)", :reds_per_sec},
@@ -70,6 +71,7 @@ defmodule BeamdashWeb.HomeLive do
         sort_dir: :desc,
         row_limit: @max_rows,
         filter: "",
+        status_filter: MapSet.new(),
         rates: %{},
         cpu_values: %{},
         cpu_request: nil,
@@ -118,6 +120,7 @@ defmodule BeamdashWeb.HomeLive do
       |> then(fn s ->
         case @sort_columns[params["sort"]] do
           nil -> s
+          :cpu when not s.assigns.cpu_enabled -> s
           col -> assign(s, sort_by: col, sort_dir: if(col == :name, do: :asc, else: :desc))
         end
       end)
@@ -170,11 +173,14 @@ defmodule BeamdashWeb.HomeLive do
         true -> :desc
       end
 
-    {:noreply, assign(socket, sort_by: col, sort_dir: dir)}
+    if col == :cpu and not socket.assigns.cpu_enabled,
+      do: {:noreply, socket},
+      else: {:noreply, assign(socket, sort_by: col, sort_dir: dir)}
   end
 
   def handle_event("top_metric", %{"metric" => metric}, socket) do
     case Enum.find(@top_metrics, fn {key, _, _} -> key == metric end) do
+      {_, _, :cpu} when not socket.assigns.cpu_enabled -> {:noreply, socket}
       {_, _, column} -> {:noreply, assign(socket, sort_by: column, sort_dir: :desc)}
       nil -> {:noreply, socket}
     end
@@ -209,7 +215,7 @@ defmodule BeamdashWeb.HomeLive do
         else: socket
 
     {:noreply,
-     assign(socket,
+     assign(reset_cpu_sort(socket),
        cpu_enabled: false,
        cpu_generation: nil,
        cpu_request: nil,
@@ -235,6 +241,23 @@ defmodule BeamdashWeb.HomeLive do
   def handle_event("filter", %{"q" => q}, socket) do
     {:noreply, assign(socket, filter: q)}
   end
+
+  def handle_event("filter_status", %{"status" => "all"}, socket),
+    do: {:noreply, assign(socket, status_filter: MapSet.new())}
+
+  def handle_event("filter_status", %{"status" => status}, socket)
+      when status in @process_statuses do
+    selected = socket.assigns.status_filter
+
+    selected =
+      if MapSet.member?(selected, status),
+        do: MapSet.delete(selected, status),
+        else: MapSet.put(selected, status)
+
+    {:noreply, assign(socket, status_filter: selected)}
+  end
+
+  def handle_event("filter_status", _, socket), do: {:noreply, socket}
 
   # Legend items toggle a filter for their kind.
   def handle_event("filter_kind", %{"kind" => kind}, socket) do
@@ -445,7 +468,7 @@ defmodule BeamdashWeb.HomeLive do
 
       {:ok, {:error, :unsupported_otp}} ->
         {:noreply,
-         assign(socket,
+         assign(reset_cpu_sort(socket),
            cpu_enabled: false,
            cpu_generation: nil,
            cpu_values: %{},
@@ -455,7 +478,7 @@ defmodule BeamdashWeb.HomeLive do
 
       {:ok, {:error, :overloaded}} ->
         {:noreply,
-         assign(socket,
+         assign(reset_cpu_sort(socket),
            cpu_enabled: false,
            cpu_generation: nil,
            cpu_values: %{},
@@ -465,7 +488,7 @@ defmodule BeamdashWeb.HomeLive do
 
       {:ok, {:error, :busy}} ->
         {:noreply,
-         assign(socket,
+         assign(reset_cpu_sort(socket),
            cpu_enabled: false,
            cpu_generation: nil,
            cpu_values: %{},
@@ -475,7 +498,7 @@ defmodule BeamdashWeb.HomeLive do
 
       _ ->
         {:noreply,
-         assign(socket,
+         assign(reset_cpu_sort(socket),
            cpu_enabled: false,
            cpu_generation: nil,
            cpu_values: %{},
@@ -671,6 +694,7 @@ defmodule BeamdashWeb.HomeLive do
   def handle_info({:beamdash_target, {:connected, node}}, socket) do
     {:noreply,
      socket
+     |> reset_cpu_sort()
      |> reset_process_advisor()
      |> reset_triage()
      |> SourceTabs.init()
@@ -697,6 +721,7 @@ defmodule BeamdashWeb.HomeLive do
   def handle_info({:beamdash_target, {:disconnected, :nodedown}}, socket) do
     {:noreply,
      socket
+     |> reset_cpu_sort()
      |> reset_process_advisor()
      |> reset_triage()
      |> SourceTabs.init()
@@ -724,6 +749,7 @@ defmodule BeamdashWeb.HomeLive do
   def handle_info({:beamdash_target, {:disconnected, _}}, socket) do
     {:noreply,
      socket
+     |> reset_cpu_sort()
      |> reset_process_advisor()
      |> reset_triage()
      |> SourceTabs.init()
@@ -782,11 +808,21 @@ defmodule BeamdashWeb.HomeLive do
     end
   end
 
+  defp reset_cpu_sort(%{assigns: %{sort_by: :cpu}} = socket),
+    do: assign(socket, sort_by: :reductions, sort_dir: :desc)
+
+  defp reset_cpu_sort(socket), do: socket
+
   ## Rendering
 
   @impl true
   def render(assigns) do
     matching = matching(assigns.procs, assigns.filter, assigns.sys_traced)
+
+    matching =
+      if MapSet.size(assigns.status_filter) == 0,
+        do: matching,
+        else: Enum.filter(matching, &MapSet.member?(assigns.status_filter, to_string(&1.status)))
 
     matching =
       if assigns.triage.only_flagged,
@@ -798,7 +834,8 @@ defmodule BeamdashWeb.HomeLive do
         rows: sort_rows(matching, assigns),
         match_count: length(matching),
         top_metrics: @top_metrics,
-        top_limits: @top_limits
+        top_limits: @top_limits,
+        process_statuses: @process_statuses
       )
 
     dock_panels =
@@ -865,13 +902,17 @@ defmodule BeamdashWeb.HomeLive do
                     type="button"
                     class={["seg-btn", (@sort_by == column and @sort_dir == :desc) && "active"]}
                     aria-pressed={to_string(@sort_by == column and @sort_dir == :desc)}
+                    disabled={column == :cpu and not @cpu_enabled}
+                    title={
+                      if column == :cpu and not @cpu_enabled, do: "Start CPU sampling to rank by CPU"
+                    }
                     phx-click="top_metric"
                     phx-value-metric={key}
                   >{label}</button>
                 </div>
                 <form phx-change="top_limit">
                   <label>
-                    Show
+                    <span class="process-control-label">Show</span>
                     <select name="limit">
                       <option :for={count <- @top_limits} value={count} selected={@row_limit == count}>
                         {count}
@@ -881,7 +922,7 @@ defmodule BeamdashWeb.HomeLive do
                 </form>
                 <button
                   type="button"
-                  class="secondary small-btn"
+                  class="secondary small-btn cpu-sampling-button"
                   phx-click={if @cpu_enabled, do: "stop_cpu", else: "start_cpu"}
                 >
                   {if @cpu_enabled, do: "Stop CPU sampling", else: "Start CPU sampling"}
@@ -960,6 +1001,24 @@ defmodule BeamdashWeb.HomeLive do
                                                                                         " · showing first #{length(@rows)}"}
                 </span>
               </form>
+              <div class="process-status-filter" role="group" aria-label="Filter processes by status">
+                <span class="process-control-label">Status</span>
+                <button
+                  type="button"
+                  class={["status-filter-button", MapSet.size(@status_filter) == 0 && "active"]}
+                  aria-pressed={to_string(MapSet.size(@status_filter) == 0)}
+                  phx-click="filter_status"
+                  phx-value-status="all"
+                >All</button>
+                <button
+                  :for={status <- @process_statuses}
+                  type="button"
+                  class={["status-filter-button", MapSet.member?(@status_filter, status) && "active"]}
+                  aria-pressed={to_string(MapSet.member?(@status_filter, status))}
+                  phx-click="filter_status"
+                  phx-value-status={status}
+                >{status}</button>
+              </div>
             </div>
 
             <.triage_bar

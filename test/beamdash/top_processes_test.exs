@@ -3,6 +3,85 @@ defmodule Beamdash.TopProcessesTest do
 
   alias BeamdashWeb.HomeLive
 
+  test "CPU ranking is unavailable when sampling stops or fails" do
+    socket = %Phoenix.LiveView.Socket{
+      private: %{lifecycle: %Phoenix.LiveView.Lifecycle{}, live_temp: %{}}
+    }
+
+    {:ok, socket} = HomeLive.mount(%{}, %{}, socket)
+    {:noreply, socket} = HomeLive.handle_event("top_metric", %{"metric" => "cpu"}, socket)
+    assert socket.assigns.sort_by == :reductions
+
+    socket = Phoenix.Component.assign(socket, cpu_enabled: true)
+    {:noreply, socket} = HomeLive.handle_event("top_metric", %{"metric" => "cpu"}, socket)
+    assert socket.assigns.sort_by == :cpu
+    {:noreply, socket} = HomeLive.handle_event("stop_cpu", %{}, socket)
+    assert socket.assigns.sort_by == :reductions
+
+    request = {:cpu_sample, make_ref()}
+
+    socket =
+      Phoenix.Component.assign(socket, cpu_enabled: true, cpu_request: request, sort_by: :cpu)
+
+    {:noreply, socket} = HomeLive.handle_async(request, {:ok, {:error, :busy}}, socket)
+    assert socket.assigns.sort_by == :reductions
+    refute socket.assigns.cpu_enabled
+  end
+
+  test "filters by status before ranking and combines with text search" do
+    socket = %Phoenix.LiveView.Socket{
+      private: %{lifecycle: %Phoenix.LiveView.Lifecycle{}, live_temp: %{}}
+    }
+
+    {:ok, socket} = HomeLive.mount(%{}, %{}, socket)
+
+    procs =
+      for n <- 1..12 do
+        %{
+          pid: :c.pid(0, n, 0),
+          registered_name: String.to_atom("status_proc_#{n}"),
+          initial_call: nil,
+          current_function: nil,
+          status: if(n > 10, do: :running, else: :waiting),
+          message_queue_len: 0,
+          memory: 100,
+          reductions: 13 - n
+        }
+      end
+
+    socket = Phoenix.Component.assign(socket, syntax: :erlang, status: :connected, procs: procs)
+    {:noreply, socket} = HomeLive.handle_event("top_limit", %{"limit" => "10"}, socket)
+    {:noreply, socket} = HomeLive.handle_event("filter_status", %{"status" => "running"}, socket)
+    html = socket.assigns |> HomeLive.render() |> Phoenix.LiveViewTest.rendered_to_string()
+    assert html =~ "status_proc_11"
+    assert html =~ "status_proc_12"
+    refute html =~ ~r/status_proc_1\b/
+    assert html =~ "2 of 12"
+
+    {:noreply, socket} = HomeLive.handle_event("filter", %{"q" => "status_proc_11"}, socket)
+    html = socket.assigns |> HomeLive.render() |> Phoenix.LiveViewTest.rendered_to_string()
+    assert html =~ "status_proc_11"
+    refute html =~ "status_proc_12"
+    assert html =~ "1 of 12"
+
+    {:noreply, unchanged} =
+      HomeLive.handle_event("filter_status", %{"status" => "invalid"}, socket)
+
+    assert unchanged.assigns.status_filter == MapSet.new(["running"])
+    {:noreply, socket} = HomeLive.handle_event("filter", %{"q" => ""}, socket)
+    {:noreply, socket} = HomeLive.handle_event("filter_status", %{"status" => "waiting"}, socket)
+    html = socket.assigns |> HomeLive.render() |> Phoenix.LiveViewTest.rendered_to_string()
+    assert html =~ "12 of 12"
+    assert socket.assigns.status_filter == MapSet.new(["running", "waiting"])
+    {:noreply, socket} = HomeLive.handle_event("filter_status", %{"status" => "running"}, socket)
+    html = socket.assigns |> HomeLive.render() |> Phoenix.LiveViewTest.rendered_to_string()
+    assert html =~ "10 of 12"
+    refute html =~ "status_proc_11"
+    {:noreply, socket} = HomeLive.handle_event("filter_status", %{"status" => "all"}, socket)
+    html = socket.assigns |> HomeLive.render() |> Phoenix.LiveViewTest.rendered_to_string()
+    assert html =~ "12 of 12"
+  end
+
   test "the CPU table column is visible only while sampling is enabled" do
     socket = %Phoenix.LiveView.Socket{
       private: %{lifecycle: %Phoenix.LiveView.Lifecycle{}, live_temp: %{}}
