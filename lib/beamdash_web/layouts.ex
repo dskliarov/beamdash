@@ -252,6 +252,7 @@ defmodule BeamdashWeb.Layouts do
               :if={Map.get(@conn, :kube_binaries)}
               id="connect-kubectl-form"
               phx-submit="connect_kubectl"
+              phx-change="select_kube_binary"
               class="conn-row"
             >
               <input type="hidden" name="namespace" value={Map.get(@conn, :kube_namespace, "")} />

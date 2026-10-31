@@ -686,9 +686,9 @@ body.resizing-y, body.resizing-y * { cursor: row-resize !important; user-select:
 .mem-other { background: var(--mem-6); }
 .mem-legend { list-style: none; display: flex; flex-wrap: wrap; gap: 6px 16px; padding: 0; margin: 8px 0 14px; font-size: 12.5px; }
 .mem-swatch { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 6px; vertical-align: -1px; }
-.mem-table { max-width: 980px; }
 .mem-table td { vertical-align: middle; }
-.mem-table td.trend { width: 220px; padding-top: 2px; padding-bottom: 2px; }
+.mem-table th:not(:last-child), .mem-table td:not(:last-child) { width: 1%; }
+.mem-table td.trend { width: 100%; min-width: 150px; padding-top: 2px; padding-bottom: 2px; }
 .mem-table td.trend figure.spark { margin: 0; }
 .mem-table td.trend figcaption { display: none; }
 .mem-table td.trend .spark-plot { height: 26px; }
@@ -707,20 +707,35 @@ td.down, .down { color: var(--down); }
 .mem-tabs { margin-bottom: 0; }
 .mem-tabs .seg-btn { display: inline-flex; align-items: center; gap: 4px; padding: 6px 12px; }
 .mem-panel { border: 1px solid var(--line); border-radius: 0 8px 8px 8px; padding: 12px 14px; margin-top: -1px; }
+.memory-layout .mem-panel { margin-top: 0; }
 .guide { max-width: 820px; margin: 0 0 10px; }
 .top-form { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 8px; }
 .top-form select { font: inherit; color: var(--fg); background: var(--bg); border: 1px solid var(--line); border-radius: 4px; padding: 2px 4px; }
 .top-table td, .ets-table td, .gc-table td { vertical-align: middle; }
 .top-table .named { font-weight: 600; margin-right: 6px; }
 .row-actions { display: flex; gap: 10px; align-items: center; justify-content: flex-end; }
-.mem-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 10px; }
+.mem-action { margin-bottom: 12px; }
+.mem-action > button { width: min(100%, 340px); min-height: 40px; }
+.mem-action button.mem-action-selected { background: var(--accent); color: var(--bg); }
+.mem-result { margin: 14px 0; padding: 12px 14px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); overflow-x: auto; }
+.mem-result .mem-h3 { margin-top: 0; }
 .gc-table { max-width: 640px; margin-top: 4px; }
 td.freed, .freed { color: var(--down); font-weight: 600; }
-.inspect { margin-top: 12px; border: 1px solid var(--accent); border-radius: 8px; padding: 8px 12px; }
+.memory-layout.with-panel { align-items: stretch; }
+.memory-inspect-side { position: static; max-height: none; overflow: visible; }
+.memory-inspect { box-sizing: border-box; height: 100%; overflow: auto; }
+.memory-inspect pre { overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; }
 .inspect-head { display: flex; align-items: center; gap: 10px; }
 .inspect-head h3 { margin: 0; font-size: 14px; }
 .inspect-head button { margin-left: auto; }
-.inspect h4 { font-size: 12px; text-transform: uppercase; color: var(--muted); margin: 10px 0 4px; }
+.memory-inspect h4 { font-size: 12px; text-transform: uppercase; color: var(--muted); margin: 10px 0 4px; }
+@media (max-width: 760px) {
+  .memory-layout.with-panel { display: flex; flex-direction: column; }
+  .memory-layout .proc-table, .memory-layout .proc-side { width: 100%; box-sizing: border-box; }
+  .memory-layout .proc-side { order: -1; position: static; max-height: none; }
+  .memory-inspect { height: auto; }
+  .memory-layout #memory-panel-resizer { display: none; }
+}
 .status-pre { max-height: 360px; overflow: auto; }
 .ets-tools { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 8px; }
 .ets-table tr.growing td:first-child { box-shadow: inset 3px 0 0 var(--up); }

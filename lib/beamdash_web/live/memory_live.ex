@@ -354,7 +354,17 @@ defmodule BeamdashWeb.MemoryLive do
     do: {:noreply, socket |> assign(status: :connected, node: node, history: []) |> start()}
 
   def handle_info({:beamdash_target, {:disconnected, _}}, socket),
-    do: {:noreply, assign(socket, status: :disconnected, snap: nil, top: nil, ets: nil)}
+    do:
+      {:noreply,
+       assign(socket,
+         status: :disconnected,
+         snap: nil,
+         top: nil,
+         ets: nil,
+         leaks: nil,
+         gc: nil,
+         inspect: nil
+       )}
 
   ## Rendering
 
@@ -368,7 +378,7 @@ defmodule BeamdashWeb.MemoryLive do
       )
 
     ~H"""
-    <main class="wrap">
+    <main id="memory-page" class="wrap">
       <BeamdashWeb.Layouts.header
         active={:memory}
         syntax={@syntax}
@@ -525,90 +535,119 @@ defmodule BeamdashWeb.MemoryLive do
           </button>
         </nav>
 
-        <div :if={@tab == :processes} class="mem-panel">
-          <p class="guide">
-            Memory held by processes: usually messages piling up in a mailbox nobody reads,
-            or a process whose state keeps growing. Find the biggest ones, then look at what
-            they are doing and holding.
-          </p>
-          <form phx-change="attr" class="top-form">
-            <label class="muted small">
-              Top
-              <select name="n">
-                <option :for={n <- [5, 10, 20, 50]} value={n} selected={n == @top_n}>{n}</option>
-              </select>
-              by
-              <select name="attr">
-                <option
-                  :for={{a, label} <- @attrs}
-                  :if={a != :binary_memory}
-                  value={a}
-                  selected={a == @attr}
+        <div class={["proc-layout", "memory-layout", @inspect && "with-panel"]}>
+          <div class="proc-table">
+            <div :if={@tab == :processes} class="mem-panel">
+              <p class="guide">
+                Memory held by processes: usually messages piling up in a mailbox nobody reads,
+                or a process whose state keeps growing. Find the biggest ones, then look at what
+                they are doing and holding.
+              </p>
+              <form phx-change="attr" class="top-form">
+                <label class="muted small">
+                  Top
+                  <select name="n">
+                    <option :for={n <- [5, 10, 20, 50]} value={n} selected={n == @top_n}>{n}</option>
+                  </select>
+                  by
+                  <select name="attr">
+                    <option
+                      :for={{a, label} <- @attrs}
+                      :if={a != :binary_memory}
+                      value={a}
+                      selected={a == @attr}
+                    >
+                      {label}
+                    </option>
+                  </select>
+                </label>
+                <button type="button" class="secondary small-btn" phx-click="refresh_top">Refresh</button>
+                <span :if={@top} class="muted small mono">{source_call(@top)}</span>
+              </form>
+              <.top_table :if={@top} top={@top} prev={@top_prev} syntax={@syntax} />
+            </div>
+
+            <div :if={@tab == :binary} class="mem-panel">
+              <p class="guide">
+                Binaries over 64 bytes live in a shared heap and are freed only when no process
+                refers to them. A process that keeps a small slice of a big binary keeps all of it;
+                a process that rarely collects keeps binaries it has finished with.
+              </p>
+              <div id="gc-action" class="mem-action">
+                <button
+                  class={["secondary", @gc && "mem-action-selected"]}
+                  phx-click="gc_all"
+                  phx-disable-with="Collecting…"
                 >
-                  {label}
-                </option>
-              </select>
-            </label>
-            <button type="button" class="secondary small-btn" phx-click="refresh_top">Refresh</button>
-            <span :if={@top} class="muted small mono">{source_call(@top)}</span>
-          </form>
-          <.top_table :if={@top} top={@top} prev={@top_prev} syntax={@syntax} />
-          <.inspect_panel :if={@inspect} p={@inspect} syntax={@syntax} />
-        </div>
+                  Garbage collect every process
+                </button>
+                <section :if={@gc} class="mem-result" aria-labelledby="gc-result-heading">
+                  <h3 id="gc-result-heading" class="mem-h3">
+                    Garbage collect every process — result
+                  </h3>
+                  <p class="muted small">
+                    Memory before and after the collection started by this button.
+                  </p>
+                  <.gc_result gc={@gc} />
+                </section>
+              </div>
+              <div id="binary-leak-action" class="mem-action">
+                <button
+                  class={["secondary", @leaks && "mem-action-selected"]}
+                  phx-click="bin_leak"
+                  phx-disable-with="Collecting…"
+                >
+                  Find binary leaks <span class="mono small">recon:bin_leak({@top_n})</span>
+                </button>
+                <section :if={@leaks} class="mem-result leaks" aria-labelledby="binary-leaks-heading">
+                  <h3 id="binary-leaks-heading" class="mem-h3">Find binary leaks — result</h3>
+                  <p class={["small", leak_class(@leaks)]}>
+                    Binary memory {Format.bytes(@leaks.binary_before)} → {Format.bytes(
+                      @leaks.binary_after
+                    )} ({drop_text(
+                      @leaks.binary_before,
+                      @leaks.binary_after
+                    )}) after collecting every process.
+                    Processes that released the most binary references <span class="muted">({if @leaks.source == :recon, do: "recon:bin_leak", else: "built-in"})</span>:
+                  </p>
+                  <.top_table
+                    top={%{attr: :binary_refs, source: @leaks.source, entries: @leaks.processes}}
+                    prev={%{}}
+                    syntax={@syntax}
+                  />
+                </section>
+              </div>
+              <section class="mem-result" aria-labelledby="binary-current-heading">
+                <h3 id="binary-current-heading" class="mem-h3">Holding the most binary memory now</h3>
+                <p class="muted small">Current snapshot, shown independently of the actions above.</p>
+                <.top_table :if={@top} top={@top} prev={@top_prev} syntax={@syntax} />
+                <p class="guide small">
+                  The fix for a slice that keeps a big binary alive: copy it out before keeping it,
+                  <code>binary:copy/1</code>
+                  (Elixir <code>:binary.copy/1</code>).
+                </p>
+              </section>
+            </div>
 
-        <div :if={@tab == :binary} class="mem-panel">
-          <p class="guide">
-            Binaries over 64 bytes live in a shared heap and are freed only when no process
-            refers to them. A process that keeps a small slice of a big binary keeps all of it;
-            a process that rarely collects keeps binaries it has finished with.
-          </p>
-          <div class="mem-actions">
-            <button phx-click="gc_all" phx-disable-with="Collecting…">
-              Garbage collect every process
-            </button>
-            <button class="secondary" phx-click="bin_leak" phx-disable-with="Collecting…">
-              Find binary leaks <span class="mono small">recon:bin_leak({@top_n})</span>
-            </button>
+            <div :if={@tab == :ets} class="mem-panel">
+              <p class="guide">
+                ETS tables are never garbage collected: rows stay until deleted or the owner dies.
+                A table that keeps growing is the leak. Growth is counted from when you opened this
+                page (or reset it); the list refreshes every 5 s.
+              </p>
+              <.ets_table
+                :if={@ets}
+                tables={@ets}
+                base={@ets_base}
+                sort={@ets_sort}
+                filter={@ets_filter}
+                syntax={@syntax}
+              />
+            </div>
           </div>
-          <.gc_result :if={@gc} gc={@gc} />
-          <div :if={@leaks} class="leaks">
-            <p class={["small", leak_class(@leaks)]}>
-              Binary memory {Format.bytes(@leaks.binary_before)} → {Format.bytes(@leaks.binary_after)} ({drop_text(
-                @leaks.binary_before,
-                @leaks.binary_after
-              )}) after collecting every process.
-              Processes that released the most binary references <span class="muted">({if @leaks.source == :recon, do: "recon:bin_leak", else: "built-in"})</span>:
-            </p>
-            <.top_table
-              top={%{attr: :binary_refs, source: @leaks.source, entries: @leaks.processes}}
-              prev={%{}}
-              syntax={@syntax}
-            />
+          <div :if={@inspect} class="proc-side memory-inspect-side">
+            <.inspect_panel p={@inspect} syntax={@syntax} />
           </div>
-          <h3 class="mem-h3">Holding the most binary memory now</h3>
-          <.top_table :if={@top} top={@top} prev={@top_prev} syntax={@syntax} />
-          <p class="guide small">
-            The fix for a slice that keeps a big binary alive: copy it out before keeping it,
-            <code>binary:copy/1</code>
-            (Elixir <code>:binary.copy/1</code>).
-          </p>
-          <.inspect_panel :if={@inspect} p={@inspect} syntax={@syntax} />
-        </div>
-
-        <div :if={@tab == :ets} class="mem-panel">
-          <p class="guide">
-            ETS tables are never garbage collected: rows stay until deleted or the owner dies.
-            A table that keeps growing is the leak. Growth is counted from when you opened this
-            page (or reset it); the list refreshes every 5 s.
-          </p>
-          <.ets_table
-            :if={@ets}
-            tables={@ets}
-            base={@ets_base}
-            sort={@ets_sort}
-            filter={@ets_filter}
-            syntax={@syntax}
-          />
         </div>
       </section>
     </main>
@@ -758,7 +797,26 @@ defmodule BeamdashWeb.MemoryLive do
 
   defp inspect_panel(assigns) do
     ~H"""
-    <div class="inspect" id="inspect">
+    <aside class="proc-panel memory-inspect" id="memory-process-details">
+      <div
+        id="memory-panel-resizer"
+        class="resizer resizer-x"
+        phx-hook="Resizer"
+        phx-update="ignore"
+        data-var="--panel-w"
+        data-axis="x"
+        data-target="#memory-process-details"
+        data-container=".memory-layout"
+        data-keep="320"
+        data-min="300"
+        data-max="1400"
+        role="separator"
+        aria-orientation="vertical"
+        aria-label="Resize the process panel"
+        tabindex="0"
+        title="Drag to resize · double-click to reset"
+      >
+      </div>
       <div class="inspect-head">
         <h3 class="mono">
           {if @p.name, do: Format.name(@p.name, @syntax), else: Format.pid(@p.pid, @syntax)}
@@ -786,7 +844,7 @@ defmodule BeamdashWeb.MemoryLive do
         <% {:error, reason} -> %>
           <p class="muted small">No state: {Format.term(reason, @syntax)}</p>
       <% end %>
-    </div>
+    </aside>
     """
   end
 
@@ -815,8 +873,8 @@ defmodule BeamdashWeb.MemoryLive do
       </tbody>
     </table>
     <p class="muted small">
-      If binary memory dropped a lot, processes were holding binaries they no longer used:
-      “Find binary leaks” shows which.
+      If binary memory dropped a lot, processes were holding binaries they no longer used.
+      “Find binary leaks” runs another collection to identify processes releasing references.
     </p>
     """
   end
