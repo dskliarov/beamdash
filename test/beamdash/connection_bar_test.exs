@@ -3,7 +3,7 @@ defmodule Beamdash.ConnectionBarTest do
   import Phoenix.ConnTest
   import Phoenix.LiveViewTest, only: [rendered_to_string: 1]
 
-  alias Beamdash.{LastConnection, Target}
+  alias Beamdash.{LastConnection, Settings, Target}
   alias BeamdashWeb.Connection
   alias Beamdash.Test.Fixture
 
@@ -397,6 +397,102 @@ defmodule Beamdash.ConnectionBarTest do
 
   test "a freshly mounted bar offers no namespaces yet" do
     assert mounted_bar().assigns.conn.kube_namespaces == []
+  end
+
+  test "Kubernetes selections survive reload and restore only available choices" do
+    dir =
+      Path.join(
+        System.tmp_dir!(),
+        "beamdash-kube-selection-#{System.unique_integer([:positive])}"
+      )
+
+    File.mkdir_p!(dir)
+    cluster = Path.join(dir, "prod.yaml")
+    File.write!(cluster, "")
+    executable = Path.join(dir, "kubectl")
+
+    File.write!(executable, """
+    #!/bin/sh
+    case " $* " in
+      *" get pods "*) printf 'pod-a pod-b' ;;
+      *" get pod "*) printf 'app sidecar' ;;
+      *" exec "*) printf '/app/bin/one\\n/app/bin/two\\n' ;;
+      *) printf 'default prod' ;;
+    esac
+    """)
+
+    File.chmod!(executable, 0o700)
+    previous_path = System.get_env("PATH")
+    previous_settings = Application.get_env(:beamdash, :settings_file)
+    System.put_env("PATH", dir <> ":" <> (previous_path || ""))
+    Application.put_env(:beamdash, :settings_file, Path.join(dir, "settings.json"))
+    Settings.reload()
+
+    on_exit(fn ->
+      if previous_path, do: System.put_env("PATH", previous_path), else: System.delete_env("PATH")
+      Application.put_env(:beamdash, :settings_file, previous_settings)
+      Settings.reload()
+      File.rm_rf!(dir)
+    end)
+
+    :ok = Settings.put_kubeconfig_dir(dir)
+
+    :ok =
+      Settings.put_kube_selection(%{
+        "cluster" => cluster,
+        "namespace" => "prod",
+        "pod" => "pod-b",
+        "container" => "sidecar",
+        "binary" => "/app/bin/two"
+      })
+
+    :ok = Settings.reload()
+    s = mounted_bar()
+    assert s.assigns.conn.kube_cluster == cluster
+    assert s.assigns.conn.kube_namespace == "prod"
+    {:halt, s} = Connection.handle_event("set_conn_method", %{"method" => "kubectl"}, s)
+    assert_receive {:beamdash_restore_kube, ref, ^cluster, "prod", result}, 10_000
+
+    {:halt, stale} =
+      Connection.handle_info({:beamdash_restore_kube, make_ref(), cluster, "prod", result}, s)
+
+    assert stale.assigns.conn.kube_pods == nil
+    partial = {:partial, %{pods: ["pod-a", "pod-b"], pod: "pod-b", error: :timeout}}
+
+    {:halt, failed} =
+      Connection.handle_info({:beamdash_restore_kube, ref, cluster, "prod", partial}, s)
+
+    assert failed.assigns.conn.kube_pods == ["pod-a", "pod-b"]
+    assert failed.assigns.conn.kube_pod == "pod-b"
+    assert failed.assigns.conn.error != nil
+    {:halt, s} = Connection.handle_info({:beamdash_restore_kube, ref, cluster, "prod", result}, s)
+    assert s.assigns.conn.kube_pod == "pod-b"
+    assert s.assigns.conn.kube_container == "sidecar"
+    assert s.assigns.conn.kube_binary == "/app/bin/two"
+    {:halt, s} = Connection.handle_event("select_kube_binary", %{"binary" => "/app/bin/one"}, s)
+    :ok = Settings.reload()
+    assert Settings.kube_selection()["binary"] == "/app/bin/one"
+    assert s.assigns.conn.kube_binary == "/app/bin/one"
+
+    :ok =
+      Settings.put_kube_selection(%{
+        "cluster" => cluster,
+        "namespace" => "prod",
+        "pod" => "gone",
+        "container" => "gone",
+        "binary" => "gone"
+      })
+
+    :ok = Settings.reload()
+
+    {:halt, s} =
+      Connection.handle_event("set_conn_method", %{"method" => "kubectl"}, mounted_bar())
+
+    assert_receive {:beamdash_restore_kube, ref, ^cluster, "prod", result}, 10_000
+    {:halt, s} = Connection.handle_info({:beamdash_restore_kube, ref, cluster, "prod", result}, s)
+    assert s.assigns.conn.kube_pod == "pod-a"
+    assert s.assigns.conn.kube_container == "app"
+    assert s.assigns.conn.kube_binary == "/app/bin/one"
   end
 
   defp kube_socket(namespaces) do

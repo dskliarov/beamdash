@@ -371,9 +371,26 @@ const Highlight = {
   },
 };
 
+// Capture each Memory patch, including partial updates, and restore after LiveView's focus handling.
+const MemoryScroll = {
+  onPatchStart(target) {
+    const page = document.getElementById("memory-page");
+    this.position = page && (target.contains(page) || page.contains(target))
+      ? [window.scrollX, window.scrollY] : null;
+  },
+  onPatchEnd() {
+    const position = this.position;
+    this.position = null;
+    if (position && (window.scrollX !== position[0] || window.scrollY !== position[1])) {
+      window.scrollTo(...position);
+    }
+  },
+};
+
 const csrfToken = document.querySelector("meta[name='csrf-token']").getAttribute("content");
 const liveSocket = new LiveView.LiveSocket("/live", Phoenix.Socket, {
   params: { _csrf_token: csrfToken },
+  dom: { onPatchStart: target => MemoryScroll.onPatchStart(target), onPatchEnd: () => MemoryScroll.onPatchEnd() },
   hooks: { Resizer, DockSpacer, NavOverflow, NamespaceCombobox, LogExport, Highlight, SourceEditor: globalThis.BeamSourceEditor, ConsoleCompletion: globalThis.BeamConsoleCompletion, ReplConsole: globalThis.BeamReplConsole, NotebookFiles: globalThis.BeamNotebookFiles, CodeMirrorEditor: globalThis.BeamModuleEditor },
 });
 liveSocket.connect();

@@ -36,12 +36,19 @@ defmodule BeamdashWeb.Connection do
   def on_mount(:default, _params, _session, socket) do
     %{status: status, node: node} = Target.status()
     saved = LastConnection.get()
+    kube_saved = Settings.kube_selection()
+    clusters = kube_clusters(Settings.kubeconfig_dir())
+
+    cluster =
+      if Enum.any?(clusters.kube_clusters, &(&1.path == kube_saved["cluster"])),
+        do: kube_saved["cluster"],
+        else: clusters.kube_cluster
 
     socket =
       socket
       |> assign(
         :conn,
-        Map.merge(kube_clusters(Settings.kubeconfig_dir()), %{
+        Map.merge(clusters, %{
           status: status,
           node: node,
           info: nil,
@@ -49,11 +56,14 @@ defmodule BeamdashWeb.Connection do
           cookie_input: saved.cookie,
           error: nil,
           method: :direct,
-          kube_namespace: "",
+          kube_cluster: cluster,
+          kube_namespace:
+            if(cluster == kube_saved["cluster"], do: kube_saved["namespace"], else: ""),
           kube_namespaces: [],
           kube_pod: "",
           kube_pods: nil,
           kube_pods_listing: false,
+          kube_restore_ref: nil,
           kube_containers: nil,
           kube_container: nil,
           kube_binaries: nil,
@@ -121,18 +131,56 @@ defmodule BeamdashWeb.Connection do
     method = String.to_existing_atom(method)
     switched? = socket.assigns.conn[:method] != method
     socket = update(socket, method: method, error: nil)
-    {:halt, if(method == :kubectl and switched?, do: list_namespaces(socket), else: socket)}
+
+    socket =
+      if switched?,
+        do: update(socket, kube_restore_ref: nil, kube_pods_listing: false),
+        else: socket
+
+    if method == :kubectl and switched? do
+      socket = list_namespaces(socket)
+
+      if socket.assigns.conn.kube_cluster &&
+           Map.get(socket.assigns.conn, :kube_namespace, "") != "" &&
+           is_nil(socket.assigns.conn[:kube_pods]) do
+        cluster = socket.assigns.conn.kube_cluster
+        namespace = socket.assigns.conn.kube_namespace
+        saved = Settings.kube_selection()
+        ref = make_ref()
+        pid = self()
+
+        {:ok, _} =
+          Task.start(fn ->
+            send(
+              pid,
+              {:beamdash_restore_kube, ref, cluster, namespace,
+               restore_kube(cluster, namespace, saved)}
+            )
+          end)
+
+        {:halt, update(socket, kube_pods_listing: true, kube_restore_ref: ref)}
+      else
+        {:halt, socket}
+      end
+    else
+      {:halt, socket}
+    end
   end
 
   # picking a different cluster invalidates everything listed under the old
   # one, same reset `"select_kube_pod"` does for a different pod.
   def handle_event("select_kube_cluster", %{"cluster" => cluster}, socket) do
+    Settings.put_kube_selection(%{"cluster" => cluster})
+
     {:halt,
      socket
      |> update(
        kube_cluster: cluster,
+       kube_namespace: "",
        kube_namespaces: [],
        kube_pods: nil,
+       kube_pods_listing: false,
+       kube_restore_ref: nil,
        kube_pod: "",
        kube_containers: nil,
        kube_container: nil,
@@ -146,11 +194,20 @@ defmodule BeamdashWeb.Connection do
   def handle_event("list_kube_pods", %{"namespace" => namespace}, socket) do
     namespace = String.trim(namespace)
     cluster = socket.assigns.conn.kube_cluster
+    saved = Settings.kube_selection()
+
+    saved =
+      if saved["cluster"] == cluster and saved["namespace"] == namespace,
+        do: saved,
+        else: %{"cluster" => cluster, "namespace" => namespace}
+
+    Settings.put_kube_selection(saved)
 
     socket =
       update(socket,
         kube_namespace: namespace,
         kube_pods_listing: true,
+        kube_restore_ref: nil,
         kube_pods: nil,
         kube_pod: "",
         kube_containers: nil,
@@ -165,8 +222,12 @@ defmodule BeamdashWeb.Connection do
         socket = update(socket, kube_pods: pods, kube_pods_listing: false)
 
         case pods do
-          [] -> {:halt, socket}
-          [pod | _] -> {:halt, list_containers(socket, cluster, namespace, pod)}
+          [] ->
+            {:halt, socket}
+
+          [first | _] ->
+            pod = if saved["pod"] in pods, do: saved["pod"], else: first
+            {:halt, list_containers(socket, cluster, namespace, pod)}
         end
 
       {:error, reason} ->
@@ -179,6 +240,12 @@ defmodule BeamdashWeb.Connection do
   def handle_event("select_kube_pod", %{"namespace" => namespace, "pod" => pod}, socket) do
     namespace = String.trim(namespace)
     pod = String.trim(pod)
+
+    Settings.put_kube_selection(%{
+      "cluster" => socket.assigns.conn.kube_cluster,
+      "namespace" => namespace,
+      "pod" => pod
+    })
 
     socket =
       update(socket,
@@ -203,6 +270,13 @@ defmodule BeamdashWeb.Connection do
     namespace = String.trim(namespace)
     pod = String.trim(pod)
 
+    Settings.put_kube_selection(%{
+      "cluster" => socket.assigns.conn.kube_cluster,
+      "namespace" => namespace,
+      "pod" => pod,
+      "container" => container
+    })
+
     socket = update(socket, kube_listing: true, kube_binaries: nil, kube_binary: nil, error: nil)
 
     {:halt,
@@ -216,6 +290,15 @@ defmodule BeamdashWeb.Connection do
      )}
   end
 
+  def handle_event("select_kube_binary", %{"binary" => binary}, socket) do
+    if binary in (socket.assigns.conn.kube_binaries || []) do
+      save_kube_selection(socket, binary)
+      {:halt, update(socket, kube_binary: binary)}
+    else
+      {:halt, socket}
+    end
+  end
+
   # The pod comes from the server's selection, not the form: while a pick is
   # still being listed the browser keeps sending the previous pod's hidden field.
   def handle_event(
@@ -227,6 +310,7 @@ defmodule BeamdashWeb.Connection do
     pod = socket.assigns.conn.kube_pod
     container = String.trim(container)
     cluster = socket.assigns.conn.kube_cluster
+    save_kube_selection(socket, binary)
 
     case Target.connect_via_kubectl(cluster, namespace, pod, container, binary) do
       {:ok, info} ->
@@ -307,6 +391,8 @@ defmodule BeamdashWeb.Connection do
       |> update(
         kube_namespaces: [],
         kube_pods: nil,
+        kube_pods_listing: false,
+        kube_restore_ref: nil,
         kube_pod: "",
         kube_containers: nil,
         kube_container: nil,
@@ -331,6 +417,42 @@ defmodule BeamdashWeb.Connection do
         end
 
       {:halt, update(socket, kube_namespaces: namespaces)}
+    else
+      {:halt, socket}
+    end
+  end
+
+  def handle_info({:beamdash_restore_kube, ref, cluster, namespace, result}, socket) do
+    conn = socket.assigns.conn
+
+    if conn.kube_restore_ref == ref and conn.method == :kubectl and conn.kube_cluster == cluster and
+         conn.kube_namespace == namespace and conn.kube_pods_listing and is_nil(conn.kube_pods) do
+      case result do
+        {status, %{pods: pods} = restored} when status in [:ok, :partial] ->
+          socket =
+            update(socket,
+              kube_pods: pods,
+              kube_pods_listing: false,
+              kube_restore_ref: nil,
+              kube_pod: restored[:pod] || "",
+              kube_containers: restored[:containers],
+              kube_container: restored[:container],
+              kube_binaries: restored[:binaries],
+              kube_binary: restored[:binary],
+              error: if(status == :partial, do: Format.error(restored.error), else: nil)
+            )
+
+          if status == :ok and restored[:pod], do: save_kube_selection(socket, restored[:binary])
+          {:halt, socket}
+
+        {:error, reason} ->
+          {:halt,
+           update(socket,
+             kube_pods_listing: false,
+             kube_restore_ref: nil,
+             error: Format.error(reason)
+           )}
+      end
     else
       {:halt, socket}
     end
@@ -389,6 +511,59 @@ defmodule BeamdashWeb.Connection do
     update(socket, kube_namespaces: [])
   end
 
+  # All kubectl calls run in the task, since a pod or container can be slow to answer.
+  defp restore_kube(cluster, namespace, saved) do
+    with {:ok, pods} <- Kubectl.list_pods(cluster, namespace) do
+      if pods == [] do
+        {:ok, %{pods: []}}
+      else
+        same_namespace = saved["cluster"] == cluster and saved["namespace"] == namespace
+        pod = if same_namespace and saved["pod"] in pods, do: saved["pod"], else: List.first(pods)
+
+        case Kubectl.list_containers(cluster, namespace, pod) do
+          {:error, reason} ->
+            {:partial, %{pods: pods, pod: pod, error: reason}}
+
+          {:ok, containers} ->
+            same_pod = same_namespace and saved["pod"] == pod
+
+            container =
+              if same_pod and saved["container"] in containers,
+                do: saved["container"],
+                else: List.first(containers)
+
+            case Kubectl.list_binaries(cluster, namespace, pod, container) do
+              {:error, reason} ->
+                {:partial,
+                 %{
+                   pods: pods,
+                   pod: pod,
+                   containers: containers,
+                   container: container,
+                   error: reason
+                 }}
+
+              {:ok, binaries} ->
+                binary =
+                  if same_pod and saved["container"] == container and saved["binary"] in binaries,
+                    do: saved["binary"],
+                    else: List.first(binaries)
+
+                {:ok,
+                 %{
+                   pods: pods,
+                   pod: pod,
+                   containers: containers,
+                   container: container,
+                   binaries: binaries,
+                   binary: binary
+                 }}
+            end
+        end
+      end
+    end
+  end
+
   # Lists `pod`'s containers and then the release binaries in the first one, storing
   # `pod` itself (shared by the initial pod listing and picking a different
   # pod from the dropdown).
@@ -397,7 +572,15 @@ defmodule BeamdashWeb.Connection do
 
     case Kubectl.list_containers(cluster, namespace, pod) do
       {:ok, containers} ->
-        list_binaries(socket, cluster, namespace, pod, List.first(containers), containers)
+        saved = Settings.kube_selection()
+
+        container =
+          if saved["cluster"] == cluster and saved["namespace"] == namespace and
+               saved["pod"] == pod and saved["container"] in containers,
+             do: saved["container"],
+             else: List.first(containers)
+
+        list_binaries(socket, cluster, namespace, pod, container, containers)
 
       {:error, reason} ->
         update(socket, error: Format.error(reason), kube_listing: false)
@@ -412,11 +595,22 @@ defmodule BeamdashWeb.Connection do
 
     case Kubectl.list_binaries(cluster, namespace, pod, container) do
       {:ok, binaries} ->
-        update(socket,
-          kube_binaries: binaries,
-          kube_binary: List.first(binaries),
-          kube_listing: false
-        )
+        saved = Settings.kube_selection()
+
+        binary =
+          if saved["cluster"] == cluster and saved["namespace"] == namespace and
+               saved["pod"] == pod and saved["container"] == container and
+               saved["binary"] in binaries, do: saved["binary"], else: List.first(binaries)
+
+        socket =
+          update(socket,
+            kube_binaries: binaries,
+            kube_binary: binary,
+            kube_listing: false
+          )
+
+        save_kube_selection(socket, binary)
+        socket
 
       {:error, reason} ->
         update(socket, error: Format.error(reason), kube_listing: false)
@@ -447,6 +641,18 @@ defmodule BeamdashWeb.Connection do
 
   defp update(socket, changes),
     do: assign(socket, :conn, Map.merge(socket.assigns.conn, Map.new(changes)))
+
+  defp save_kube_selection(socket, binary) do
+    conn = socket.assigns.conn
+
+    Settings.put_kube_selection(%{
+      "cluster" => conn.kube_cluster,
+      "namespace" => conn.kube_namespace,
+      "pod" => conn.kube_pod,
+      "container" => conn.kube_container,
+      "binary" => binary
+    })
+  end
 
   @doc "Forgets a node typed in this session that did not connect."
   def forget_typed do

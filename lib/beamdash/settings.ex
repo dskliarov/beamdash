@@ -21,12 +21,45 @@ defmodule Beamdash.Settings do
   @nx_key {__MODULE__, :nx_enabled}
   @kev_port_key {__MODULE__, :kev_port}
   @kube_key {__MODULE__, :kubeconfig_dir}
+  @kube_selection_key {__MODULE__, :kube_selection}
   @reconnect_key {__MODULE__, :auto_reconnect}
   @source_dirs_key {__MODULE__, :source_dirs}
   @ai_key {__MODULE__, :ai_provider}
   @syntaxes [:erlang, :elixir]
 
   def syntaxes, do: @syntaxes
+
+  @doc "The last Kubernetes connection form selections."
+  def kube_selection do
+    case :persistent_term.get(@kube_selection_key, :unset) do
+      :unset ->
+        saved = read()["kube_selection"]
+        saved = if is_map(saved), do: saved, else: %{}
+
+        selection =
+          Map.new(~w(cluster namespace pod container binary), fn key ->
+            value = saved[key]
+            {key, if(is_binary(value), do: value, else: "")}
+          end)
+
+        :persistent_term.put(@kube_selection_key, selection)
+        selection
+
+      selection ->
+        selection
+    end
+  end
+
+  def put_kube_selection(selection) when is_map(selection) do
+    saved =
+      Map.new(~w(cluster namespace pod container binary), fn key ->
+        value = selection[key]
+        {key, if(is_binary(value), do: value, else: "")}
+      end)
+
+    :persistent_term.put(@kube_selection_key, saved)
+    save("kube_selection", saved)
+  end
 
   @doc "Saved AI provider and model. API credentials are read from the environment."
   def ai_provider do
@@ -329,6 +362,7 @@ defmodule Beamdash.Settings do
     :persistent_term.erase(@nx_key)
     :persistent_term.erase(@kev_port_key)
     :persistent_term.erase(@kube_key)
+    :persistent_term.erase(@kube_selection_key)
     :persistent_term.erase(@reconnect_key)
     :persistent_term.erase(@source_dirs_key)
     :persistent_term.erase(@ai_key)
