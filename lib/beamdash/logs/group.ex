@@ -1,13 +1,19 @@
 defmodule Beamdash.Logs.Group do
   @moduledoc """
-  Combines consecutive similar log lines. Two lines are similar when their
-  level, source and message are equal once the variable parts (numbers,
-  pids, ids, timestamps) are masked with `#`.
+  Combines similar log lines. Two lines are similar when their level, source
+  and message are equal once the variable parts (numbers, pids, ids,
+  timestamps) are masked with `#`. A line joins the similar row among the
+  `window/0` newest rows, and that row moves to the top.
 
   A row is `%{id, key, count, entry, first_at, ids}`: `entry` is the newest
   line, `ids` are the entry ids newest first, and `id` is `"g-<oldest id>"`
   so it stays stable while newer lines join.
   """
+
+  @window 4
+
+  @doc "How many of the newest rows a line can join."
+  def window, do: @window
 
   # Applied in order; each mask only sees text the previous ones left alone.
   # A function, not an attribute: compiled regexes can't be escaped into
@@ -74,15 +80,19 @@ defmodule Beamdash.Logs.Group do
     entries_newest_first |> Enum.reverse() |> Enum.reduce([], &add(&2, &1))
   end
 
-  @doc "Adds a newer entry on top of `rows`, joining the top row when similar."
-  def add([%{key: key} = top | rest], entry) do
-    case key(entry) do
-      ^key -> [%{top | count: top.count + 1, entry: entry, ids: [entry.id | top.ids]} | rest]
-      new_key -> [new_row(entry, new_key), top | rest]
+  @doc "Adds a newer entry on top of `rows`, joining a similar row among the newest `window/0`."
+  def add(rows, entry) do
+    key = key(entry)
+
+    case Enum.find_index(Enum.take(rows, @window), &(&1.key == key)) do
+      nil ->
+        [new_row(entry, key) | rows]
+
+      index ->
+        {top, rest} = List.pop_at(rows, index)
+        [%{top | count: top.count + 1, entry: entry, ids: [entry.id | top.ids]} | rest]
     end
   end
-
-  def add([], entry), do: [new_row(entry, key(entry))]
 
   # (the key is passed in: masking a message is the costly part)
   defp new_row(entry, key) do

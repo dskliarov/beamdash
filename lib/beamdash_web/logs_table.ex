@@ -27,57 +27,61 @@ defmodule BeamdashWeb.LogsTable do
   def source_bar(assigns) do
     ~H"""
     <div class="active-traces logs-source">
-      <.source info={@info} node={@node} />
-      <div
-        :if={@connected? and is_map(@info.kubectl)}
-        class="seg"
-        role="group"
-        aria-label="Log source"
-      >
-        <button
-          :for={
-            {value, label} <- [
-              {:combined, "Combined"},
-              {:kubectl, "kubectl only"},
-              {:node, "Node only"}
-            ]
-          }
-          type="button"
-          class={["seg-btn", @info.mode == value && "active"]}
-          aria-pressed={to_string(@info.mode == value)}
-          disabled={@loading?}
-          phx-click="set_source"
-          phx-value-source={value}
-        >{label}</button>
-      </div>
-      <span :if={@loading?} class="muted small" role="status">Changing log source…</span>
-      <span :if={@info.status == :streaming} class="muted small">streaming</span>
-      <span :if={match?({:ended, _}, @info.status)} class="muted small">
-        {ended(@info.status)}
-      </span>
-      <button
-        :if={match?({:ended, _}, @info.status)}
-        type="button"
-        class="secondary"
-        phx-click="reconnect"
-      >
-        Reconnect
-      </button>
-      <div
-        :if={is_map(@info.kubectl) or @view == :previous}
-        class="seg"
-        role="group"
-        aria-label="Container"
-      >
-        <button
-          :for={{value, label} <- [{"live", "Live"}, {"previous", "Previous container"}]}
-          type="button"
-          class={["seg-btn", Atom.to_string(@view) == value && "active"]}
-          aria-pressed={to_string(Atom.to_string(@view) == value)}
-          phx-click="view"
-          phx-value-view={value}
+      <div class="logs-source-switches">
+        <div
+          :if={@connected? and is_map(@info.kubectl)}
+          class="seg"
+          role="group"
+          aria-label="Log source"
         >
-          {label}
+          <button
+            :for={
+              {value, label} <- [
+                {:combined, "Combined"},
+                {:kubectl, "kubectl only"},
+                {:node, "Node only"}
+              ]
+            }
+            type="button"
+            class={["seg-btn", @info.mode == value && "active"]}
+            aria-pressed={to_string(@info.mode == value)}
+            disabled={@loading?}
+            phx-click="set_source"
+            phx-value-source={value}
+          >{label}</button>
+        </div>
+        <div
+          :if={@info.mode != :node and (is_map(@info.kubectl) or @view == :previous)}
+          class="seg"
+          role="group"
+          aria-label="Container"
+        >
+          <button
+            :for={{value, label} <- [{"live", "Live"}, {"previous", "Previous container"}]}
+            type="button"
+            class={["seg-btn", Atom.to_string(@view) == value && "active"]}
+            aria-pressed={to_string(Atom.to_string(@view) == value)}
+            phx-click="view"
+            phx-value-view={value}
+          >
+            {label}
+          </button>
+        </div>
+      </div>
+      <div class="logs-source-info">
+        <.source info={@info} node={@node} />
+        <span :if={@loading?} class="muted small" role="status">Changing log source…</span>
+        <span :if={@info.status == :streaming} class="muted small">streaming</span>
+        <span :if={match?({:ended, _}, @info.status)} class="muted small">
+          {ended(@info.status)}
+        </span>
+        <button
+          :if={match?({:ended, _}, @info.status)}
+          type="button"
+          class="secondary"
+          phx-click="reconnect"
+        >
+          Reconnect
         </button>
       </div>
     </div>
@@ -128,7 +132,7 @@ defmodule BeamdashWeb.LogsTable do
 
   def table(assigns) do
     ~H"""
-    <div class="log logs-table" role="table" aria-label="Log lines">
+    <div class="log logs-table" role="table" aria-label="Log lines" tabindex="0">
       <div class="log-cols logs-cols log-head" role="row">
         <span role="columnheader">Time (UTC)</span>
         <span role="columnheader">Level</span>
@@ -256,7 +260,12 @@ defmodule BeamdashWeb.LogsTable do
   attr :node, :atom, default: nil
 
   defp details(assigns) do
-    assigns = assign(assigns, :json_rows, json_rows(assigns.entry.message))
+    json_rows = json_rows(assigns.entry.message)
+    # a JSON message's fields are listed above, and level, pid, where and meta came from them
+    json_time? = is_list(json_rows) and List.keymember?(json_rows, "time", 0)
+
+    assigns =
+      assign(assigns, json_rows: json_rows, props?: json_rows == nil, time?: not json_time?)
 
     ~H"""
     <div class="detail log-detail" role="region">
@@ -277,23 +286,23 @@ defmodule BeamdashWeb.LogsTable do
         <pre>{@entry.message}</pre>
       <% end %>
       <table class="props">
-        <tr>
+        <tr :if={@time?}>
           <th>time</th>
           <td class="mono">{if @entry.at, do: DateTime.to_iso8601(@entry.at), else: "—"}</td>
         </tr>
-        <tr :if={@entry.level}>
+        <tr :if={@props? and @entry.level}>
           <th>level</th>
           <td class="mono">{@entry.level}</td>
         </tr>
-        <tr :if={@entry.pid}>
+        <tr :if={@props? and @entry.pid}>
           <th>pid</th>
           <td class="mono"><.pid pid={@entry.pid} node={@node} /></td>
         </tr>
-        <tr :if={@entry.where}>
+        <tr :if={@props? and @entry.where}>
           <th>where</th>
           <td class="mono">{@entry.where}</td>
         </tr>
-        <tr :for={{k, v} <- @entry.meta}>
+        <tr :for={{k, v} <- if(@props?, do: @entry.meta, else: [])}>
           <th>{k}</th>
           <td class="mono"><pre>{v}</pre></td>
         </tr>

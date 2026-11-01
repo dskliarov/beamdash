@@ -10,17 +10,17 @@ defmodule BeamdashWeb.LogsLive do
   pattern set, a single-entry row `%{id: "e-<id>", ...}`; Previous container
   rows are prefixed `p-` so DOM ids never collide with the live ones. Any
   filter, pattern, grouping or view change rebuilds the stream; new lines
-  are appended at the bottom, a similar one joining the newest row in place.
+  are appended at the bottom, a similar one joining one of the 4 newest rows
+  (`Group.add/2`) and moving that row to the bottom.
 
-  A batch of new lines is folded into the rows first, then each new or
-  changed row is inserted once. When lines leave the 2,000-line buffer the
-  top row (`@top_row`) and the oldest rendered row (`@oldest_row`) drop
-  their ids but keep their DOM ids (the oldest is sent again only when it
-  lost lines), and rendered rows whose lines have all left are deleted
-  (`@row_ends`: a rendered row's newest entry id to its DOM row id). A
-  rendered row's id can then be older than the one `Group.group/1` gives,
-  so row events also carry the row's newest entry id (`phx-value-entry`)
-  and `find_row` falls back to it.
+  A batch of new lines is folded into the rows first, then each new or moved
+  row is inserted once; a row that joins without moving is updated in place.
+  `@window` holds the newest rows, the ones a line can join. When lines leave
+  the 2,000-line buffer, every rendered row (`@rendered`: DOM row id to the
+  row, with its line ids) drops the evicted ids, and rows whose lines have all
+  left are deleted. A rendered row's id can then be older than the one
+  `Group.group/1` gives, so row events also carry the row's newest entry id
+  (`phx-value-entry`) and `find_row` falls back to it.
 
   An expanded group keeps the lines it was expanded with (`@expanded`: DOM
   row id to a snapshot of its lines, already masked, and its newest entry
@@ -74,9 +74,8 @@ defmodule BeamdashWeb.LogsLive do
         previous_error: nil,
         expanded: %{},
         open: MapSet.new(),
-        top_row: nil,
-        oldest_row: nil,
-        row_ends: %{},
+        window: [],
+        rendered: %{},
         export_note: nil,
         source_error: nil,
         source_loading?: false,
@@ -153,6 +152,11 @@ defmodule BeamdashWeb.LogsLive do
     recipient = self()
     ref = make_ref()
 
+    socket =
+      if mode == :node and socket.assigns.view == :previous,
+        do: to_live(socket),
+        else: socket
+
     {:noreply,
      socket
      |> assign(source_loading?: true, source_error: nil, source_ref: ref)
@@ -223,13 +227,7 @@ defmodule BeamdashWeb.LogsLive do
      |> start_async(:previous, fn -> Logs.previous(server) end)}
   end
 
-  defp event("view", %{"view" => "live"}, socket) do
-    {:noreply,
-     socket
-     |> assign(view: :live, previous: nil, previous_loading?: false, previous_error: nil)
-     |> assign(open: MapSet.new())
-     |> reset_rows()}
-  end
+  defp event("view", %{"view" => "live"}, socket), do: {:noreply, to_live(socket)}
 
   defp event("toggle_row", %{"id" => id} = params, socket) do
     a = socket.assigns
@@ -553,92 +551,90 @@ defmodule BeamdashWeb.LogsLive do
   defp insert_rows(socket, new, evicted) do
     a = socket.assigns
     gone = MapSet.new(evicted, & &1.id)
-    old = if grouped?(a), do: List.wrap(a.top_row), else: []
 
-    # newest first, ending with the old top row when there is one
-    rows =
+    # newest first; the rows past the window stay in the list
+    folded =
       if grouped?(a),
-        do: Enum.reduce(new, old, &Group.add(&2, &1)),
+        do: Enum.reduce(new, a.window, &Group.add(&2, &1)),
         else: new |> Enum.map(&single/1) |> Enum.reverse()
 
-    kept = rows |> Enum.map(&trim(&1, gone, a.entries)) |> Enum.reject(&(&1.ids == []))
-    changed = Enum.reject(kept, &(&1 in old))
+    fresh = Enum.reject(folded, &(Map.get(a.rendered, &1.id) == &1))
+    fresh_ids = MapSet.new(fresh, & &1.id)
 
-    # a rendered row is gone once its newest entry is (lines leave oldest first)
-    ends = Map.drop(a.row_ends, Enum.map(old, & &1.entry.id))
-    {gone_rows, ends} = Map.split(ends, Enum.map(evicted, & &1.id))
-    ends = Enum.reduce(kept, ends, &Map.put(&2, &1.entry.id, &1.id))
-    kept_ids = MapSet.new(kept, & &1.id)
+    rendered =
+      a.rendered
+      |> Map.merge(Map.new(fresh, &{&1.id, &1}))
+      |> Map.new(fn {id, row} -> {id, trim(row, gone, a.entries)} end)
 
-    deleted =
-      (Map.values(gone_rows) ++ Enum.map(old, & &1.id))
-      |> Enum.uniq()
-      |> Enum.reject(&MapSet.member?(kept_ids, &1))
+    emptied = for {id, %{ids: []}} <- rendered, do: id
+    rendered = Map.drop(rendered, emptied)
 
-    socket = assign(socket, top_row: if(grouped?(a), do: List.first(kept)), row_ends: ends)
+    # the newest row is last in the stream: it stays put when it is also the
+    # oldest row of the batch, else a joined row moves to the bottom
+    head_id =
+      case a.window do
+        [%{id: id} | _] -> id
+        [] -> nil
+      end
+
+    in_place =
+      case List.last(fresh) do
+        %{id: id} when id == head_id -> id
+        _ -> nil
+      end
+
+    moved =
+      for %{id: id} <- fresh,
+          id != in_place,
+          Map.has_key?(a.rendered, id),
+          Map.has_key?(rendered, id),
+          do: id
+
+    deleted = Enum.filter(emptied, &Map.has_key?(a.rendered, &1)) ++ moved
+
+    window =
+      if grouped?(a),
+        do:
+          folded
+          |> Enum.map(&Map.get(rendered, &1.id))
+          |> Enum.reject(&is_nil/1)
+          |> Enum.take(Group.window()),
+        else: []
+
+    appended =
+      fresh
+      |> Enum.reverse()
+      |> Enum.filter(&Map.has_key?(rendered, &1.id))
+      |> Enum.map(&Map.fetch!(rendered, &1.id))
+
+    updated =
+      for {id, row} <- rendered,
+          not MapSet.member?(fresh_ids, id),
+          row != Map.get(a.rendered, id),
+          do: row
+
+    socket = assign(socket, rendered: rendered, window: window)
     socket = Enum.reduce(deleted, socket, &stream_delete_by_dom_id(&2, :rows, "rows-" <> &1))
 
     socket =
-      changed
-      |> Enum.reverse()
-      |> Enum.reduce(socket, &stream_insert(&2, :rows, item(&1, a), at: -1, limit: -@max_rows))
+      Enum.reduce(
+        appended,
+        socket,
+        &stream_insert(&2, :rows, item(&1, a), at: -1, limit: -@max_rows)
+      )
 
-    socket =
-      if grouped?(a), do: update_oldest(socket, List.first(old), kept, gone), else: socket
+    socket = Enum.reduce(updated, socket, &update_row(&2, &1))
 
-    if deleted == [], do: socket, else: prune_expanded(socket)
+    if emptied == [], do: socket, else: prune_expanded(socket)
   end
 
   # Drops the snapshots (up to 2,000 lines each) of rows that are no longer
-  # rendered: no row_ends value is their key, and they are not the top or
-  # the oldest row.
+  # rendered.
   defp prune_expanded(%{assigns: %{expanded: expanded}} = socket) when expanded == %{}, do: socket
 
   defp prune_expanded(%{assigns: a} = socket) do
-    live = MapSet.new(Map.values(a.row_ends))
-
-    live =
-      Enum.reduce([a.top_row, a.oldest_row], live, &if(&1, do: MapSet.put(&2, &1.id), else: &2))
-
+    live = MapSet.new(Map.keys(a.rendered))
     assign(socket, expanded: Map.filter(a.expanded, fn {key, _} -> MapSet.member?(live, key) end))
-  end
-
-  # Keeps @oldest_row, the oldest rendered row, in step: the old top row's
-  # new version when that was it, the batch's oldest row when there was
-  # none. Else it is trimmed by set lookups and sent again only when it
-  # lost lines; once all its lines are gone (it was deleted) the next
-  # oldest is rebuilt from the entries.
-  defp update_oldest(socket, old_top, kept, gone) do
-    a = socket.assigns
-    oldest = a.oldest_row
-
-    cond do
-      oldest == nil ->
-        assign(socket, oldest_row: List.last(kept))
-
-      old_top != nil and oldest.id == old_top.id ->
-        assign(socket, oldest_row: Enum.find(kept, &(&1.id == oldest.id)) || List.last(kept))
-
-      true ->
-        case trim(oldest, gone, a.entries) do
-          ^oldest -> socket
-          %{ids: []} -> next_oldest(socket, kept)
-          trimmed -> socket |> assign(oldest_row: trimmed) |> update_row(trimmed)
-        end
-    end
-  end
-
-  defp next_oldest(%{assigns: a} = socket, kept) do
-    case rebuild_oldest(a) do
-      nil ->
-        assign(socket, oldest_row: nil)
-
-      row ->
-        case Enum.find(kept, &(&1.id == row.id)) do
-          nil -> socket |> assign(oldest_row: row) |> update_row(row)
-          kept_row -> assign(socket, oldest_row: kept_row)
-        end
-    end
   end
 
   # The row without the evicted entries' ids and its count to match. Its id
@@ -658,38 +654,11 @@ defmodule BeamdashWeb.LogsLive do
     end
   end
 
-  # The oldest rendered row, from the entries: the visible entries up to
-  # the oldest rendered row's newest one, as far back as they stay similar
-  # (rows past the 1,000 rendered ones can come before it). Only after the
-  # row before it went, so the masking here is once per row.
-  defp rebuild_oldest(a) do
-    {run, rest} =
-      a.entries
-      |> Enum.reverse()
-      |> Enum.filter(&visible?(&1, a))
-      |> Enum.split_while(&(not Map.has_key?(a.row_ends, &1.id)))
-
-    case rest do
-      [newest | _] ->
-        key = Group.key(newest)
-
-        group =
-          run |> Enum.reverse() |> Enum.take_while(&(Group.key(&1) == key)) |> Enum.reverse()
-
-        group = group ++ [newest]
-
-        %{
-          id: a.row_ends[newest.id],
-          key: key,
-          count: length(group),
-          entry: newest,
-          first_at: hd(group).at,
-          ids: group |> Enum.map(& &1.id) |> Enum.reverse()
-        }
-
-      [] ->
-        nil
-    end
+  defp to_live(socket) do
+    socket
+    |> assign(view: :live, previous: nil, previous_loading?: false, previous_error: nil)
+    |> assign(open: MapSet.new())
+    |> reset_rows()
   end
 
   # Rebuilds the stream from the current view's entries.
@@ -699,10 +668,9 @@ defmodule BeamdashWeb.LogsLive do
     visible = Enum.filter(entries, &visible?(&1, a))
     rows = rows_of(visible, a)
     rendered = Enum.take(rows, @max_rows)
-    live_grouped? = grouped?(a) and a.view == :live
-    top = if live_grouped?, do: List.first(rows)
-    oldest = if live_grouped?, do: List.last(rendered)
-    ends = if a.view == :live, do: Map.new(rendered, &{&1.entry.id, &1.id}), else: %{}
+    live? = a.view == :live
+    window = if live? and grouped?(a), do: Enum.take(rows, Group.window()), else: []
+    rendered_rows = if live?, do: Map.new(rendered, &{&1.id, &1}), else: %{}
     # everything is rendered again: expanded rows show all their lines
     a = %{a | expanded: resnapshot(a, rendered)}
 
@@ -712,9 +680,8 @@ defmodule BeamdashWeb.LogsLive do
       shown: length(visible),
       # lines whose format gave no level: a level filter hides them all
       no_level: if(a.min_level, do: Enum.count(entries, &(&1.level == nil)), else: 0),
-      top_row: top,
-      oldest_row: oldest,
-      row_ends: ends,
+      window: window,
+      rendered: rendered_rows,
       expanded: a.expanded
     )
     |> stream(:rows, rendered |> Enum.reverse() |> Enum.map(&item(&1, a)), reset: true)
@@ -931,13 +898,24 @@ defmodule BeamdashWeb.LogsLive do
             disabled={@pattern != nil}
           /> Group repeats
         </label>
-        <%= if @view == :live do %>
-          <button :if={not @paused?} type="button" class="secondary" phx-click="pause">
+        <div class="logs-pause-controls">
+          <button
+            :if={@view == :live and not @paused?}
+            type="button"
+            class="secondary"
+            phx-click="pause"
+          >
             Pause
           </button>
-          <button :if={@paused?} type="button" phx-click="resume">
+          <button :if={@view == :live and @paused?} type="button" phx-click="resume">
             Resume <span :if={@pending > 0}>+{@pending} new</span>
           </button>
+          <div class="logs-scroll-controls" role="group" aria-label="Log navigation">
+            <button id="logs-scroll-top" type="button" class="secondary">Jump to top</button>
+            <button id="logs-scroll-bottom" type="button" class="secondary">Follow latest</button>
+          </div>
+        </div>
+        <%= if @view == :live do %>
           <button type="button" class="secondary" phx-click="clear">Clear</button>
         <% end %>
         <button
@@ -1001,11 +979,6 @@ defmodule BeamdashWeb.LogsLive do
         <button type="button" class="secondary" phx-click="clear_filter">Clear filter</button>
       </p>
 
-      <div class="logs-scroll-controls" role="group" aria-label="Log navigation">
-        <button id="logs-scroll-top" type="button" class="secondary">Jump to top</button>
-        <button id="logs-scroll-bottom" type="button" class="secondary">Follow latest</button>
-      </div>
-
       <BeamdashWeb.LogsTable.table
         rows={@streams.rows}
         filter={@filter}
@@ -1034,7 +1007,7 @@ defmodule BeamdashWeb.LogsLive do
       >
         <label>
           Primary level
-          <select name="level" aria-label="Primary log level">
+          <select name="level" data-level={@levels.primary} aria-label="Primary log level">
             <option
               :for={choice <- tl(@choices)}
               value={choice}
@@ -1077,7 +1050,12 @@ defmodule BeamdashWeb.LogsLive do
             <td>
               <form phx-change="set_app_level">
                 <input type="hidden" name="app" value={app} />
-                <select name="level" data-app={app} aria-label={"Log level of #{app}"}>
+                <select
+                  name="level"
+                  data-app={app}
+                  data-level={level}
+                  aria-label={"Log level of #{app}"}
+                >
                   <option :if={level == :mixed} value="" selected disabled>
                     mixed (some modules)
                   </option>

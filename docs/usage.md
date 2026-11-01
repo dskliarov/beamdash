@@ -224,7 +224,7 @@ Profiling requires **OTP 27+ on the target**.
 
 For a Kubernetes connection, the **Logs** source selector offers **Combined** (recent kubectl output followed by node logger events), **kubectl only** (pod output), and **Node only** (new events from the node logger). Changing the source restarts the shared log stream and clears its current entries, so all open Logs views see the same selection. The previous container remains available for a Kubernetes connection. A direct connection always uses the node logger.
 
-Logs appear oldest first, with new lines at the bottom. Use **Jump to top** to inspect older lines and **Follow latest** to jump to the bottom and keep following new lines. Scrolling away from the bottom pauses automatic following until you return to it.
+Logs appear oldest first, with new lines at the bottom. The log list scrolls independently so the controls stay visible. Use **Jump to top** to inspect older lines and **Follow latest** to jump to the bottom and keep following new lines. Scrolling away from the bottom pauses automatic following until you return to it.
 
 ## Read crash reports
 

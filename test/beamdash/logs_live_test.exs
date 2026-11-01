@@ -112,19 +112,13 @@ defmodule Beamdash.LogsLiveTest do
   test "rows oldest first, repeats grouped, with counts", ctx do
     {html, _} = ctx |> mount() |> render()
 
-    assert messages(html) == [
-             "cache miss for key user:3",
-             "boom",
-             "cache miss for key user:5",
-             "hello"
-           ]
+    assert messages(html) == ["boom", "cache miss for key user:5", "hello"]
 
-    assert row_ids(html) == ["g-1", "g-4", "g-5", "g-7"]
+    assert row_ids(html) == ["g-4", "g-1", "g-7"]
     assert html =~ ~s(phx-hook="LogsScroll")
     assert html =~ ~s(id="logs-scroll-top")
     assert html =~ ~s(id="logs-scroll-bottom")
-    assert html =~ ~r/class="count-badge"[^>]*>\s*×2/
-    assert html =~ ~r/class="count-badge"[^>]*>\s*×3/
+    assert html =~ ~r/class="count-badge"[^>]*>\s*×5/
     assert html =~ "7 of 7 lines"
     assert html =~ "kubectl logs"
     assert html =~ ~s(id="logs-page")
@@ -253,7 +247,7 @@ defmodule Beamdash.LogsLiveTest do
     assert html =~ "7 of 7 lines"
 
     {html, _} = socket |> event("toggle_group") |> render()
-    assert row_ids(html) == ["g-1", "g-4", "g-5", "g-7"]
+    assert row_ids(html) == ["g-4", "g-1", "g-7"]
   end
 
   test "expanding a group lists its original lines, masked parts marked", ctx do
@@ -304,6 +298,31 @@ defmodule Beamdash.LogsLiveTest do
     assert html =~ "Original message"
   end
 
+  test "a JSON message's fields are listed once in details", ctx do
+    {_, socket} = ctx |> mount() |> render()
+    message = ~S|{"level":"info","module":"app.worker","count":3}|
+    entry = %{new_entry(9, message) | where: "app.worker", meta: [{"count", "3"}]}
+
+    socket = info(socket, {:beamdash_logs, {:entries, [entry]}})
+    {_, socket} = render(socket)
+    {html, _} = socket |> event("toggle_entry", %{"id" => "9", "row" => "g-9"}) |> render()
+
+    for key <- ~w(level module count) do
+      assert length(Regex.scan(~r/<th[^>]*>#{key}<\/th>/, html)) == 1
+    end
+  end
+
+  test "a JSON message's time is listed once in details", ctx do
+    {_, socket} = ctx |> mount() |> render()
+    message = ~S|{"time":"2026-10-23T12:00:09Z","count":3}|
+
+    socket = info(socket, {:beamdash_logs, {:entries, [new_entry(10, message)]}})
+    {_, socket} = render(socket)
+    {html, _} = socket |> event("toggle_entry", %{"id" => "10", "row" => "g-10"}) |> render()
+
+    assert length(Regex.scan(~r/<th[^>]*>time<\/th>/, html)) == 1
+  end
+
   test "non-JSON messages remain plain text in details", ctx do
     {_, socket} = ctx |> mount() |> render()
     socket = info(socket, {:beamdash_logs, {:entries, [new_entry(8, "{not json}")]}})
@@ -315,7 +334,7 @@ defmodule Beamdash.LogsLiveTest do
 
   test "Show all like this sets a pattern; the chip clears it", ctx do
     {_, socket} = ctx |> mount() |> render()
-    {html, socket} = socket |> event("like", %{"id" => "g-5"}) |> render()
+    {html, socket} = socket |> event("like", %{"id" => "g-1"}) |> render()
 
     assert row_ids(html) == ~w(e-1 e-2 e-3 e-5 e-6)
     assert html =~ "5 of 7 lines"
@@ -326,7 +345,7 @@ defmodule Beamdash.LogsLiveTest do
 
     {html, _} = socket |> event("clear_pattern") |> render()
     refute html =~ "pattern:"
-    assert row_ids(html) == ["g-1", "g-4", "g-5", "g-7"]
+    assert row_ids(html) == ["g-4", "g-1", "g-7"]
   end
 
   test "Copy pushes a group's raw lines, oldest first", ctx do
@@ -338,10 +357,11 @@ defmodule Beamdash.LogsLiveTest do
 
     assert name =~ ~r/^#{Regex.escape(Atom.to_string(ctx.node))}-\d{8}-\d{6}\.log$/
     lines = String.split(text, "\n")
-    assert length(lines) == 3
+    assert length(lines) == 5
 
-    for {line, n} <- Enum.with_index(lines, 1) do
-      assert line =~ ~r/^2026-10-23T12:00:0#{n}Z \[warning\] cache miss for key user:#{n}$/
+    # the similar lines, oldest first; boom (second 4) is not in the group
+    for {line, {second, n}} <- Enum.zip(lines, [{1, 1}, {2, 2}, {3, 3}, {5, 4}, {6, 5}]) do
+      assert line =~ ~r/^2026-10-23T12:00:0#{second}Z \[warning\] cache miss for key user:#{n}$/
     end
   end
 
@@ -459,6 +479,11 @@ defmodule Beamdash.LogsLiveTest do
 
   defp stream_ops(socket), do: socket.assigns.streams.rows
 
+  defp rendered_ids(socket), do: socket.assigns.rendered |> Map.keys() |> Enum.sort()
+
+  # three distinct lines (newest first), enough to push a row out of the window
+  defp distinct_rows, do: [new_entry(14, "gamma"), new_entry(13, "beta"), new_entry(12, "alpha")]
+
   test "a batch of similar lines is folded, then inserted once", ctx do
     {_, socket} = ctx |> empty_logs() |> mount() |> render()
     socket = info(socket, {:beamdash_logs, {:entries, Enum.map(3..1//-1, &similar/1)}})
@@ -469,12 +494,54 @@ defmodule Beamdash.LogsLiveTest do
     assert row_ids(html) == ["g-1"]
     assert html =~ ~r/class="count-badge"[^>]*>\s*×3/
 
-    # a mixed batch: the top row joined, then two new rows, each sent once
+    # a mixed batch: both similar lines join g-1 across boom, which moves to
+    # the bottom; boom's row is new, each row is sent once
     batch = [similar(6), boom(5), similar(4)]
     socket = info(socket, {:beamdash_logs, {:entries, batch}})
-    assert Enum.map(stream_ops(socket).inserts, &elem(&1, 0)) == ~w(rows-g-6 rows-g-5 rows-g-1)
+    assert Enum.map(stream_ops(socket).inserts, &elem(&1, 0)) == ~w(rows-g-1 rows-g-5)
+    assert stream_ops(socket).deletes == ["rows-g-1"]
     {html, _} = render(socket)
-    assert html =~ ~r/class="count-badge"[^>]*>\s*×4/
+    assert html =~ ~r/class="count-badge"[^>]*>\s*×5/
+  end
+
+  test "a similar line joins a row 3 rows back, which moves to the bottom", ctx do
+    {_, socket} = ctx |> empty_logs() |> mount() |> render()
+    {_, socket} = socket |> info({:beamdash_logs, {:entries, [similar(1)]}}) |> render()
+
+    {_, socket} =
+      socket |> info({:beamdash_logs, {:entries, [new_entry(2, "alpha")]}}) |> render()
+
+    {_, socket} = socket |> info({:beamdash_logs, {:entries, [new_entry(3, "beta")]}}) |> render()
+
+    {_, socket} =
+      socket |> info({:beamdash_logs, {:entries, [new_entry(4, "gamma")]}}) |> render()
+
+    socket = info(socket, {:beamdash_logs, {:entries, [similar(5)]}})
+    assert stream_ops(socket).deletes == ["rows-g-1"]
+    assert Enum.map(stream_ops(socket).inserts, &elem(&1, 0)) == ["rows-g-1"]
+    assert hd(socket.assigns.window).id == "g-1"
+    {html, _} = render(socket)
+    assert html =~ ~r/class="count-badge"[^>]*>\s*×2/
+  end
+
+  test "a similar line 5 rows back starts a new row", ctx do
+    {_, socket} = ctx |> empty_logs() |> mount() |> render()
+    {_, socket} = socket |> info({:beamdash_logs, {:entries, [similar(1)]}}) |> render()
+
+    {_, socket} =
+      socket |> info({:beamdash_logs, {:entries, [new_entry(2, "alpha")]}}) |> render()
+
+    {_, socket} = socket |> info({:beamdash_logs, {:entries, [new_entry(3, "beta")]}}) |> render()
+
+    {_, socket} =
+      socket |> info({:beamdash_logs, {:entries, [new_entry(4, "gamma")]}}) |> render()
+
+    {_, socket} =
+      socket |> info({:beamdash_logs, {:entries, [new_entry(5, "delta")]}}) |> render()
+
+    socket = info(socket, {:beamdash_logs, {:entries, [similar(6)]}})
+    assert stream_ops(socket).deletes == []
+    assert Enum.map(stream_ops(socket).inserts, &elem(&1, 0)) == ["rows-g-6"]
   end
 
   test "rows keep working when lines leave the 2,000-line buffer", ctx do
@@ -486,7 +553,7 @@ defmodule Beamdash.LogsLiveTest do
     assert html =~ ~r/class="count-badge"[^>]*>\s*×2000/
     assert html =~ "2000 of 2000 lines"
     assert html =~ ~s(phx-value-entry="2005")
-    top = socket.assigns.top_row
+    top = hd(socket.assigns.window)
     assert top.id == "g-1" and top.count == 2_000 and length(top.ids) == 2_000
     assert {hd(top.ids), List.last(top.ids)} == {2_005, 6}
 
@@ -523,55 +590,60 @@ defmodule Beamdash.LogsLiveTest do
     {html, socket} = feed(socket, 2_006, 2_006, 1)
     assert row_ids(html) == ["g-6"]
     assert html =~ ~r/class="count-badge"[^>]*>\s*×2000/
-    assert length(socket.assigns.top_row.ids) == 2_000
+    assert length(hd(socket.assigns.window).ids) == 2_000
   end
 
   test "a rendered row whose lines were all evicted is deleted", ctx do
     {_, socket} = ctx |> empty_logs() |> mount() |> render()
     {_, socket} = feed(socket, 1, 10, 10)
     {_, socket} = socket |> info({:beamdash_logs, {:entries, [boom(11)]}}) |> render()
-    {_, socket} = feed(socket, 12, 2_000, 1_989)
+    {_, socket} = socket |> info({:beamdash_logs, {:entries, distinct_rows()}}) |> render()
+    {_, socket} = feed(socket, 15, 2_000, 1_986)
 
-    # 1..10 are evicted, the oldest kept row (boom) stays
+    # 1..10 are evicted: their row goes, the others stay
     socket = info(socket, {:beamdash_logs, {:entries, Enum.map(2_010..2_001//-1, &similar/1)}})
     assert stream_ops(socket).deletes == ["rows-g-1"]
-    assert Map.values(socket.assigns.row_ends) |> Enum.sort() == ["g-11", "g-12"]
+    assert rendered_ids(socket) == ~w(g-11 g-12 g-13 g-14 g-15)
     {html, socket} = render(socket)
     assert html =~ "2000 of 2000 lines"
 
-    # then boom
+    # then boom, then alpha
     socket = info(socket, {:beamdash_logs, {:entries, [similar(2_011)]}})
     assert stream_ops(socket).deletes == ["rows-g-11"]
-    assert Map.values(socket.assigns.row_ends) == ["g-12"]
     {_, socket} = render(socket)
 
-    # the oldest rendered row's lines are trimmed too (12 is evicted)
-    socket = info(socket, {:beamdash_logs, {:entries, [boom(2_012)]}})
-    # each sent once, g-12 then g-2012 appended at the bottom; the
-    # oldest row was the top row, so it is not sent a second time
-    assert [{"rows-g-2012", -1, _, _, _}, {"rows-g-12", -1, %{count: 1999}, _, _}] =
-             stream_ops(socket).inserts
+    socket = info(socket, {:beamdash_logs, {:entries, [similar(2_012)]}})
+    assert stream_ops(socket).deletes == ["rows-g-12"]
+    {_, socket} = render(socket)
+
+    # beta and gamma go, and g-15, which holds 15 too, is trimmed to 2,000
+    socket = info(socket, {:beamdash_logs, {:entries, Enum.map(2_015..2_013//-1, &similar/1)}})
+    assert Enum.sort(stream_ops(socket).deletes) == ["rows-g-13", "rows-g-14"]
+
+    assert {"rows-g-15", _, %{count: 2_000}, _, _} =
+             List.keyfind(stream_ops(socket).inserts, "rows-g-15", 0)
 
     {html, _} = render(socket)
-    assert Enum.sort(row_ids(html)) == ["g-12", "g-2012"]
-    assert html =~ ~r/class="count-badge"[^>]*>\s*×1999/
+    assert row_ids(html) == ["g-15"]
+    assert html =~ ~r/class="count-badge"[^>]*>\s*×2000/
   end
 
   test "snapshots of expanded rows that were deleted are dropped", ctx do
     {_, socket} = ctx |> empty_logs() |> mount() |> render()
     {_, socket} = feed(socket, 1, 10, 10)
     {_, socket} = socket |> info({:beamdash_logs, {:entries, [boom(11)]}}) |> render()
-    {_, socket} = feed(socket, 12, 2_000, 1_989)
+    {_, socket} = socket |> info({:beamdash_logs, {:entries, distinct_rows()}}) |> render()
+    {_, socket} = feed(socket, 15, 2_000, 1_986)
 
     # expand the oldest group (1..10) and the newest one
     {_, socket} = socket |> event("toggle_row", %{"id" => "g-1"}) |> render()
-    {_, socket} = socket |> event("toggle_row", %{"id" => "g-12"}) |> render()
-    assert Map.keys(socket.assigns.expanded) |> Enum.sort() == ["g-1", "g-12"]
+    {_, socket} = socket |> event("toggle_row", %{"id" => "g-15"}) |> render()
+    assert Map.keys(socket.assigns.expanded) |> Enum.sort() == ["g-1", "g-15"]
 
     # all of 1..10 are evicted: the row is deleted, its snapshot goes too
     socket = info(socket, {:beamdash_logs, {:entries, Enum.map(2_010..2_001//-1, &similar/1)}})
     assert stream_ops(socket).deletes == ["rows-g-1"]
-    assert Map.keys(socket.assigns.expanded) == ["g-12"]
+    assert Map.keys(socket.assigns.expanded) == ["g-15"]
     {html, _} = render(socket)
     assert html =~ ~s(aria-expanded="true")
   end
@@ -611,15 +683,16 @@ defmodule Beamdash.LogsLiveTest do
     {html, socket} = feed(socket, 12, 2_000, 1_989)
     assert html =~ "1995 of 2000 lines"
 
-    # evicts boom 1, which no rendered row shows: only the top row is sent
+    # every similar line from 6 on joins g-6 (hit 11 is the only row above it),
+    # so evicting boom 1, which no rendered row shows, sends only g-6
     socket = info(socket, {:beamdash_logs, {:entries, [similar(2_001)]}})
-    assert Enum.map(stream_ops(socket).inserts, &elem(&1, 0)) == ["rows-g-12"]
+    assert Enum.map(stream_ops(socket).inserts, &elem(&1, 0)) == ["rows-g-6"]
     {_, socket} = render(socket)
 
-    # boom 2..5 go, then user 6: the oldest row is trimmed and sent
+    # boom 2..5 and user 6 go: g-6 is trimmed and sent
     socket = info(socket, {:beamdash_logs, {:entries, Enum.map(2_006..2_002//-1, &similar/1)}})
 
-    assert {"rows-g-6", _, %{count: 4}, _, _} =
+    assert {"rows-g-6", _, %{count: 1_999}, _, _} =
              List.keyfind(stream_ops(socket).inserts, "rows-g-6", 0)
   end
 
@@ -662,7 +735,7 @@ defmodule Beamdash.LogsLiveTest do
     {html, _} = socket |> info({:beamdash_logs, {:entries, [again]}}) |> render()
 
     # every row is sent again, from Logs.entries
-    assert row_ids(html) == ["g-1", "g-4", "g-5", "g-7"]
+    assert row_ids(html) == ["g-4", "g-1", "g-7"]
   end
 
   test "while paused new lines are counted, Resume shows them", ctx do
@@ -679,7 +752,7 @@ defmodule Beamdash.LogsLiveTest do
     {html, _} = socket |> event("resume") |> render()
     assert html =~ "Pause"
     refute html =~ "+1 new"
-    assert row_ids(html) == ["g-1", "g-4", "g-5", "g-7"]
+    assert row_ids(html) == ["g-4", "g-1", "g-7"]
   end
 
   test "a filter matching nothing says so, with Clear filter", ctx do
@@ -713,7 +786,7 @@ defmodule Beamdash.LogsLiveTest do
     {html, socket} = render(socket)
 
     refute html =~ "Loading previous container…"
-    assert row_ids(html) == ["p-g-1", "p-g-4", "p-g-5", "p-g-7"]
+    assert row_ids(html) == ["p-g-4", "p-g-1", "p-g-7"]
     assert html =~ "7 of 7 lines"
 
     # live lines do not show in the Previous view
@@ -723,7 +796,7 @@ defmodule Beamdash.LogsLiveTest do
     assert row_ids(html) == []
 
     {html, _} = socket |> event("view", %{"view" => "live"}) |> render()
-    assert row_ids(html) == ["g-1", "g-4", "g-5", "g-7", "g-8"]
+    assert row_ids(html) == ["g-4", "g-1", "g-7", "g-8"]
   end
 
   test "a failing Previous container load shows the error", ctx do

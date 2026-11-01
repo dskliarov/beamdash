@@ -9,21 +9,20 @@ window.BeamLogsScroll = {
 
     this.toTop = () => {
       this.following = false;
-      if (this.table) window.scrollTo(0, Math.max(0, window.scrollY + this.table.getBoundingClientRect().top - 50));
+      if (this.table) this.table.scrollTop = 0;
     };
     this.toBottom = () => {
       if (!this.table) return;
       this.following = true;
-      window.scrollTo(0, Math.max(0, window.scrollY + this.table.getBoundingClientRect().bottom - window.innerHeight));
+      this.table.scrollTop = this.table.scrollHeight;
     };
     this.onScroll = () => {
       if (!this.table) return;
-      const bottom = this.table.getBoundingClientRect().bottom;
-      this.following = bottom >= 0 && bottom <= window.innerHeight + 32;
+      this.following = this.table.scrollHeight - this.table.scrollTop - this.table.clientHeight <= 32;
     };
     this.topButton?.addEventListener('click', this.toTop);
     this.bottomButton?.addEventListener('click', this.toBottom);
-    window.addEventListener('scroll', this.onScroll, {passive: true});
+    this.table?.addEventListener('scroll', this.onScroll, {passive: true});
     this.onScroll();
     if (window.MutationObserver) {
       this.observer = new window.MutationObserver(() => this.scheduleFollow());
@@ -50,6 +49,6 @@ window.BeamLogsScroll = {
     this.observer?.disconnect();
     this.topButton?.removeEventListener('click', this.toTop);
     this.bottomButton?.removeEventListener('click', this.toBottom);
-    window.removeEventListener('scroll', this.onScroll);
+    this.table?.removeEventListener('scroll', this.onScroll);
   }
 };

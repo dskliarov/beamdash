@@ -9,10 +9,12 @@ function setup() {
   for (const name of ['logs-scroll-top', 'logs-scroll-bottom']) {
     buttons[name] = {addEventListener(_type, fn) { this.click = fn; }, removeEventListener() {}};
   }
-  const table = {top: 100, bottom: 1500, getBoundingClientRect() { return {top: this.top, bottom: this.bottom}; }};
-  const window = {innerHeight: 800, scrollY: 0, calls: [],
-    scrollTo(_x, y) { this.calls.push(y); },
+  const table = {
+    scrollTop: 0, scrollHeight: 1500, clientHeight: 500,
     addEventListener(type, fn) { listeners[type] = fn; }, removeEventListener() {},
+    scrollTo({top}) { this.scrollTop = top; }
+  };
+  const window = {calls: [], scrollTo(...args) { this.calls.push(args); },
     requestAnimationFrame(fn) { fn(); return 1; }, cancelAnimationFrame() {}};
   const document = {getElementById(id) { return buttons[id]; }};
   const context = {window, document};
@@ -22,35 +24,36 @@ function setup() {
   return {hook, table, window, buttons, listeners};
 }
 
-test('bottom button follows appended logs, top button stops following', () => {
+test('navigation scrolls only the log list and follows appended rows', () => {
   const {hook, table, window, buttons} = setup();
   buttons['logs-scroll-bottom'].click();
-  assert.equal(window.calls.at(-1), 700);
+  assert.equal(table.scrollTop, 1500);
   hook.beforeUpdate();
-  table.bottom = 1700;
+  table.scrollHeight = 1700;
   hook.updated();
-  assert.equal(window.calls.at(-1), 900);
+  assert.equal(table.scrollTop, 1700);
   buttons['logs-scroll-top'].click();
-  const count = window.calls.length;
+  assert.equal(table.scrollTop, 0);
   hook.beforeUpdate();
-  table.bottom = 1800;
+  table.scrollHeight = 1800;
   hook.updated();
-  assert.equal(window.calls.length, count);
+  assert.equal(table.scrollTop, 0);
+  assert.equal(window.calls.length, 0);
 });
 
-test('scrolling away pauses following until the user returns to the bottom', () => {
-  const {hook, table, window, buttons, listeners} = setup();
+test('manual scrolling away pauses following until returning to the bottom', () => {
+  const {hook, table, buttons, listeners} = setup();
   buttons['logs-scroll-bottom'].click();
-  table.bottom = 1300;
+  table.scrollTop = 100;
   listeners.scroll();
   hook.beforeUpdate();
-  table.bottom = 1500;
+  table.scrollHeight = 1800;
   hook.updated();
-  assert.equal(window.calls.length, 1);
-  table.bottom = 800;
+  assert.equal(table.scrollTop, 100);
+  table.scrollTop = 1300;
   listeners.scroll();
   hook.beforeUpdate();
-  table.bottom = 1000;
+  table.scrollHeight = 2000;
   hook.updated();
-  assert.equal(window.calls.length, 2);
+  assert.equal(table.scrollTop, 2000);
 });
