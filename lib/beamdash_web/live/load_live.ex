@@ -17,7 +17,14 @@ defmodule BeamdashWeb.LoadLive do
     %{status: status, node: node} = Target.status()
 
     socket =
-      assign(socket, status: status, node: node, load: Load.new(), sampler: nil, error: nil)
+      assign(socket,
+        status: status,
+        node: node,
+        load: Load.new(),
+        sampler: nil,
+        error: nil,
+        hidden_series: MapSet.new()
+      )
 
     if connected?(socket) do
       :ok = Target.subscribe()
@@ -53,11 +60,34 @@ defmodule BeamdashWeb.LoadLive do
 
   def handle_info(_message, socket), do: {:noreply, socket}
 
+  @impl true
+  def handle_event("toggle_series", %{"chart" => chart, "series" => series}, socket)
+      when chart in ["util", "memory", "io"] do
+    data = charts(socket.assigns.load, socket.assigns.hidden_series)
+    key = Enum.find([:util, :memory, :io], &(Atom.to_string(&1) == chart))
+
+    if data && Enum.any?(data[key].series, &(&1.id == series)) do
+      selection = {chart, series}
+      hidden = socket.assigns.hidden_series
+
+      hidden =
+        if MapSet.member?(hidden, selection),
+          do: MapSet.delete(hidden, selection),
+          else: MapSet.put(hidden, selection)
+
+      {:noreply, assign(socket, hidden_series: hidden)}
+    else
+      {:noreply, socket}
+    end
+  end
+
+  def handle_event(_, _, socket), do: {:noreply, socket}
+
   ## Rendering
 
   @impl true
   def render(assigns) do
-    assigns = assign(assigns, charts: charts(assigns.load))
+    assigns = assign(assigns, charts: charts(assigns.load, assigns.hidden_series))
 
     ~H"""
     <main class="wrap load-page">
@@ -94,6 +124,7 @@ defmodule BeamdashWeb.LoadLive do
   attr :id, :string, required: true
   attr :class, :string, default: nil
   attr :title, :string, required: true
+  attr :chart_key, :string, required: true
   attr :series, :list, required: true, doc: "[%{label, color, dashed, points, last}]"
   attr :max, :any, required: true
   attr :format, :any, required: true
@@ -122,6 +153,7 @@ defmodule BeamdashWeb.LoadLive do
           <line :for={y <- [0, 100, 200]} x1="0" x2="600" y1={y} y2={y} class="load-grid-line" />
           <polyline
             :for={{s, i} <- Enum.with_index(@series)}
+            :if={s.visible}
             points={s.points}
             fill="none"
             stroke={s.color}
@@ -135,10 +167,6 @@ defmodule BeamdashWeb.LoadLive do
           <span>−60 s</span><span>−30 s</span><span>now</span>
         </div>
       </div>
-      <%!-- hovering or focusing a legend item highlights its line --%>
-      <style>
-        <%= Phoenix.HTML.raw(highlight_css(@id, length(@series))) %>
-      </style>
       <%= if @grouped do %>
         <div :for={{group, items} <- legend_groups(@series)} class="load-legend-group">
           <h4>
@@ -146,14 +174,17 @@ defmodule BeamdashWeb.LoadLive do
             <span class="muted">· {length(items)} · now avg {avg_pct(items)}%</span>
           </h4>
           <ul class="load-legend grid">
-            <.legend_item :for={{s, i} <- items} s={s} i={i} />
+            <.legend_item :for={{s, i} <- items} s={s} i={i} chart_key={@chart_key} />
           </ul>
         </div>
       <% else %>
         <ul class="load-legend">
-          <.legend_item :for={{s, i} <- Enum.with_index(@series)} s={s} i={i} />
+          <.legend_item :for={{s, i} <- Enum.with_index(@series)} s={s} i={i} chart_key={@chart_key} />
         </ul>
       <% end %>
+      <p :if={@series != [] and Enum.all?(@series, &(not &1.visible))} class="muted small">
+        Select a trend to show it.
+      </p>
       <p :if={@note} class="muted small">{@note}</p>
     </section>
     """
@@ -161,29 +192,33 @@ defmodule BeamdashWeb.LoadLive do
 
   attr :s, :map, required: true
   attr :i, :integer, required: true
+  attr :chart_key, :string, required: true
 
   defp legend_item(assigns) do
     ~H"""
-    <li data-s={@i} tabindex="0" title={@s[:title] || @s.label} class="load-item">
-      <span class={["load-swatch", @s.dashed && "dashed"]} style={"--c: #{@s.color}"}></span>
-      <span class="load-name">{@s.label}</span>
-      <span class="load-value">{@s.last}</span>
-      <span :if={@s[:pct]} class="load-meter" aria-hidden="true">
-        <span style={"width: #{min(round(@s.pct), 100)}%; background: #{@s.color}"}></span>
-      </span>
+    <li
+      data-s={@i}
+      title={@s[:title] || @s.label}
+      class={["load-item", !@s.visible && "load-item-hidden"]}
+    >
+      <button
+        type="button"
+        class="load-legend-button"
+        phx-click="toggle_series"
+        phx-value-chart={@chart_key}
+        phx-value-series={@s.id}
+        aria-pressed={to_string(@s.visible)}
+        aria-label={"#{if @s.visible, do: "Hide", else: "Show"} #{@s[:title] || @s.label} trend"}
+      >
+        <span class={["load-swatch", @s.dashed && "dashed"]} style={"--c: #{@s.color}"}></span>
+        <span class="load-name">{@s.label}</span>
+        <span class="load-value">{@s.last}</span>
+        <span :if={@s[:pct]} class="load-meter" aria-hidden="true">
+          <span style={"width: #{min(round(@s.pct), 100)}%; background: #{@s.color}"}></span>
+        </span>
+      </button>
     </li>
     """
-  end
-
-  # Fade every other line while a legend item is hovered or focused.
-  defp highlight_css(id, n) do
-    Enum.map_join(0..(n - 1)//1, "\n", fn i ->
-      on = "##{id}:has(.load-item[data-s=\"#{i}\"]:is(:hover, :focus-visible))"
-
-      "#{on} polyline:not([data-s=\"#{i}\"]) { opacity: .12; } " <>
-        "#{on} polyline[data-s=\"#{i}\"] { stroke-width: 2.8; } " <>
-        "#{on} .load-item:not([data-s=\"#{i}\"]) { opacity: .45; }"
-    end)
   end
 
   # [{group, [{series, index}]}], index counting across groups
@@ -201,87 +236,102 @@ defmodule BeamdashWeb.LoadLive do
     do: round(Enum.sum(Enum.map(items, fn {s, _} -> s.pct end)) / max(length(items), 1))
 
   @doc false
-  # nil until two samples have arrived
-  def charts(%{points: []}), do: nil
+  def charts(load), do: charts(load, MapSet.new())
+  def charts(%{points: []}, _hidden), do: nil
 
-  def charts(%{points: points, schedulers: schedulers}) do
+  def charts(%{points: points, schedulers: schedulers}, hidden) do
     now = List.last(points).at_ms
-    x = fn at -> Float.round(600 - (now - at) / Load.window_ms() * 600, 1) end
-    y = fn v, max -> Float.round(200 - min(v / max, 1.0) * 200, 1) end
-
-    line = fn values, max ->
-      Enum.map_join(values, " ", fn {at, v} -> "#{x.(at)},#{y.(v, max)}" end)
-    end
-
     util_points = Enum.filter(points, & &1.util)
     lanes = util_points |> List.last() |> then(&((&1 && length(&1.util)) || 0))
 
-    util_series =
+    util =
       for i <- 0..(lanes - 1)//1 do
         values = for p <- util_points, do: {p.at_ms, Enum.at(p.util, i)}
         normal? = i < schedulers
-
+        number = if normal?, do: i + 1, else: i + 1 - schedulers
         now_pct = elem(List.last(values), 1)
 
         %{
-          label: if(normal?, do: "#{i + 1}", else: "#{i + 1 - schedulers}"),
-          title:
-            if(normal?,
-              do: "Scheduler #{i + 1}",
-              else: "Dirty CPU scheduler #{i + 1 - schedulers}"
-            ),
+          id: "#{if normal?, do: "normal", else: "dirty"}:#{number}",
+          label: "#{number}",
+          title: if(normal?, do: "Scheduler #{number}", else: "Dirty CPU scheduler #{number}"),
           group: if(normal?, do: :normal, else: :dirty),
           color: Enum.at(@palette, rem(i, length(@palette))),
           dashed: not normal?,
-          points: line.(values, 100),
+          values: values,
           last: "#{round(now_pct)}%",
           pct: now_pct
         }
       end
 
-    mem_max = points |> Enum.map(&(&1.memory[:total] || 0)) |> Enum.max() |> nice_bytes()
-
-    mem_series =
+    memory =
       for {kind, i} <- Enum.with_index(Load.memory_kinds()) do
         values = for p <- points, do: {p.at_ms, p.memory[kind] || 0}
 
         %{
+          id: Atom.to_string(kind),
           label: Atom.to_string(kind),
           color: "var(--mem-#{i + 1})",
           dashed: false,
-          points: line.(values, mem_max),
+          values: values,
           last: Format.bytes(elem(List.last(values), 1))
         }
       end
 
-    io_max =
-      points |> Enum.flat_map(&Tuple.to_list(&1.io)) |> Enum.max() |> max(1024) |> nice_bytes()
-
-    io_series =
+    io =
       for {label, i} <- [{"input", 0}, {"output", 1}] do
         values = for p <- points, do: {p.at_ms, elem(p.io, i)}
 
         %{
+          id: label,
           label: label,
           color: "var(--mem-#{i + 1})",
           dashed: false,
-          points: line.(values, io_max),
+          values: values,
           last: rate(elem(List.last(values), 1))
         }
       end
 
     %{
-      util: %{
-        title: "Scheduler Utilization (%)",
-        series: util_series,
-        max: 100,
-        format: &"#{round(&1)}",
-        grouped: true,
-        note: if(util_points == [], do: "scheduler_wall_time is not available on this node.")
-      },
-      memory: %{title: "Memory Usage", series: mem_series, max: mem_max, format: &bytes/1},
-      io: %{title: "IO Usage", series: io_series, max: io_max, format: &rate/1}
+      util:
+        build_chart(util, "util", hidden, now, %{
+          title: "Scheduler Utilization (%)",
+          format: &"#{round(&1)}",
+          grouped: true,
+          note: if(util_points == [], do: "scheduler_wall_time is not available on this node.")
+        }),
+      memory:
+        build_chart(memory, "memory", hidden, now, %{title: "Memory Usage", format: &bytes/1}),
+      io: build_chart(io, "io", hidden, now, %{title: "IO Usage", format: &rate/1})
     }
+  end
+
+  defp build_chart(series, chart_key, hidden, now, options) do
+    visible = Enum.reject(series, &MapSet.member?(hidden, {chart_key, &1.id}))
+
+    maximum =
+      visible |> Enum.flat_map(& &1.values) |> Enum.map(&elem(&1, 1)) |> Enum.max(fn -> 0 end)
+
+    max_axis =
+      if chart_key == "util",
+        do: min(100, nice(maximum)),
+        else: if(maximum < 1024, do: nice(maximum), else: nice_bytes(maximum))
+
+    series =
+      Enum.map(series, fn item ->
+        points =
+          Enum.map_join(item.values, " ", fn {at, value} ->
+            x = Float.round(600 - (now - at) / Load.window_ms() * 600, 1)
+            y = Float.round(200 - min(value / max_axis, 1.0) * 200, 1)
+            "#{x},#{y}"
+          end)
+
+        item
+        |> Map.put(:points, points)
+        |> Map.put(:visible, not MapSet.member?(hidden, {chart_key, item.id}))
+      end)
+
+    Map.merge(options, %{chart_key: chart_key, series: series, max: max_axis})
   end
 
   @doc false

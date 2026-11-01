@@ -1,0 +1,86 @@
+# Investigating garbage collection
+
+Run this notebook on the node you want to investigate. In Beamdash, connect to the target, open **Notebooks**, and import this file. Cells execute on the connected node; they do not need Elixir or additional libraries on that node.
+
+Run cells individually or in order. The process scans visit every process and briefly request its information; on a large or busy node they add overhead. Run them sparingly, and compare samples during representative workload. No cell forces a garbage collection or enables tracing.
+
+## Node and memory overview
+
+Confirm the node and inspect VM memory categories. Values are bytes. Binary memory is shared off-heap storage; allocator memory reserved from the OS can differ from `erlang:memory/0`.
+
+```erlang
+#{node => node(), otp_release => erlang:system_info(otp_release),
+  process_count => erlang:system_info(process_count), memory_bytes => erlang:memory()}.
+```
+
+## Node-wide collection activity
+
+Take two snapshots two seconds apart. `collections` and `words_reclaimed` are node-wide changes, not per-process measurements or pause times. The third statistics field is not used. Compare several intervals with the workload and latency you are investigating.
+
+```erlang
+(fun() ->
+    {Count0, Words0, _} = erlang:statistics(garbage_collection),
+    timer:sleep(2000),
+    {Count1, Words1, _} = erlang:statistics(garbage_collection),
+    #{interval_ms => 2000, collections => Count1 - Count0,
+      words_reclaimed => Words1 - Words0,
+      bytes_per_word => erlang:system_info(wordsize)}
+end)().
+```
+
+## Processes with the most memory
+
+This is a snapshot, not a GC ranking. Use it to choose candidates, then compare the same process over time. A process can exit while it is being sampled and will be skipped. Memory is in bytes; heap and stack sizes are in words.
+
+```erlang
+(fun() ->
+    Info = [#{pid => Pid, info => Details} || Pid <- processes(),
+        Details <- [process_info(Pid, [registered_name, memory, total_heap_size,
+                                        heap_size, stack_size, message_queue_len,
+                                        reductions, current_function])],
+        is_list(Details)],
+    Ranked = lists:sort(fun(A, B) ->
+        proplists:get_value(memory, maps:get(info, A), 0) >
+        proplists:get_value(memory, maps:get(info, B), 0)
+    end, Info),
+    lists:sublist(Ranked, 10)
+end)().
+```
+
+## Inspect a candidate
+
+Replace `Pid` with a PID from the previous result. For example, `list_to_pid("<0.123.0>")` uses the target node's local PID notation. The default is this notebook's evaluator process, so change it before drawing conclusions. The process may have exited, in which case the result is `undefined`.
+
+`minor_gcs` counts minor collections since the last full sweep; it can reset, so it is not a lifetime counter. `fullsweep_after` is a threshold, not a pause duration.
+
+```erlang
+(fun() ->
+    Pid = self(),
+    #{pid => Pid,
+      info => process_info(Pid, [registered_name, memory, total_heap_size, heap_size,
+                                  stack_size, message_queue_len, reductions,
+                                  current_function, garbage_collection])}
+end)().
+```
+
+## Compare the same process over time
+
+Replace `Pid = self()` with the same candidate PID in this cell. The result contains two snapshots two seconds apart. Changes in memory, heap size, queue length and reductions can suggest where to investigate; a growing heap alone does not establish a leak.
+
+```erlang
+(fun() ->
+    Pid = self(),
+    Fields = [memory, total_heap_size, heap_size, stack_size, message_queue_len,
+              reductions, current_function, garbage_collection],
+    Before = process_info(Pid, Fields),
+    timer:sleep(2000),
+    After = process_info(Pid, Fields),
+    #{pid => Pid, interval_ms => 2000, before => Before, 'after' => After}
+end)().
+```
+
+## Follow up
+
+- In Beamdash's **GC** tab, select the candidate and run a short GC trace during representative work. Compare collection counts, elapsed durations and heap changes. Tracing adds overhead and stops at the configured limits.
+- Check mailbox growth, state retention, and binary references. Shared binaries can be referenced by more than one process, so holder sizes cannot simply be summed.
+- Forced collection changes the workload and can cause latency. If you deliberately need a before/after experiment on one process, use the process details GC action after recording a baseline; do not treat reclaimed memory alone as proof of a leak.

@@ -1,9 +1,29 @@
 defmodule Beamdash.NotebookStore do
   @moduledoc "Local .livemd storage with filename validation and optimistic concurrency."
-  def directory,
-    do:
-      Application.get_env(:beamdash, :notebooks_dir) ||
-        Path.join(:filename.basedir(:user_data, "beamdash"), "notebooks")
+  def directory, do: Beamdash.Settings.notebooks_dir()
+
+  def import(name, source, dir \\ directory()) do
+    with :ok <- validate_name(name), do: import_unique(name, source, dir, 0)
+  end
+
+  defp import_unique(_name, _source, _dir, 1000),
+    do: {:error, "Could not find an available notebook filename."}
+
+  defp import_unique(name, source, dir, index) do
+    candidate =
+      if index == 0, do: name, else: Path.rootname(name, ".livemd") <> " (#{index}).livemd"
+
+    case save(candidate, source, :new, dir) do
+      {:ok, version} ->
+        {:ok, candidate, version}
+
+      {:error, "A notebook with this name already exists. Open it or choose a new name."} ->
+        import_unique(name, source, dir, index + 1)
+
+      error ->
+        error
+    end
+  end
 
   def list(dir \\ directory()) do
     case File.ls(dir) do

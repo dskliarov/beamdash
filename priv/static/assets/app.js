@@ -391,7 +391,7 @@ const csrfToken = document.querySelector("meta[name='csrf-token']").getAttribute
 const liveSocket = new LiveView.LiveSocket("/live", Phoenix.Socket, {
   params: { _csrf_token: csrfToken },
   dom: { onPatchStart: target => MemoryScroll.onPatchStart(target), onPatchEnd: () => MemoryScroll.onPatchEnd() },
-  hooks: { Resizer, DockSpacer, NavOverflow, NamespaceCombobox, LogExport, Highlight, SourceEditor: globalThis.BeamSourceEditor, ConsoleCompletion: globalThis.BeamConsoleCompletion, ReplConsole: globalThis.BeamReplConsole, NotebookFiles: globalThis.BeamNotebookFiles, CodeMirrorEditor: globalThis.BeamModuleEditor },
+  hooks: { KinoChart: globalThis.BeamKinoChart, Resizer, DockSpacer, NavOverflow, NamespaceCombobox, LogExport, Highlight, SourceEditor: globalThis.BeamSourceEditor, ConsoleCompletion: globalThis.BeamConsoleCompletion, ReplConsole: globalThis.BeamReplConsole, NotebookFiles: globalThis.BeamNotebookFiles, CodeMirrorEditor: globalThis.BeamModuleEditor },
 });
 liveSocket.connect();
 window.liveSocket = liveSocket;

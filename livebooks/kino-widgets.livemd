@@ -1,0 +1,199 @@
+# Kino widgets in Beamdash
+
+This notebook demonstrates interactive Kino widgets in Beamdash.
+
+## Choose where to run the notebook
+
+1. Open **Notebooks** and import this file.
+2. For each code cell, check **Run on Beamdash** to use the Kino and Vega-Lite packages bundled with Beamdash. Unchecked cells run on the node selected in the connection bar; that node must have the required packages installed and running.
+3. Set the first cell to your desired node and run it to verify the node and Kino availability. Set the remaining cells to the same node to follow the examples in order.
+
+Each node has separate notebook bindings: a value created by a cell on one node is not automatically available on the other. Changing a cell’s node makes that cell’s previous result stale but does not reset the two runtimes. Local cells run with Beamdash's permissions and affect its VM; connected-node cells run on the connected node. Save the notebook to retain each cell’s **Run on Beamdash** setting.
+
+Opening the notebook does not run its cells. Buttons, input changes, and frame updates take effect after you run the relevant cells. Resetting the notebook runtime also clears bindings and listeners.
+
+## Check Kino on the selected node
+
+Run this cell first and confirm that `node` is the node you selected above. Both `kino_available` and `kino_started` should be `true` before you try the examples. If `kino_available` is `false`, the selected node does not have Kino available. Add Kino to the target application, rebuild and deploy that release, or connect to an Elixir node that already has Kino running. Beamdash does not install packages into the connected node.
+
+If `kino_available` is `true` but `kino_started` is `false`, start the Kino application if appropriate for the selected node before running interactive widgets. Starting an application changes the running node, so do this only when appropriate for that environment.
+
+```elixir
+%{
+  node: node(),
+  kino_available: Code.ensure_loaded?(Kino.Input),
+  kino_started: Enum.any?(Application.started_applications(), fn {app, _, _} -> app == :kino end)
+}
+```
+
+## Text and Markdown
+
+Return a `Kino.Text` or `Kino.Markdown` value as the final expression of a cell. Markdown is sanitized by Beamdash.
+
+```elixir
+Kino.Text.new("Hello from the selected node!")
+```
+
+```elixir
+Kino.Markdown.new("**Kino Markdown** supports lists, links, and other Markdown formatting.")
+```
+
+## Text input
+
+Change the text field, then run the next cell to read its value. Inputs returned from a cell must remain displayed while you use them.
+
+```elixir
+name_input = Kino.Input.text("Name", default: "Ada")
+```
+
+```elixir
+"Hello, #{Kino.Input.read(name_input)}!"
+```
+
+## Inputs in a grid
+
+Change the controls and run the next cell to read their current values. Select options may use ordinary Elixir values, including tuples; those values stay on the selected node.
+
+```elixir
+enabled_input = Kino.Input.checkbox("Enabled", default: true)
+count_input = Kino.Input.number("Count", default: 3, min: 0, max: 100)
+choice_input = Kino.Input.select("Mode", [{{:mode, :safe}, "Safe"}, {{:mode, :fast}, "Fast"}])
+notes_input = Kino.Input.textarea("Notes", default: "Example notes")
+
+Kino.Layout.grid([enabled_input, count_input, choice_input, notes_input], columns: 2)
+```
+
+```elixir
+%{
+  enabled: Kino.Input.read(enabled_input),
+  count: Kino.Input.read(count_input),
+  mode: Kino.Input.read(choice_input),
+  notes: Kino.Input.read(notes_input)
+}
+```
+
+## More input types
+
+Each of these is an ordinary input. Password values can be read by code on the selected node; do not use real secrets in an example notebook or save them in notebook output.
+
+```elixir
+password_input = Kino.Input.password("Example password")
+color_input = Kino.Input.color("Color", default: "#3366cc")
+url_input = Kino.Input.url("URL", default: "https://example.com")
+date_input = Kino.Input.date("Date", default: ~D[2024-01-01])
+range_input = Kino.Input.range("Level", default: 5, min: 0, max: 10)
+
+Kino.Layout.grid([password_input, color_input, url_input, date_input, range_input], columns: 2)
+```
+
+## Button and listener output
+
+Click the button after running the cell. The listener prints to **Live listener output**. Re-running this cell replaces the displayed button.
+
+```elixir
+hello_button = Kino.Control.button("Say hello")
+Kino.listen(hello_button, fn _event -> IO.puts("Hello from a Kino listener") end)
+hello_button
+```
+
+## Tabs and nested layouts
+
+Select either tab. Each tab keeps its controls available, including when it is not selected.
+
+```elixir
+tab_name = Kino.Input.text("Project", default: "Beamdash")
+tab_check = Kino.Input.checkbox("Ready", default: false)
+
+Kino.Layout.tabs(
+  Overview: Kino.Markdown.new("Select **Inputs** to edit the controls."),
+  Inputs: Kino.Layout.grid([tab_name, tab_check], columns: 2)
+)
+```
+
+## Frames: replace, append, and clear
+
+Run the first cell to display a frame. Run the next three cells individually and watch the existing frame change. Clearing it removes its contents, not the frame itself.
+
+```elixir
+example_frame = Kino.Frame.new()
+```
+
+```elixir
+Kino.Frame.render(example_frame, Kino.Markdown.new("**Frame contents** were replaced."))
+```
+
+```elixir
+Kino.Frame.append(example_frame, Kino.Text.new("This line was appended."))
+```
+
+```elixir
+Kino.Frame.clear(example_frame)
+```
+
+## A nested frame
+
+This frame contains a grid with another frame. Run the next cell to update the inner frame without replacing the outer layout.
+
+```elixir
+outer_frame = Kino.Frame.new()
+inner_frame = Kino.Frame.new()
+Kino.Frame.render(outer_frame, Kino.Layout.grid([Kino.Text.new("Outer layout"), inner_frame], columns: 2))
+outer_frame
+```
+
+```elixir
+Kino.Frame.render(inner_frame, Kino.Text.new("The nested frame was updated."))
+```
+
+## Static Vega-Lite chart
+
+This example uses inline values, so the renderer does not need to fetch external data. If the chart packages are missing, the cell returns an explanatory message.
+
+```elixir
+if Code.ensure_loaded?(VegaLite) and Code.ensure_loaded?(Kino.VegaLite) do
+  VegaLite.new(width: 320, height: 180, title: "Example counts")
+  |> VegaLite.data_from_values([%{kind: "A", count: 4}, %{kind: "B", count: 7}, %{kind: "C", count: 3}])
+  |> VegaLite.mark(:bar)
+  |> VegaLite.encode_field(:x, "kind", type: :nominal)
+  |> VegaLite.encode_field(:y, "count", type: :quantitative)
+else
+  "Install and start vega_lite and kino_vega_lite on the selected node to run chart examples."
+end
+```
+
+## Live chart inside a layout
+
+Run the first cell to display the chart, then run the next cells individually to append points and clear them. Live chart updates work while the chart's notebook session is active.
+
+```elixir
+live_example =
+  if Code.ensure_loaded?(VegaLite) and Code.ensure_loaded?(Kino.VegaLite) do
+    VegaLite.new(width: 320, height: 180, title: "Live points")
+    |> VegaLite.mark(:line, point: true)
+    |> VegaLite.encode_field(:x, "x", type: :quantitative)
+    |> VegaLite.encode_field(:y, "y", type: :quantitative)
+    |> Kino.VegaLite.new()
+  end
+
+if live_example do
+  Kino.Layout.grid([Kino.Text.new("Append points with the next cell."), live_example], columns: 1)
+else
+  "Chart packages are not available on this node."
+end
+```
+
+```elixir
+if live_example do
+  Kino.VegaLite.push_many(live_example, [%{x: 1, y: 2}, %{x: 2, y: 5}, %{x: 3, y: 4}])
+else
+  "Run the live chart cell on a node with the chart packages installed."
+end
+```
+
+```elixir
+if live_example, do: Kino.VegaLite.clear(live_example), else: "No live chart to clear."
+```
+
+## Current limits
+
+Beamdash supports the widget types shown here, along with PNG, JPEG, and GIF `Kino.Image` values. File, audio, and image inputs; general JavaScript-powered widgets; and most other Kino widgets still require Livebook. External chart data URLs are disabled. Charts created under another group leader and rich outputs emitted by `Kino.render/1` are not supported by this notebook runtime.

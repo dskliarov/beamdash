@@ -33,6 +33,8 @@ defmodule BeamdashWeb.Layouts do
         </script>
         <script defer src="/assets/module_editor.js">
         </script>
+        <script defer src="/assets/kino_chart.js">
+        </script>
         <script defer src="/assets/app.js">
         </script>
       </head>

@@ -117,7 +117,9 @@ defmodule BeamdashWeb.Connection do
 
   def handle_event("disconnect", _params, socket) do
     :ok = Target.disconnect()
-    {:halt, update(socket, status: :disconnected, node: nil, info: nil, reconnecting: nil)}
+
+    {:halt,
+     socket |> update(status: :disconnected, node: nil, info: nil, reconnecting: nil) |> to_root()}
   end
 
   def handle_event("stop_reconnect", _params, socket) do
@@ -366,13 +368,15 @@ defmodule BeamdashWeb.Connection do
     error = if reason == :nodedown, do: "Lost the connection to #{socket.assigns.conn.node}."
 
     {:cont,
-     update(socket,
+     socket
+     |> update(
        status: :disconnected,
        node: nil,
        info: nil,
        error: error,
        reconnecting: Target.reconnecting()
-     )}
+     )
+     |> then(fn s -> if reason == :reconnect, do: s, else: to_root(s) end)}
   end
 
   # Broadcast on the "settings" topic, which `BeamdashWeb.Syntax` (mounted
@@ -638,6 +642,9 @@ defmodule BeamdashWeb.Connection do
   # (staying put when already there).
   defp to_system(%{view: BeamdashWeb.SystemLive} = socket), do: socket
   defp to_system(socket), do: push_navigate(socket, to: "/system")
+
+  defp to_root(%{view: BeamdashWeb.HomeLive} = socket), do: socket
+  defp to_root(socket), do: push_navigate(socket, to: "/")
 
   defp update(socket, changes),
     do: assign(socket, :conn, Map.merge(socket.assigns.conn, Map.new(changes)))

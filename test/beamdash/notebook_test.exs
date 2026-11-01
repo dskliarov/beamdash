@@ -56,6 +56,49 @@ defmodule Beamdash.NotebookTest do
     assert Enum.any?(reimported.blocks, &(&1.source == "\"```\"" and &1.executable))
   end
 
+  test "cell execution targets round-trip without losing existing annotations" do
+    source = "# Test\n\n<!-- livebook:{\"other\":42} -->\n\n```elixir\nnode()\n```\n"
+    {:ok, notebook} = Notebook.from_livemd(source)
+    cell = Enum.find(notebook.blocks, & &1.executable)
+    assert Notebook.execution_target(cell) == :remote
+    local = Notebook.set_execution_target(notebook, cell.id, :local)
+    local_source = Notebook.to_livemd(local)
+    assert local_source =~ ~s("other":42)
+    assert length(Regex.scan(~r/<!-- livebook:/, local_source)) == 1
+    assert {:ok, reopened} = Notebook.from_livemd(local_source)
+    local_cell = Enum.find(reopened.blocks, & &1.executable)
+    assert Notebook.execution_target(local_cell) == :local
+    assert local_cell.source == "node()"
+    assert local_cell.metadata["other"] == 42
+    remote = Notebook.set_execution_target(reopened, local_cell.id, :remote)
+    assert {:ok, reopened_remote} = Notebook.from_livemd(Notebook.to_livemd(remote))
+    remote_cell = Enum.find(reopened_remote.blocks, & &1.executable)
+    assert Notebook.execution_target(remote_cell) == :remote
+    assert remote_cell.metadata["other"] == 42
+  end
+
+  test "changing a target preserves combined metadata and code edits" do
+    source =
+      "# Test\n\n<!-- livebook:{\"beamdash_run_on_local\":true,\"reevaluate_automatically\":true,\"custom\":\"a--\\u003eb\"} -->\n\n```elixir\nx = 1\n```\n"
+
+    {:ok, notebook} = Notebook.from_livemd(source)
+    cell = Enum.find(notebook.blocks, & &1.executable)
+
+    notebook =
+      notebook
+      |> Notebook.update(cell.id, "x = 2", nil)
+      |> Notebook.set_execution_target(cell.id, :remote)
+
+    exported = Notebook.to_livemd(notebook)
+    assert length(Regex.scan(~r/<!-- livebook:/, exported)) == 1
+    {:ok, reopened} = Notebook.from_livemd(exported)
+    cell = Enum.find(reopened.blocks, & &1.executable)
+    assert Notebook.execution_target(cell) == :remote
+    assert cell.source == "x = 2"
+    assert cell.metadata["reevaluate_automatically"] == true
+    assert cell.metadata["custom"] == "a-->b"
+  end
+
   test "new and appended cells are LiveMarkdown and can be reopened" do
     notebook = Notebook.new() |> Notebook.append(:markdown) |> Notebook.append(:erlang)
     assert {:ok, reopened} = Notebook.from_livemd(Notebook.to_livemd(notebook))

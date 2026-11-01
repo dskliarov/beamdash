@@ -28,6 +28,27 @@ defmodule Beamdash.Console do
 
   def submit(_, _, _, _), do: {:error, :invalid_command_or_timeout}
 
+  @doc "Updates a rendered Kino text input in the current evaluator session."
+  def set_input(node, session, id, value)
+      when is_pid(session) and is_binary(id) and is_binary(value) and byte_size(id) <= 256 and
+             byte_size(value) <= 4096 do
+    Target.rpc(node, :beamdash_console, :set_input, [session, id, value], 2000)
+  end
+
+  def set_input(_, _, _, _), do: {:error, :invalid_input}
+
+  def release_input(node, session, id)
+      when is_pid(session) and is_binary(id) and byte_size(id) <= 256,
+      do: Target.rpc(node, :beamdash_console, :release_input, [session, id], 2000)
+
+  def release_input(_, _, _), do: {:error, :invalid_input}
+
+  def release_frame(node, session, id)
+      when is_pid(session) and is_binary(id) and byte_size(id) <= 256,
+      do: Target.rpc(node, :beamdash_console, :release_frame, [session, id], 2000)
+
+  def release_frame(_, _, _), do: {:error, :invalid_input}
+
   @doc "Completes loaded module names and exported functions without evaluating code."
   def complete(node, language, token)
       when language in [:erlang, :elixir] and is_binary(token) and byte_size(token) <= 256 do

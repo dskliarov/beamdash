@@ -21,6 +21,17 @@ defmodule Beamdash.NotebookStoreTest do
     assert File.read!(Path.join(dir, "demo.livemd")) == "# External\n"
   end
 
+  test "imports copies without overwriting notebooks of the same name", %{dir: dir} do
+    assert {:ok, "demo.livemd", first} = NotebookStore.import("demo.livemd", "# First\n", dir)
+
+    assert {:ok, "demo (1).livemd", second} =
+             NotebookStore.import("demo.livemd", "# Second\n", dir)
+
+    assert {:ok, "# First\n", ^first} = NotebookStore.load("demo.livemd", dir)
+    assert {:ok, "# Second\n", ^second} = NotebookStore.load("demo (1).livemd", dir)
+    assert {:error, _} = NotebookStore.import("../bad.livemd", "# Bad", dir)
+  end
+
   test "rejects traversal paths and symlinks", %{dir: dir} do
     assert {:error, _} = NotebookStore.save("../escape.livemd", "# Bad", :new, dir)
     File.write!(Path.join(dir, "actual.txt"), "important")
