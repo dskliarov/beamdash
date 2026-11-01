@@ -83,14 +83,17 @@ defmodule Beamdash.Logs.Group do
   @doc "Adds a newer entry on top of `rows`, joining a similar row among the newest `window/0`."
   def add(rows, entry) do
     key = key(entry)
+    {newest, older} = Enum.split(rows, @window)
 
-    case Enum.find_index(Enum.take(rows, @window), &(&1.key == key)) do
-      nil ->
+    case Enum.split_while(newest, &(&1.key != key)) do
+      {before, [top | after_top]} ->
+        [
+          %{top | count: top.count + 1, entry: entry, ids: [entry.id | top.ids]}
+          | before ++ after_top ++ older
+        ]
+
+      {_, []} ->
         [new_row(entry, key) | rows]
-
-      index ->
-        {top, rest} = List.pop_at(rows, index)
-        [%{top | count: top.count + 1, entry: entry, ids: [entry.id | top.ids]} | rest]
     end
   end
 

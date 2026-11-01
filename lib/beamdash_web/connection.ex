@@ -132,22 +132,11 @@ defmodule BeamdashWeb.Connection do
 
   # namespaces are re-listed each time Kubernetes is picked from another
   # method, so ones created meanwhile show up too
-  def handle_event("set_conn_method", %{"method" => method}, socket)
-      when method in ["direct", "kubectl"] do
-    method = String.to_existing_atom(method)
-    :ok = Settings.put_connection_method(method)
-    switched? = socket.assigns.conn[:method] != method
-    socket = update(socket, method: method, error: nil)
-
-    socket =
-      if switched?,
-        do: update(socket, kube_restore_ref: nil, kube_pods_listing: false),
-        else: socket
-
-    if method == :kubectl and switched? do
-      {:halt, restore_saved_kube(socket)}
-    else
-      {:halt, socket}
+  def handle_event("set_conn_method", %{"method" => method}, socket) do
+    case method do
+      "direct" -> {:halt, select_conn_method(socket, :direct)}
+      "kubectl" -> {:halt, select_conn_method(socket, :kubectl)}
+      _ -> {:halt, socket}
     end
   end
 
@@ -514,6 +503,21 @@ defmodule BeamdashWeb.Connection do
       :persistent_term.put(key, true)
       true
     end
+  end
+
+  defp select_conn_method(socket, method) do
+    :ok = Settings.put_connection_method(method)
+    switched? = socket.assigns.conn[:method] != method
+    socket = update(socket, method: method, error: nil)
+
+    socket =
+      if switched?,
+        do: update(socket, kube_restore_ref: nil, kube_pods_listing: false),
+        else: socket
+
+    if method == :kubectl and switched?,
+      do: restore_saved_kube(socket),
+      else: socket
   end
 
   defp restore_saved_kube(socket) do

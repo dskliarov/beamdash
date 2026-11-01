@@ -15,14 +15,14 @@ window.BeamLogsScroll = {
     this.toBottom = () => {
       if (!this.table) return;
       this.following = true;
-      this.table.scrollTop = this.table.scrollHeight;
+      window.BeamFollow.snapToBottom(this.table);
     };
     this.onScroll = () => {
       if (!this.table) return;
       const jumped = this.jumpedToTop;
       this.jumpedToTop = false;
       if (jumped && this.table.scrollTop === 0) return;
-      this.following = this.table.scrollHeight - this.table.scrollTop - this.table.clientHeight <= 32;
+      this.following = window.BeamFollow.nearBottom(this.table);
     };
     this.topButton?.addEventListener('click', this.toTop);
     this.bottomButton?.addEventListener('click', this.toBottom);

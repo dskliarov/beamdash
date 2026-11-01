@@ -298,6 +298,15 @@ defmodule Beamdash.LogsLiveTest do
     assert html =~ "Original message"
   end
 
+  test "a plain message's embedded terms are pretty-printed", ctx do
+    {_, socket} = ctx |> mount() |> render()
+    socket = info(socket, {:beamdash_logs, {:entries, [new_entry(13, "got {ok,[1,2]}")]}})
+    {_, socket} = render(socket)
+    {html, _} = socket |> event("toggle_entry", %{"id" => "13", "row" => "g-13"}) |> render()
+
+    assert html =~ "got {ok, [1, 2]}"
+  end
+
   test "a nested JSON message keeps the line's own metadata", ctx do
     {_, socket} = ctx |> mount() |> render()
     entry = %{new_entry(9, ~S|{"a":1}|) | meta: [{"request_id", "abc"}]}
@@ -309,6 +318,24 @@ defmodule Beamdash.LogsLiveTest do
     assert html =~ ~s(class="logs-json")
     assert html =~ ~s(class="props")
     assert html =~ "request_id"
+  end
+
+  test "details colour the level and link the line's function to source, trace and profile",
+       ctx do
+    {_, socket} = ctx |> mount() |> render()
+    entry = %{new_entry(12, "boom") | level: :error, where: "Beamdash.Worker:run/2"}
+
+    socket = info(socket, {:beamdash_logs, {:entries, [entry]}})
+    {_, socket} = render(socket)
+    {html, _} = socket |> event("toggle_entry", %{"id" => "12", "row" => "g-12"}) |> render()
+
+    assert html =~ ~s(<span class="lvl lvl-error">error</span>)
+    assert html =~ "/modules?module=Elixir.Beamdash.Worker"
+    assert html =~ "/trace?"
+    assert html =~ "/profile?"
+    assert html =~ "mod=Elixir.Beamdash.Worker"
+    assert html =~ "fun=run"
+    assert html =~ "arity=2"
   end
 
   test "a JSON message's fields are listed once in details", ctx do

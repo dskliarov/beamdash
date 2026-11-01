@@ -14,7 +14,7 @@ defmodule BeamdashWeb.LogsTable do
   use Phoenix.Component
 
   alias Beamdash.Format
-  alias Beamdash.Logs.Filter
+  alias Beamdash.Logs.{Filter, Pretty}
   alias Beamdash.Target
 
   attr :info, :map, required: true, doc: "`Beamdash.Logs.info/1`"
@@ -286,7 +286,7 @@ defmodule BeamdashWeb.LogsTable do
           <summary>Original message</summary><pre>{@entry.message}</pre>
         </details>
       <% else %>
-        <pre>{@entry.message}</pre>
+        <pre>{pretty_message(@entry.message)}</pre>
       <% end %>
       <table class="props">
         <tr :if={@time?}>
@@ -295,7 +295,7 @@ defmodule BeamdashWeb.LogsTable do
         </tr>
         <tr :if={@props? and @entry.level}>
           <th>level</th>
-          <td class="mono">{@entry.level}</td>
+          <td><.level level={@entry.level} /></td>
         </tr>
         <tr :if={@props? and @entry.pid}>
           <th>pid</th>
@@ -303,7 +303,7 @@ defmodule BeamdashWeb.LogsTable do
         </tr>
         <tr :if={@props? and @entry.where}>
           <th>where</th>
-          <td class="mono">{@entry.where}</td>
+          <td class="mono">{@entry.where} <.where_links where={@entry.where} /></td>
         </tr>
         <tr :for={{k, v} <- if(@props?, do: @entry.meta, else: [])}>
           <th>{k}</th>
@@ -312,6 +312,10 @@ defmodule BeamdashWeb.LogsTable do
       </table>
     </div>
     """
+  end
+
+  defp pretty_message(message) do
+    {:safe, Enum.map(Pretty.segments(message), fn {_kind, text} -> escape(text) end)}
   end
 
   defp json_rows(message) when is_binary(message) and byte_size(message) <= 262_144 do
@@ -337,6 +341,37 @@ defmodule BeamdashWeb.LogsTable do
   defp json_rows(_), do: nil
   defp json_value(value) when is_binary(value), do: value
   defp json_value(value), do: Jason.encode!(value, pretty: true)
+
+  attr :where, :string, required: true
+
+  # Source, and Trace / Profile for the function, when `where` names a module
+  defp where_links(assigns) do
+    assigns = assign(assigns, :target, where_target(assigns.where))
+
+    ~H"""
+    <span :if={@target} class="where-links">
+      <.link navigate={"/modules?" <> URI.encode_query(%{module: @target.module})}>Source</.link>
+      <.link navigate={"/trace?" <> @target.query}>Trace</.link>
+      <.link navigate={"/profile?" <> @target.query}>Profile</.link>
+    </span>
+    """
+  end
+
+  # `Mod:fun/arity` (node logger) or a bare module name (a JSON line's `where`)
+  defp where_target(where) do
+    {mod, query} =
+      case Regex.run(~r/^([\w.]+):([^\s:\/]+)\/(\d+)$/, where) do
+        [_, mod, fun, arity] -> {mod, %{mod: module_name(mod), fun: fun, arity: arity}}
+        nil -> {where, %{mod: module_name(where)}}
+      end
+
+    if Regex.match?(~r/^[\w.]+$/, mod),
+      do: %{module: module_name(mod), query: URI.encode_query(query)}
+  end
+
+  # the Elixir alias is printed without its "Elixir." prefix
+  defp module_name(<<c, _::binary>> = name) when c in ?A..?Z, do: "Elixir." <> name
+  defp module_name(name), do: name
 
   attr :pid, :string, default: nil
   attr :node, :atom, default: nil

@@ -87,13 +87,36 @@ defmodule BeamdashWeb.ProfileLive do
 
   # ?mod= opens that module (a link from "Ask beamdash")
   @impl true
-  def handle_params(%{"mod" => mod}, _uri, socket) do
+  def handle_params(%{"mod" => mod} = params, _uri, socket) when not is_map_key(params, "fun") do
     case Enum.find(socket.assigns.modules, fn {m, _, _} -> Atom.to_string(m) == mod end) do
       {m, _, _} ->
         {:noreply, socket |> assign(pick_mod: m, pick_q: mod) |> SourceTabs.check(m)}
 
       nil ->
         {:noreply, socket}
+    end
+  end
+
+  # ?mod=&fun=&arity= also picks that function (a link from a log line)
+  def handle_params(%{"mod" => mod, "fun" => fun, "arity" => arity}, uri, socket) do
+    {:noreply, socket} = handle_params(%{"mod" => mod}, uri, socket)
+    pick_mod = socket.assigns.pick_mod
+
+    with true <- is_atom(pick_mod) and Atom.to_string(pick_mod) == mod,
+         {f, a, _} <-
+           Enum.find(functions_of(socket.assigns.modules, pick_mod), fn {f, a, _} ->
+             Atom.to_string(f) == fun and Integer.to_string(a) == arity
+           end) do
+      pattern = {pick_mod, f, a}
+
+      picked =
+        if pattern in socket.assigns.picked,
+          do: socket.assigns.picked,
+          else: socket.assigns.picked ++ [pattern]
+
+      {:noreply, assign(socket, picked: picked, form_error: nil)}
+    else
+      _ -> {:noreply, socket}
     end
   end
 

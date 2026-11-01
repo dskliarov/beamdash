@@ -128,10 +128,8 @@ defmodule Beamdash.Milestone4Test do
 
       :ok = Target.disconnect(ctx.target)
       {:ok, _} = Target.connect(Atom.to_string(ctx.node), Fixture.cookie(), ctx.target)
-      # reconnecting installs exactly one fresh handler
-      Process.sleep(100)
-      {:ok, handlers} = Target.rpc(ctx.node, :gen_event, :which_handlers, [:error_logger])
-      assert Enum.count(handlers, &(&1 == :erlyberly)) == 1
+      # reconnecting installs exactly one fresh handler; the old one may take a moment to go
+      assert eventually(fn -> erlyberly_handlers(ctx.node) == 1 end)
     end
   end
 
@@ -147,5 +145,26 @@ defmodule Beamdash.Milestone4Test do
 
     assert Beamdash.Format.term({:reply, :ok, rec}, :elixir) ==
              "{:reply, :ok, #st{count: 1, name: :fixture}}"
+  end
+
+  # nil while the node is not reachable yet, so the poll keeps waiting
+  defp erlyberly_handlers(node) do
+    case Target.rpc(node, :gen_event, :which_handlers, [:error_logger]) do
+      {:ok, handlers} -> Enum.count(handlers, &(&1 == :erlyberly))
+      {:error, _} -> nil
+    end
+  end
+
+  defp eventually(fun, timeout \\ 5_000) do
+    deadline = System.monotonic_time(:millisecond) + timeout
+    poll(fun, deadline)
+  end
+
+  defp poll(fun, deadline) do
+    cond do
+      fun.() -> true
+      System.monotonic_time(:millisecond) > deadline -> flunk("condition not met in time")
+      true -> Process.sleep(20) && poll(fun, deadline)
+    end
   end
 end

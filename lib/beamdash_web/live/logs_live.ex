@@ -153,9 +153,7 @@ defmodule BeamdashWeb.LogsLive do
     ref = make_ref()
 
     socket =
-      if mode == :node and socket.assigns.view == :previous,
-        do: to_live(socket),
-        else: socket
+      if valid_view?(mode, socket.assigns.view), do: socket, else: to_live(socket)
 
     {:noreply,
      socket
@@ -561,25 +559,14 @@ defmodule BeamdashWeb.LogsLive do
     fresh = Enum.reject(folded, &(Map.get(a.rendered, &1.id) == &1))
     fresh_ids = MapSet.new(fresh, & &1.id)
 
-    rendered =
-      a.rendered
-      |> Map.merge(Map.new(fresh, &{&1.id, &1}))
-      |> Map.new(fn {id, row} -> {id, trim(row, gone, a.entries)} end)
-
-    emptied = for {id, %{ids: []}} <- rendered, do: id
-    rendered = Map.drop(rendered, emptied)
+    {rendered, touched, emptied} =
+      trim_rendered(Map.merge(a.rendered, Map.new(fresh, &{&1.id, &1})), gone, a.entries)
 
     # the newest row is last in the stream: it stays put when it is also the
     # oldest row of the batch, else a joined row moves to the bottom
-    head_id =
-      case a.window do
-        [%{id: id} | _] -> id
-        [] -> nil
-      end
-
     in_place =
-      case List.last(fresh) do
-        %{id: id} when id == head_id -> id
+      case {List.last(fresh), a.window} do
+        {%{id: id}, [%{id: id} | _]} -> id
         _ -> nil
       end
 
@@ -608,10 +595,10 @@ defmodule BeamdashWeb.LogsLive do
       |> Enum.map(&Map.fetch!(rendered, &1.id))
 
     updated =
-      for {id, row} <- rendered,
+      for id <- touched,
           not MapSet.member?(fresh_ids, id),
-          row != Map.get(a.rendered, id),
-          do: row
+          Map.has_key?(rendered, id),
+          do: rendered[id]
 
     socket = assign(socket, rendered: rendered, window: window)
     socket = Enum.reduce(deleted, socket, &stream_delete_by_dom_id(&2, :rows, "rows-" <> &1))
@@ -637,6 +624,21 @@ defmodule BeamdashWeb.LogsLive do
     assign(socket, expanded: Map.filter(a.expanded, fn {key, _} -> MapSet.member?(live, key) end))
   end
 
+  # Trims only the rows holding an evicted entry, since entries leave oldest
+  # first. Returns the rows, the ids of the trimmed ones and of those left empty.
+  defp trim_rendered(rows, gone, entries) do
+    touched =
+      if MapSet.size(gone) == 0,
+        do: [],
+        else: for({id, row} <- rows, Enum.any?(row.ids, &MapSet.member?(gone, &1)), do: id)
+
+    rows =
+      Enum.reduce(touched, rows, &Map.update!(&2, &1, fn row -> trim(row, gone, entries) end))
+
+    emptied = for id <- touched, rows[id].ids == [], do: id
+    {Map.drop(rows, emptied), touched, emptied}
+  end
+
   # The row without the evicted entries' ids and its count to match. Its id
   # stays, so the DOM row is updated in place.
   defp trim(row, gone, entries) do
@@ -653,6 +655,10 @@ defmodule BeamdashWeb.LogsLive do
         %{row | ids: ids, count: length(ids), first_at: first && first.at}
     end
   end
+
+  # the Previous container exists only for a Kubernetes source
+  defp valid_view?(:node, :previous), do: false
+  defp valid_view?(_mode, _view), do: true
 
   defp to_live(socket) do
     socket

@@ -18,7 +18,9 @@ function setup() {
     requestAnimationFrame(fn) { fn(); return 1; }, cancelAnimationFrame() {}};
   const document = {getElementById(id) { return buttons[id]; }};
   const context = {window, document};
-  vm.runInNewContext(fs.readFileSync('priv/static/assets/logs_scroll.js', 'utf8'), context);
+  for (const file of ['follow_bottom.js', 'logs_scroll.js']) {
+    vm.runInNewContext(fs.readFileSync(`priv/static/assets/${file}`, 'utf8'), context);
+  }
   const hook = {...context.window.BeamLogsScroll, el: {closest() { return table; }}};
   hook.mounted();
   return {hook, table, window, buttons, listeners};

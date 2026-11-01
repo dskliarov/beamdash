@@ -25,6 +25,8 @@ defmodule BeamdashWeb.Layouts do
         </script>
         <script defer src="/assets/source_editor.js">
         </script>
+        <script defer src="/assets/follow_bottom.js">
+        </script>
         <script defer src="/assets/console_completion.js">
         </script>
         <script defer src="/assets/notebook_files.js">

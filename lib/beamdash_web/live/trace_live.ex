@@ -75,13 +75,36 @@ defmodule BeamdashWeb.TraceLive do
 
   # ?mod= opens that module (a link from "Ask beamdash")
   @impl true
-  def handle_params(%{"mod" => mod}, _uri, socket) do
+  def handle_params(%{"mod" => mod} = params, _uri, socket) when not is_map_key(params, "fun") do
     case Enum.find(socket.assigns.modules, fn {m, _, _} -> Atom.to_string(m) == mod end) do
       {m, _, _} ->
         {:noreply, socket |> assign(selected: m, module_filter: mod) |> SourceTabs.check(m)}
 
       nil ->
         {:noreply, socket}
+    end
+  end
+
+  # ?mod=&fun=&arity= also picks that function (a link from a log line)
+  def handle_params(%{"mod" => mod, "fun" => fun, "arity" => arity}, uri, socket) do
+    {:noreply, socket} = handle_params(%{"mod" => mod}, uri, socket)
+    selected = socket.assigns.selected
+
+    with true <- is_atom(selected) and Atom.to_string(selected) == mod,
+         {f, a, _} <-
+           Enum.find(functions_of(socket.assigns.modules, selected), fn {f, a, _} ->
+             Atom.to_string(f) == fun and Integer.to_string(a) == arity
+           end) do
+      mfa = {selected, f, a}
+
+      picked =
+        if mfa in socket.assigns.picked,
+          do: socket.assigns.picked,
+          else: socket.assigns.picked ++ [mfa]
+
+      {:noreply, assign(socket, picked: picked, graph: nil)}
+    else
+      _ -> {:noreply, socket}
     end
   end
 
