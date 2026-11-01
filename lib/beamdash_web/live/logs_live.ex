@@ -1,6 +1,6 @@
 defmodule BeamdashWeb.LogsLive do
   @moduledoc """
-  The target's log lines (`Beamdash.Logs`), newest first, with a level and
+  The target's log lines (`Beamdash.Logs`), oldest first, with a level and
   a text filter, repeated lines combined into one row (`Beamdash.Logs.Group`),
   a group's original lines on Expand, "Show all like this" (a pattern
   filter), and Copy / Download of the original lines (the `LogExport` hook).
@@ -10,7 +10,7 @@ defmodule BeamdashWeb.LogsLive do
   pattern set, a single-entry row `%{id: "e-<id>", ...}`; Previous container
   rows are prefixed `p-` so DOM ids never collide with the live ones. Any
   filter, pattern, grouping or view change rebuilds the stream; new lines
-  are inserted at the top, a similar one joining the top row in place.
+  are appended at the bottom, a similar one joining the newest row in place.
 
   A batch of new lines is folded into the rows first, then each new or
   changed row is inserted once. When lines leave the 2,000-line buffer the
@@ -78,6 +78,9 @@ defmodule BeamdashWeb.LogsLive do
         oldest_row: nil,
         row_ends: %{},
         export_note: nil,
+        source_error: nil,
+        source_loading?: false,
+        source_ref: nil,
         total: 0,
         shown: 0,
         no_level: 0,
@@ -142,6 +145,26 @@ defmodule BeamdashWeb.LogsLive do
     :ok = Logs.reconnect(socket.assigns.logs)
     {:noreply, assign(socket, info: Logs.info(socket.assigns.logs))}
   end
+
+  defp event("set_source", %{"source" => source}, %{assigns: %{source_loading?: false}} = socket)
+       when source in ["combined", "kubectl", "node"] do
+    mode = String.to_existing_atom(source)
+    logs = socket.assigns.logs
+    recipient = self()
+    ref = make_ref()
+
+    {:noreply,
+     socket
+     |> assign(source_loading?: true, source_error: nil, source_ref: ref)
+     |> start_async({:set_source, ref}, fn ->
+       case Logs.set_source(mode, logs) do
+         :ok -> Logs.send_snapshot(logs, recipient, ref)
+         error -> error
+       end
+     end)}
+  end
+
+  defp event("set_source", _params, socket), do: {:noreply, socket}
 
   defp event("toggle_app_levels", _params, socket) do
     if socket.assigns.app_levels_open? do
@@ -303,6 +326,19 @@ defmodule BeamdashWeb.LogsLive do
   ## Background load of the Previous container
 
   @impl true
+  def handle_async({:set_source, _ref}, {:ok, :ok}, socket), do: {:noreply, socket}
+
+  def handle_async({:set_source, ref}, result, %{assigns: %{source_ref: ref}} = socket) do
+    {:noreply,
+     assign(socket,
+       source_ref: nil,
+       source_loading?: false,
+       source_error: "Could not change log source: #{async_error(result)}"
+     )}
+  end
+
+  def handle_async({:set_source, _}, _result, socket), do: {:noreply, socket}
+
   def handle_async(:previous, {:ok, {:ok, entries}}, %{assigns: %{view: :previous}} = socket) do
     {:noreply, socket |> assign(previous: entries, previous_loading?: false) |> reset_rows()}
   end
@@ -407,6 +443,33 @@ defmodule BeamdashWeb.LogsLive do
   ## Messages
 
   @impl true
+  def handle_info(
+        {:beamdash_logs, {:snapshot, ref, info, entries}},
+        %{assigns: %{source_ref: ref}} = socket
+      ) do
+    newest = Enum.reduce(entries, 0, &max(&1.id, &2))
+
+    {:noreply,
+     socket
+     |> assign(
+       info: info,
+       entries: entries,
+       newest_id: newest,
+       source_ref: nil,
+       source_loading?: false,
+       view: :live,
+       previous: nil,
+       previous_loading?: false,
+       previous_error: nil,
+       paused?: false,
+       pending: 0,
+       source_error: nil
+     )
+     |> reset_rows()}
+  end
+
+  def handle_info({:beamdash_logs, {:snapshot, _, _, _}}, socket), do: {:noreply, socket}
+
   def handle_info({:beamdash_logs, {:entries, batch}}, socket) do
     a = socket.assigns
 
@@ -518,7 +581,7 @@ defmodule BeamdashWeb.LogsLive do
     socket =
       changed
       |> Enum.reverse()
-      |> Enum.reduce(socket, &stream_insert(&2, :rows, item(&1, a), at: 0, limit: @max_rows))
+      |> Enum.reduce(socket, &stream_insert(&2, :rows, item(&1, a), at: -1, limit: -@max_rows))
 
     socket =
       if grouped?(a), do: update_oldest(socket, List.first(old), kept, gone), else: socket
@@ -654,7 +717,7 @@ defmodule BeamdashWeb.LogsLive do
       row_ends: ends,
       expanded: a.expanded
     )
-    |> stream(:rows, Enum.map(rendered, &item(&1, a)), reset: true)
+    |> stream(:rows, rendered |> Enum.reverse() |> Enum.map(&item(&1, a)), reset: true)
   end
 
   defp resnapshot(%{expanded: expanded} = a, _rows) when expanded == %{}, do: a.expanded
@@ -806,7 +869,15 @@ defmodule BeamdashWeb.LogsLive do
         Not connected: enter a node above and click Connect.
       </p>
 
-      <BeamdashWeb.LogsTable.source_bar info={@info} node={@node} view={@view} />
+      <BeamdashWeb.LogsTable.source_bar
+        info={@info}
+        node={@node}
+        view={@view}
+        connected?={@status == :connected}
+        loading?={@source_loading?}
+      />
+
+      <p :if={@source_error} class="error" role="alert">{@source_error}</p>
 
       <div class="logs-controls">
         <form id="logs-level-form" phx-change="level">
@@ -929,6 +1000,11 @@ defmodule BeamdashWeb.LogsLive do
         No lines match the filter.
         <button type="button" class="secondary" phx-click="clear_filter">Clear filter</button>
       </p>
+
+      <div class="logs-scroll-controls" role="group" aria-label="Log navigation">
+        <button id="logs-scroll-top" type="button" class="secondary">Jump to top</button>
+        <button id="logs-scroll-bottom" type="button" class="secondary">Follow latest</button>
+      </div>
 
       <BeamdashWeb.LogsTable.table
         rows={@streams.rows}

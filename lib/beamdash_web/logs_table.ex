@@ -20,12 +20,37 @@ defmodule BeamdashWeb.LogsTable do
   attr :info, :map, required: true, doc: "`Beamdash.Logs.info/1`"
   attr :node, :atom, default: nil
   attr :view, :atom, required: true, doc: ":live or :previous"
+  attr :connected?, :boolean, default: false
+  attr :loading?, :boolean, default: false
 
   @doc "Where the lines come from, the stream's state, and the Live / Previous container switch."
   def source_bar(assigns) do
     ~H"""
     <div class="active-traces logs-source">
       <.source info={@info} node={@node} />
+      <div
+        :if={@connected? and is_map(@info.kubectl)}
+        class="seg"
+        role="group"
+        aria-label="Log source"
+      >
+        <button
+          :for={
+            {value, label} <- [
+              {:combined, "Combined"},
+              {:kubectl, "kubectl only"},
+              {:node, "Node only"}
+            ]
+          }
+          type="button"
+          class={["seg-btn", @info.mode == value && "active"]}
+          aria-pressed={to_string(@info.mode == value)}
+          disabled={@loading?}
+          phx-click="set_source"
+          phx-value-source={value}
+        >{label}</button>
+      </div>
+      <span :if={@loading?} class="muted small" role="status">Changing log source…</span>
       <span :if={@info.status == :streaming} class="muted small">streaming</span>
       <span :if={match?({:ended, _}, @info.status)} class="muted small">
         {ended(@info.status)}
@@ -39,7 +64,7 @@ defmodule BeamdashWeb.LogsTable do
         Reconnect
       </button>
       <div
-        :if={@info.source == :kubectl or @view == :previous}
+        :if={is_map(@info.kubectl) or @view == :previous}
         class="seg"
         role="group"
         aria-label="Container"
@@ -112,7 +137,7 @@ defmodule BeamdashWeb.LogsTable do
         <span role="columnheader">Message</span>
         <span role="columnheader"><span class="sr-only">Actions</span></span>
       </div>
-      <div id="logs-rows" phx-update="stream" role="rowgroup">
+      <div id="logs-rows" phx-update="stream" phx-hook="LogsScroll" role="rowgroup">
         <div
           :for={{dom_id, row} <- @rows}
           id={dom_id}
@@ -231,9 +256,26 @@ defmodule BeamdashWeb.LogsTable do
   attr :node, :atom, default: nil
 
   defp details(assigns) do
+    assigns = assign(assigns, :json_rows, json_rows(assigns.entry.message))
+
     ~H"""
     <div class="detail log-detail" role="region">
-      <pre>{@entry.message}</pre>
+      <%= if @json_rows do %>
+        <table class="logs-json" aria-label="JSON message fields">
+          <tbody>
+            <tr :for={{key, value} <- @json_rows}>
+              <th scope="row">{key}</th>
+              <td><pre>{value}</pre></td>
+            </tr>
+          </tbody>
+        </table>
+        <p :if={@json_rows == []} class="muted small">Empty JSON object or array.</p>
+        <details class="logs-json-original">
+          <summary>Original message</summary><pre>{@entry.message}</pre>
+        </details>
+      <% else %>
+        <pre>{@entry.message}</pre>
+      <% end %>
       <table class="props">
         <tr>
           <th>time</th>
@@ -259,6 +301,30 @@ defmodule BeamdashWeb.LogsTable do
     </div>
     """
   end
+
+  defp json_rows(message) when is_binary(message) and byte_size(message) <= 262_144 do
+    case Jason.decode(message) do
+      {:ok, value} when is_map(value) ->
+        value
+        |> Enum.sort_by(&elem(&1, 0))
+        |> Enum.map(fn {key, val} -> {key, json_value(val)} end)
+
+      {:ok, value} when is_list(value) ->
+        value
+        |> Enum.with_index()
+        |> Enum.map(fn {val, index} -> {"[#{index}]", json_value(val)} end)
+
+      {:ok, value} ->
+        [{"value", json_value(value)}]
+
+      _ ->
+        nil
+    end
+  end
+
+  defp json_rows(_), do: nil
+  defp json_value(value) when is_binary(value), do: value
+  defp json_value(value), do: Jason.encode!(value, pretty: true)
 
   attr :pid, :string, default: nil
   attr :node, :atom, default: nil

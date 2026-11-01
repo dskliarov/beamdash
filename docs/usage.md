@@ -48,6 +48,8 @@ With **Settings → Reconnect automatically** on, a connection lost because the 
 
 To connect to a node running in a Kubernetes pod, switch the bar to **kubectl** instead of **Direct**. Pick the **Cluster** from the dropdown (one entry per `.yaml`/`.yml` kubeconfig file under `~/.kube`, or the directory set in **Settings → Kubeconfig directory**; beamdash passes it to `kubectl` directly, so there is no need to run a context-switching shell command first), enter the namespace and click **List pods**, pick the **Pod** from the dropdown, then the **Container** and **Binary** if more than one is available, then **Connect**. beamdash reads the node name and cookie off the pod itself (via `kubectl exec ... rpc`) and opens `kubectl port-forward` tunnels for epmd and distribution, so there is no node name or cookie to type.
 
+The last selected connection method is saved across restarts. For Kubernetes, the previous cluster and namespace are restored, and the pod, container and binary are restored when they are still available.
+
 ![Connection form with a local demo node and masked cookie](screenshots/00-connect.jpg)
 
 *The demo node is prefilled here; a fresh installation may have empty fields.*
@@ -217,6 +219,12 @@ Profiling requires **OTP 27+ on the target**.
 ![Final function profiling results for demo_shop work/1](screenshots/10-profile.jpg)
 
 **Call time** locates expensive functions, **Call count** finds frequent calls, and **Memory** finds allocation activity. Allocated bytes are not retained bytes and do not prove a leak. Keep function and process scope narrow: profiling everything with `_` adds more overhead. Percentages are shares of the measured result, not the node's total CPU use.
+
+## View logs
+
+For a Kubernetes connection, the **Logs** source selector offers **Combined** (recent kubectl output followed by node logger events), **kubectl only** (pod output), and **Node only** (new events from the node logger). Changing the source restarts the shared log stream and clears its current entries, so all open Logs views see the same selection. The previous container remains available for a Kubernetes connection. A direct connection always uses the node logger.
+
+Logs appear oldest first, with new lines at the bottom. Use **Jump to top** to inspect older lines and **Follow latest** to jump to the bottom and keep following new lines. Scrolling away from the bottom pauses automatic following until you return to it.
 
 ## Read crash reports
 

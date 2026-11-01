@@ -109,17 +109,20 @@ defmodule Beamdash.LogsLiveTest do
     |> Enum.map(fn [_, m] -> m |> String.replace(~r/<[^>]+>/, "") |> String.trim() end)
   end
 
-  test "rows newest first, repeats grouped, with counts", ctx do
+  test "rows oldest first, repeats grouped, with counts", ctx do
     {html, _} = ctx |> mount() |> render()
 
     assert messages(html) == [
-             "hello",
-             "cache miss for key user:5",
+             "cache miss for key user:3",
              "boom",
-             "cache miss for key user:3"
+             "cache miss for key user:5",
+             "hello"
            ]
 
-    assert row_ids(html) == ["g-7", "g-5", "g-4", "g-1"]
+    assert row_ids(html) == ["g-1", "g-4", "g-5", "g-7"]
+    assert html =~ ~s(phx-hook="LogsScroll")
+    assert html =~ ~s(id="logs-scroll-top")
+    assert html =~ ~s(id="logs-scroll-bottom")
     assert html =~ ~r/class="count-badge"[^>]*>\s*×2/
     assert html =~ ~r/class="count-badge"[^>]*>\s*×3/
     assert html =~ "7 of 7 lines"
@@ -131,6 +134,74 @@ defmodule Beamdash.LogsLiveTest do
     assert html =~ "Stream ended (exit 0)"
     assert html =~ ~s(phx-click="reconnect")
     assert html =~ "Previous container"
+  end
+
+  test "a failed source change reports an error without terminating the page", ctx do
+    ref = make_ref()
+    socket = ctx |> mount() |> Phoenix.Component.assign(source_loading?: true, source_ref: ref)
+    {:noreply, socket} = LogsLive.handle_async({:set_source, ref}, {:exit, :timeout}, socket)
+    refute socket.assigns.source_loading?
+    assert socket.assigns.source_error =~ "Could not change log source"
+  end
+
+  test "source snapshot and subsequent batches retain their order", ctx do
+    ref = make_ref()
+    socket = ctx |> mount() |> Phoenix.Component.assign(source_loading?: true, source_ref: ref)
+    initial = [new_entry(8, "first")]
+
+    {:noreply, socket} =
+      LogsLive.handle_info(
+        {:beamdash_logs, {:snapshot, ref, socket.assigns.info, initial}},
+        socket
+      )
+
+    {:noreply, socket} =
+      LogsLive.handle_info({:beamdash_logs, {:entries, [new_entry(9, "second")]}}, socket)
+
+    {:noreply, socket} = LogsLive.handle_async({:set_source, ref}, {:ok, :ok}, socket)
+    assert Enum.map(socket.assigns.entries, & &1.message) == ["second", "first"]
+  end
+
+  test "selecting a Kubernetes log source restarts the shared stream", ctx do
+    {html, socket} = ctx |> mount() |> render()
+    assert html =~ "Combined"
+    assert html =~ "kubectl only"
+    assert html =~ "Node only"
+
+    socket = event(socket, "set_source", %{"source" => "node"})
+    assert socket.assigns.source_loading?
+    ref = socket.assigns.source_ref
+    assert_receive {:beamdash_logs, {:snapshot, ^ref, info, entries}}, 5_000
+
+    {:noreply, socket} =
+      LogsLive.handle_info({:beamdash_logs, {:snapshot, ref, info, entries}}, socket)
+
+    assert %{source: :direct, mode: :node} = Logs.info(ctx.logs)
+    assert socket.assigns.view == :live
+    {html, _} = render(socket)
+    assert html =~ ~s(phx-value-source="node")
+    assert html =~ "logger on"
+
+    socket = event(socket, "set_source", %{"source" => "kubectl"})
+    ref = socket.assigns.source_ref
+    assert_receive {:beamdash_logs, {:snapshot, ^ref, info, entries}}, 5_000
+
+    {:noreply, socket} =
+      LogsLive.handle_info({:beamdash_logs, {:snapshot, ref, info, entries}}, socket)
+
+    assert %{source: :kubectl, mode: :kubectl} = Logs.info(ctx.logs)
+    {html, _} = render(socket)
+    assert html =~ "kubectl logs"
+  end
+
+  test "source options are hidden for a direct connection and invalid selections are ignored",
+       ctx do
+    socket = mount(ctx)
+    direct_info = %{socket.assigns.info | source: :direct, kubectl: nil}
+    socket = Phoenix.Component.assign(socket, info: direct_info)
+    {html, socket} = render(socket)
+    refute html =~ ~s(aria-label="Log source")
+    assert event(socket, "set_source", %{"source" => "invalid"}).assigns.info == direct_info
   end
 
   test "the text filter keeps matching lines and highlights the terms", ctx do
@@ -177,12 +248,12 @@ defmodule Beamdash.LogsLiveTest do
     {_, socket} = ctx |> mount() |> render()
     {html, socket} = socket |> event("toggle_group") |> render()
 
-    assert row_ids(html) == ~w(e-7 e-6 e-5 e-4 e-3 e-2 e-1)
+    assert row_ids(html) == ~w(e-1 e-2 e-3 e-4 e-5 e-6 e-7)
     refute html =~ "count-badge"
     assert html =~ "7 of 7 lines"
 
     {html, _} = socket |> event("toggle_group") |> render()
-    assert row_ids(html) == ["g-7", "g-5", "g-4", "g-1"]
+    assert row_ids(html) == ["g-1", "g-4", "g-5", "g-7"]
   end
 
   test "expanding a group lists its original lines, masked parts marked", ctx do
@@ -216,11 +287,37 @@ defmodule Beamdash.LogsLiveTest do
     assert html =~ ~s(class="props")
   end
 
+  test "JSON log messages display escaped keys and values with the original available", ctx do
+    {_, socket} = ctx |> mount() |> render()
+
+    message =
+      ~S|{"event":"<script>alert(1)</script>","count":3,"nested":{"ok":true},"items":[1,2]}|
+
+    socket = info(socket, {:beamdash_logs, {:entries, [new_entry(8, message)]}})
+    {_, socket} = render(socket)
+    {html, _} = socket |> event("toggle_entry", %{"id" => "8", "row" => "g-8"}) |> render()
+    assert html =~ ~s(class="logs-json")
+    assert html =~ "event"
+    assert html =~ "&lt;script&gt;alert(1)&lt;/script&gt;"
+    refute html =~ "<script>alert(1)</script>"
+    assert html =~ "nested"
+    assert html =~ "Original message"
+  end
+
+  test "non-JSON messages remain plain text in details", ctx do
+    {_, socket} = ctx |> mount() |> render()
+    socket = info(socket, {:beamdash_logs, {:entries, [new_entry(8, "{not json}")]}})
+    {_, socket} = render(socket)
+    {html, _} = socket |> event("toggle_entry", %{"id" => "8", "row" => "g-8"}) |> render()
+    assert html =~ "{not json}"
+    refute html =~ ~s(class="logs-json")
+  end
+
   test "Show all like this sets a pattern; the chip clears it", ctx do
     {_, socket} = ctx |> mount() |> render()
     {html, socket} = socket |> event("like", %{"id" => "g-5"}) |> render()
 
-    assert row_ids(html) == ~w(e-6 e-5 e-3 e-2 e-1)
+    assert row_ids(html) == ~w(e-1 e-2 e-3 e-5 e-6)
     assert html =~ "5 of 7 lines"
     assert html =~ "pattern:"
     assert html =~ "cache miss for key user:#"
@@ -229,7 +326,7 @@ defmodule Beamdash.LogsLiveTest do
 
     {html, _} = socket |> event("clear_pattern") |> render()
     refute html =~ "pattern:"
-    assert row_ids(html) == ["g-7", "g-5", "g-4", "g-1"]
+    assert row_ids(html) == ["g-1", "g-4", "g-5", "g-7"]
   end
 
   test "Copy pushes a group's raw lines, oldest first", ctx do
@@ -366,7 +463,7 @@ defmodule Beamdash.LogsLiveTest do
     {_, socket} = ctx |> empty_logs() |> mount() |> render()
     socket = info(socket, {:beamdash_logs, {:entries, Enum.map(3..1//-1, &similar/1)}})
 
-    assert [{"rows-g-1", 0, %{count: 3}, _, _}] = stream_ops(socket).inserts
+    assert [{"rows-g-1", -1, %{count: 3}, _, _}] = stream_ops(socket).inserts
 
     {html, socket} = render(socket)
     assert row_ids(html) == ["g-1"]
@@ -450,9 +547,9 @@ defmodule Beamdash.LogsLiveTest do
 
     # the oldest rendered row's lines are trimmed too (12 is evicted)
     socket = info(socket, {:beamdash_logs, {:entries, [boom(2_012)]}})
-    # each sent once, g-12 then g-2012 at 0 (the newest on top); the
+    # each sent once, g-12 then g-2012 appended at the bottom; the
     # oldest row was the top row, so it is not sent a second time
-    assert [{"rows-g-2012", 0, _, _, _}, {"rows-g-12", 0, %{count: 1999}, _, _}] =
+    assert [{"rows-g-2012", -1, _, _, _}, {"rows-g-12", -1, %{count: 1999}, _, _}] =
              stream_ops(socket).inserts
 
     {html, _} = render(socket)
@@ -565,7 +662,7 @@ defmodule Beamdash.LogsLiveTest do
     {html, _} = socket |> info({:beamdash_logs, {:entries, [again]}}) |> render()
 
     # every row is sent again, from Logs.entries
-    assert row_ids(html) == ["g-7", "g-5", "g-4", "g-1"]
+    assert row_ids(html) == ["g-1", "g-4", "g-5", "g-7"]
   end
 
   test "while paused new lines are counted, Resume shows them", ctx do
@@ -582,7 +679,7 @@ defmodule Beamdash.LogsLiveTest do
     {html, _} = socket |> event("resume") |> render()
     assert html =~ "Pause"
     refute html =~ "+1 new"
-    assert row_ids(html) == ["g-7", "g-5", "g-4", "g-1"]
+    assert row_ids(html) == ["g-1", "g-4", "g-5", "g-7"]
   end
 
   test "a filter matching nothing says so, with Clear filter", ctx do
@@ -616,7 +713,7 @@ defmodule Beamdash.LogsLiveTest do
     {html, socket} = render(socket)
 
     refute html =~ "Loading previous container…"
-    assert row_ids(html) == ["p-g-7", "p-g-5", "p-g-4", "p-g-1"]
+    assert row_ids(html) == ["p-g-1", "p-g-4", "p-g-5", "p-g-7"]
     assert html =~ "7 of 7 lines"
 
     # live lines do not show in the Previous view
@@ -626,7 +723,7 @@ defmodule Beamdash.LogsLiveTest do
     assert row_ids(html) == []
 
     {html, _} = socket |> event("view", %{"view" => "live"}) |> render()
-    assert row_ids(html) == ["g-8", "g-7", "g-5", "g-4", "g-1"]
+    assert row_ids(html) == ["g-1", "g-4", "g-5", "g-7", "g-8"]
   end
 
   test "a failing Previous container load shows the error", ctx do

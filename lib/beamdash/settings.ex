@@ -23,6 +23,7 @@ defmodule Beamdash.Settings do
   @kube_key {__MODULE__, :kubeconfig_dir}
   @notebooks_key {__MODULE__, :notebooks_dir}
   @kube_selection_key {__MODULE__, :kube_selection}
+  @connection_method_key {__MODULE__, :connection_method}
   @reconnect_key {__MODULE__, :auto_reconnect}
   @source_dirs_key {__MODULE__, :source_dirs}
   @ai_key {__MODULE__, :ai_provider}
@@ -59,6 +60,24 @@ defmodule Beamdash.Settings do
   end
 
   def reset_notebooks_dir, do: put_notebooks_dir(default_notebooks_dir())
+
+  @doc "The last selected connection method."
+  def connection_method do
+    case :persistent_term.get(@connection_method_key, :unset) do
+      :unset ->
+        method = if read()["connection_method"] == "kubectl", do: :kubectl, else: :direct
+        :persistent_term.put(@connection_method_key, method)
+        method
+
+      method ->
+        method
+    end
+  end
+
+  def put_connection_method(method) when method in [:direct, :kubectl] do
+    :persistent_term.put(@connection_method_key, method)
+    save("connection_method", Atom.to_string(method))
+  end
 
   @doc "The last Kubernetes connection form selections."
   def kube_selection do
@@ -395,6 +414,7 @@ defmodule Beamdash.Settings do
     :persistent_term.erase(@kube_key)
     :persistent_term.erase(@notebooks_key)
     :persistent_term.erase(@kube_selection_key)
+    :persistent_term.erase(@connection_method_key)
     :persistent_term.erase(@reconnect_key)
     :persistent_term.erase(@source_dirs_key)
     :persistent_term.erase(@ai_key)

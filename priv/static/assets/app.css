@@ -1149,6 +1149,7 @@ dl.relations .pid-other { background: var(--app-box); border: 1.5px solid var(--
 /* Logs tab */
 .logs-source { margin-bottom: 4px; }
 .logs-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 8px 0; }
+.logs-scroll-controls { display: flex; position: sticky; top: 0; z-index: 3; justify-content: flex-end; gap: 8px; margin: 8px 0; padding: 6px 0; background: var(--bg); }
 .logs-controls form { margin: 0; }
 .logs-controls select {
   box-sizing: border-box; height: 32px; padding: 0 8px;
@@ -1184,6 +1185,12 @@ dl.relations .pid-other { background: var(--app-box); border: 1.5px solid var(--
 .logs-line.open > .log-row { background: var(--traced-bg-strong); }
 .logs-table .log-cols > .logs-line-msg { white-space: pre-wrap; word-break: break-word; }
 .logs-table .log-detail pre { white-space: pre-wrap; word-break: break-word; }
+.logs-json { border-collapse: collapse; width: 100%; margin-bottom: 8px; }
+.logs-json th, .logs-json td { padding: 5px 8px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
+.logs-json th { width: 1%; white-space: nowrap; color: var(--muted); }
+.logs-json td pre { margin: 0; }
+.logs-json-original { margin: 8px 0; }
+.logs-json-original summary { cursor: pointer; color: var(--muted); }
 .lvl { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
 .lvl-emergency, .lvl-alert, .lvl-critical, .lvl-error { color: var(--error); font-weight: 600; }
 .lvl-warning { color: var(--statem); }
