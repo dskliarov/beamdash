@@ -81,7 +81,7 @@ defmodule BeamdashWeb.Connection do
       :ok = Phoenix.PubSub.subscribe(Beamdash.PubSub, "plugins")
       send(self(), :beamdash_conn_tick)
 
-      if socket.assigns.conn.method == :kubectl and status != :connected,
+      if socket.assigns.conn.method == :kubectl and status != :connected and first_kube_restore?(),
         do: send(self(), :beamdash_restore_saved_kube)
     end
 
@@ -503,6 +503,17 @@ defmodule BeamdashWeb.Connection do
       end)
 
     update(socket, kube_namespaces: [])
+  end
+
+  defp first_kube_restore? do
+    key = {__MODULE__, :kube_restored}
+
+    if :persistent_term.get(key, false) do
+      false
+    else
+      :persistent_term.put(key, true)
+      true
+    end
   end
 
   defp restore_saved_kube(socket) do

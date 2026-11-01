@@ -259,13 +259,16 @@ defmodule BeamdashWeb.LogsTable do
   attr :entry, :map, required: true
   attr :node, :atom, default: nil
 
+  @json_time_keys ~w(time timestamp @timestamp ts)
+
   defp details(assigns) do
     json_rows = json_rows(assigns.entry.message)
-    # a JSON message's fields are listed above, and level, pid, where and meta came from them
-    json_time? = is_list(json_rows) and List.keymember?(json_rows, "time", 0)
+    # the line's own JSON fields are listed above, so the props below would repeat them
+    own_json? = assigns.entry.json_line? and is_list(json_rows)
+    json_time? = own_json? and Enum.any?(@json_time_keys, &List.keymember?(json_rows, &1, 0))
 
     assigns =
-      assign(assigns, json_rows: json_rows, props?: json_rows == nil, time?: not json_time?)
+      assign(assigns, json_rows: json_rows, props?: not own_json?, time?: not json_time?)
 
     ~H"""
     <div class="detail log-detail" role="region">

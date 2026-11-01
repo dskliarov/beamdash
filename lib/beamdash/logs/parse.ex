@@ -43,7 +43,17 @@ defmodule Beamdash.Logs.Parse do
     {at, rest} = split_timestamp(text)
     rest = String.replace(rest, @ansi, "")
 
-    base = %{at: at, level: nil, pid: nil, where: nil, message: rest, meta: [], raw: text}
+    base = %{
+      at: at,
+      level: nil,
+      pid: nil,
+      where: nil,
+      message: rest,
+      meta: [],
+      json_line?: false,
+      raw: text
+    }
+
     Map.merge(base, parse_body(rest))
   end
 
@@ -177,6 +187,7 @@ defmodule Beamdash.Logs.Parse do
     %{
       level: level_atom(level),
       message: if(message, do: to_text(message), else: rest),
+      json_line?: is_nil(message),
       where: string_or_nil(where),
       pid: string_or_nil(pid),
       meta: json |> Enum.sort() |> Enum.map(fn {k, v} -> {k, to_text(v)} end)

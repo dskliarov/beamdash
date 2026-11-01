@@ -595,6 +595,7 @@ defmodule Beamdash.Logs do
       pid: pid_text(m[:pid]),
       where: where,
       message: message,
+      json_line?: false,
       meta: meta(m[:meta]),
       raw: raw
     }

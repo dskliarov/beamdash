@@ -9,6 +9,7 @@ window.BeamLogsScroll = {
 
     this.toTop = () => {
       this.following = false;
+      this.jumpedToTop = true;
       if (this.table) this.table.scrollTop = 0;
     };
     this.toBottom = () => {
@@ -18,6 +19,9 @@ window.BeamLogsScroll = {
     };
     this.onScroll = () => {
       if (!this.table) return;
+      const jumped = this.jumpedToTop;
+      this.jumpedToTop = false;
+      if (jumped && this.table.scrollTop === 0) return;
       this.following = this.table.scrollHeight - this.table.scrollTop - this.table.clientHeight <= 32;
     };
     this.topButton?.addEventListener('click', this.toTop);

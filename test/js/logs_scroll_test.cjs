@@ -57,3 +57,17 @@ test('manual scrolling away pauses following until returning to the bottom', () 
   hook.updated();
   assert.equal(table.scrollTop, 2000);
 });
+
+test('jump to top stays unfollowed when the table barely overflows', () => {
+  const {hook, table, buttons, listeners} = setup();
+  table.scrollHeight = 520;
+  buttons['logs-scroll-bottom'].click();
+  listeners.scroll();
+  buttons['logs-scroll-top'].click();
+  listeners.scroll();
+  assert.equal(table.scrollTop, 0);
+  hook.beforeUpdate();
+  table.scrollHeight = 600;
+  hook.updated();
+  assert.equal(table.scrollTop, 0);
+});

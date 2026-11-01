@@ -67,6 +67,12 @@ defmodule Beamdash.LogsParseTest do
     refute Enum.any?(e.meta, fn {k, _} -> k in ["level", "msg", "module"] end)
   end
 
+  test "json_line? is set only when the whole line is the JSON object" do
+    assert Parse.line(~s({"level":"info","pid":"<0.1.0>"})).json_line?
+    refute Parse.line(~s({"msg":"{\\"a\\":1}","pid":"<0.1.0>"})).json_line?
+    refute Parse.line("plain text").json_line?
+  end
+
   test "json line with severity, message, logger, pid and a non-string value" do
     e =
       Parse.line(

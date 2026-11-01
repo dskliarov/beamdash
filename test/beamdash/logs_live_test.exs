@@ -298,10 +298,29 @@ defmodule Beamdash.LogsLiveTest do
     assert html =~ "Original message"
   end
 
+  test "a nested JSON message keeps the line's own metadata", ctx do
+    {_, socket} = ctx |> mount() |> render()
+    entry = %{new_entry(9, ~S|{"a":1}|) | meta: [{"request_id", "abc"}]}
+
+    socket = info(socket, {:beamdash_logs, {:entries, [entry]}})
+    {_, socket} = render(socket)
+    {html, _} = socket |> event("toggle_entry", %{"id" => "9", "row" => "g-9"}) |> render()
+
+    assert html =~ ~s(class="logs-json")
+    assert html =~ ~s(class="props")
+    assert html =~ "request_id"
+  end
+
   test "a JSON message's fields are listed once in details", ctx do
     {_, socket} = ctx |> mount() |> render()
     message = ~S|{"level":"info","module":"app.worker","count":3}|
-    entry = %{new_entry(9, message) | where: "app.worker", meta: [{"count", "3"}]}
+
+    entry = %{
+      new_entry(9, message)
+      | where: "app.worker",
+        meta: [{"count", "3"}],
+        json_line?: true
+    }
 
     socket = info(socket, {:beamdash_logs, {:entries, [entry]}})
     {_, socket} = render(socket)
@@ -316,7 +335,8 @@ defmodule Beamdash.LogsLiveTest do
     {_, socket} = ctx |> mount() |> render()
     message = ~S|{"time":"2026-10-23T12:00:09Z","count":3}|
 
-    socket = info(socket, {:beamdash_logs, {:entries, [new_entry(10, message)]}})
+    entry = %{new_entry(10, message) | json_line?: true}
+    socket = info(socket, {:beamdash_logs, {:entries, [entry]}})
     {_, socket} = render(socket)
     {html, _} = socket |> event("toggle_entry", %{"id" => "10", "row" => "g-10"}) |> render()
 
@@ -390,6 +410,7 @@ defmodule Beamdash.LogsLiveTest do
       where: nil,
       message: message,
       meta: [],
+      json_line?: false,
       raw: "2026-10-23T12:00:09.123456Z [info] #{message}"
     }
   end
