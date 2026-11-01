@@ -75,7 +75,8 @@ defmodule BeamdashWeb.TraceLive do
 
   # ?mod= opens that module (a link from "Ask beamdash")
   @impl true
-  def handle_params(%{"mod" => mod} = params, _uri, socket) when not is_map_key(params, "fun") do
+  def handle_params(%{"mod" => mod} = params, _uri, socket)
+      when not is_map_key(params, "arity") do
     case Enum.find(socket.assigns.modules, fn {m, _, _} -> Atom.to_string(m) == mod end) do
       {m, _, _} ->
         {:noreply, socket |> assign(selected: m, module_filter: mod) |> SourceTabs.check(m)}

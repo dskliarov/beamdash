@@ -370,6 +370,7 @@ defmodule BeamdashWeb.LogsTable do
   end
 
   # the Elixir alias is printed without its "Elixir." prefix
+  defp module_name("Elixir." <> _ = name), do: name
   defp module_name(<<c, _::binary>> = name) when c in ?A..?Z, do: "Elixir." <> name
   defp module_name(name), do: name
 

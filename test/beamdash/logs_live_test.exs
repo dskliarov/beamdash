@@ -298,6 +298,18 @@ defmodule Beamdash.LogsLiveTest do
     assert html =~ "Original message"
   end
 
+  test "a JSON line's module that already has the Elixir prefix is linked once", ctx do
+    {_, socket} = ctx |> mount() |> render()
+    entry = %{new_entry(14, "boom") | where: "Elixir.Beamdash.Worker", json_line?: false}
+
+    socket = info(socket, {:beamdash_logs, {:entries, [entry]}})
+    {_, socket} = render(socket)
+    {html, _} = socket |> event("toggle_entry", %{"id" => "14", "row" => "g-14"}) |> render()
+
+    assert html =~ "mod=Elixir.Beamdash.Worker"
+    refute html =~ "Elixir.Elixir"
+  end
+
   test "a plain message's embedded terms are pretty-printed", ctx do
     {_, socket} = ctx |> mount() |> render()
     socket = info(socket, {:beamdash_logs, {:entries, [new_entry(13, "got {ok,[1,2]}")]}})
