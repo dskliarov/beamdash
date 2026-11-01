@@ -21,6 +21,7 @@ defmodule BeamdashWeb.SettingsLive do
        saved_connection: saved(),
        browser: nil,
        source_dirs: Settings.source_dirs(),
+       notebooks_dir: tilde(Settings.notebooks_dir()),
        source_dir_error: nil,
        source_form: %{"app" => "", "dir" => ""},
        node_apps: node_apps()
@@ -174,6 +175,20 @@ defmodule BeamdashWeb.SettingsLive do
   def handle_event("reset_kubeconfig_dir", _, socket) do
     :ok = Settings.reset_kubeconfig_dir()
     {:noreply, assign_kubeconfig_dir(socket, Settings.kubeconfig_dir())}
+  end
+
+  def handle_event("set_notebooks_dir", %{"notebooks_dir" => dir}, socket) do
+    dir = String.trim(dir)
+
+    :ok =
+      Settings.put_notebooks_dir(if(dir == "", do: Settings.default_notebooks_dir(), else: dir))
+
+    {:noreply, assign(socket, notebooks_dir: tilde(Settings.notebooks_dir()))}
+  end
+
+  def handle_event("reset_notebooks_dir", _, socket) do
+    :ok = Settings.reset_notebooks_dir()
+    {:noreply, assign(socket, notebooks_dir: tilde(Settings.notebooks_dir()))}
   end
 
   # what is typed, so a re-render (a picked folder) keeps it
@@ -478,6 +493,34 @@ defmodule BeamdashWeb.SettingsLive do
           <span class="mono">{tilde(Settings.default_kubeconfig_dir())}</span>
           when beamdash restarts.
         </p>
+      </section>
+      <section class="mem-panel settings-card" aria-labelledby="notebooks-setting-heading">
+        <h3 id="notebooks-setting-heading">Notebooks</h3>
+        <form id="notebooks-dir-form" class="settings-toggle-row" phx-submit="set_notebooks_dir">
+          <div>
+            <label for="notebooks-dir"><strong>Notebook folder</strong></label>
+            <p class="muted small" id="notebooks-dir-help">
+              Imported and saved notebooks are stored in this folder on the Beamdash host.
+            </p>
+            <input
+              id="notebooks-dir"
+              name="notebooks_dir"
+              class="mono settings-path"
+              value={@notebooks_dir}
+              placeholder="~/livebooks"
+              aria-describedby="notebooks-dir-help"
+              autocomplete="off"
+              spellcheck="false"
+            />
+          </div>
+          <button type="submit">Save</button>
+          <button
+            :if={@notebooks_dir != tilde(Settings.default_notebooks_dir())}
+            type="button"
+            class="secondary"
+            phx-click="reset_notebooks_dir"
+          >Reset</button>
+        </form>
       </section>
       <section class="mem-panel settings-card" aria-labelledby="source-setting-heading">
         <h3 id="source-setting-heading">Module source</h3>

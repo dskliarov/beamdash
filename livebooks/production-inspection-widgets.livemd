@@ -1,0 +1,197 @@
+# Production inspection with Kino widgets
+
+This notebook combines direct inspection of the **connected node** with Kino widgets running on **Beamdash**. Connect to the production node, import this notebook in **Notebooks**, and run the cells in order. The first two inspection cells have **Run on Beamdash** unchecked and execute on the connected node. The collection and widget cells have it checked: the collection cells call the connected node and save the results in the Beamdash runtime, where the widget cells use those saved results.
+
+The notebook does not require Kino on the target. It reads VM memory, process and port counts, and the run queue; it does not inspect process state, force garbage collection, or change target configuration. Each snapshot makes several RPC calls, so avoid refreshing repeatedly on an overloaded node. Values are point-in-time observations, not CPU usage or proof of a leak. Node names and metrics may be sensitive if shared.
+
+Each node has separate notebook bindings, so values produced by a remote cell are not automatically available in a Beamdash cell. The local collection cells explicitly call the connected node and retain the returned values as local bindings. Widgets use those bindings without calling the target again; their values and the earlier direct remote output may differ because they are separate samples. If the connection changes, the next collection uses the newly connected node. Resetting the notebook runtime clears bindings and listeners; run the cells again after a reset.
+
+## Inspect the connected node directly
+
+Leave **Run on Beamdash** unchecked for these two cells. First confirm the node name before investigating it.
+
+```elixir
+%{
+  node: node(),
+  otp_release: :erlang.system_info(:otp_release) |> List.to_string(),
+  elixir_version: System.version(),
+  schedulers_online: :erlang.system_info(:schedulers_online)
+}
+```
+
+This second cell reads VM metrics directly. It runs on the connected node, so `node()` is the production node and `:erlang.memory()` reads that node's VM. The collection step below obtains a separate sample for the widgets.
+
+```elixir
+%{
+  node: node(),
+  memory_bytes: Map.new(:erlang.memory()),
+  processes: :erlang.system_info(:process_count),
+  process_limit: :erlang.system_info(:process_limit),
+  ports: :erlang.system_info(:port_count),
+  run_queue: :erlang.statistics(:run_queue)
+}
+```
+
+## 1. Prepare a snapshot function
+
+Keep **Run on Beamdash** checked for this and every following cell. Run this cell before the other widget cells. It finds the current connected node for each snapshot, reports connection or RPC errors, and never substitutes the Beamdash node when disconnected.
+
+<!-- livebook:{"beamdash_run_on_local":true} -->
+
+```elixir
+snapshot = fn ->
+  case Beamdash.Target.status() do
+    %{status: :connected, node: target} when is_atom(target) and not is_nil(target) ->
+      with {:ok, memory} <- Beamdash.Target.rpc(target, :erlang, :memory, []),
+           {:ok, processes} <- Beamdash.Target.rpc(target, :erlang, :system_info, [:process_count]),
+           {:ok, process_limit} <- Beamdash.Target.rpc(target, :erlang, :system_info, [:process_limit]),
+           {:ok, ports} <- Beamdash.Target.rpc(target, :erlang, :system_info, [:port_count]),
+           {:ok, run_queue} <- Beamdash.Target.rpc(target, :erlang, :statistics, [:run_queue]) do
+        {:ok, %{node: target, at: DateTime.utc_now(), memory: Map.new(memory),
+                processes: processes, process_limit: process_limit, ports: ports,
+                run_queue: run_queue}}
+      else
+        {:error, reason} -> {:error, "Snapshot RPC failed: #{inspect(reason)}"}
+      end
+
+    _ ->
+      {:error, "No node is connected. Connect in Beamdash and try again."}
+  end
+end
+
+"Snapshot function ready. Run the collection cell next."
+```
+
+## 2. Collect data from the connected node
+
+This Beamdash cell calls the target through `snapshot` and stores the result in `inspection`. Run it again to collect a new sample; then rerun the widget cells to display that sample. Errors are stored too, so the widgets can display them instead of stale data.
+
+<!-- livebook:{"beamdash_run_on_local":true} -->
+
+```elixir
+inspection = snapshot.()
+```
+
+## 3. Controls and snapshot display
+
+Set an example memory threshold in MiB, then run the next cell. The threshold only changes the display; it does not alert, change the node, or persist a monitoring rule. Leave this input visible while using it.
+
+<!-- livebook:{"beamdash_run_on_local":true} -->
+
+```elixir
+memory_threshold = Kino.Input.number("Total memory threshold (MiB)", default: 1024, min: 1, max: 1_000_000)
+memory_threshold
+```
+
+<!-- livebook:{"beamdash_run_on_local":true} -->
+
+```elixir
+case inspection do
+  {:ok, data} ->
+    total_mib = Float.round(data.memory.total / 1_048_576, 1)
+    threshold = Kino.Input.read(memory_threshold)
+    condition = if total_mib >= threshold, do: "At or above threshold", else: "Below threshold"
+
+    Kino.Layout.grid([
+      Kino.Markdown.new("**Node:** `#{data.node}`  \n**Sampled:** #{DateTime.to_iso8601(data.at)}"),
+      Kino.Markdown.new("**Total memory:** #{total_mib} MiB  \n**Threshold:** #{threshold} MiB — #{condition}"),
+      Kino.Markdown.new("**Processes:** #{data.processes} / #{data.process_limit}  \n**Ports:** #{data.ports}  \n**Run queue:** #{data.run_queue}")
+    ], columns: 1)
+  {:error, message} -> Kino.Text.new(message)
+end
+```
+
+## 4. Memory chart
+
+This cell charts the `inspection` collected in section 2; it does not contact the target. Categories overlap: for example, binary memory is also included in total memory, so do not add the bars together. To refresh, rerun the collection cell and then this cell.
+
+<!-- livebook:{"beamdash_run_on_local":true} -->
+
+```elixir
+case inspection do
+  {:ok, data} ->
+    rows =
+      for key <- [:total, :processes, :binary, :ets, :atom, :code] do
+        %{category: Atom.to_string(key), mib: Map.get(data.memory, key, 0) / 1_048_576}
+      end
+
+    VegaLite.new(width: 480, height: 240, title: "VM memory (MiB) — #{data.node}")
+    |> VegaLite.data_from_values(rows)
+    |> VegaLite.mark(:bar)
+    |> VegaLite.encode_field(:x, "category", type: :nominal, title: "Category")
+    |> VegaLite.encode_field(:y, "mib", type: :quantitative, title: "MiB")
+  {:error, message} -> Kino.Text.new(message)
+end
+```
+
+## 5. Frame, layout, and button
+
+Run the cell once and click **Update threshold display** to update the frame in place after changing the input in section 3. The frame uses the `inspection` value captured when this cell ran; the button does not call the target. To display a new snapshot, rerun the collection cell and then this cell. Use the latest button after rerunning.
+
+<!-- livebook:{"beamdash_run_on_local":true} -->
+
+```elixir
+status_frame = Kino.Frame.new()
+refresh_button = Kino.Control.button("Update threshold display")
+
+render_status = fn ->
+  case inspection do
+    {:ok, data} ->
+      total_mib = Float.round(data.memory.total / 1_048_576, 1)
+      threshold = Kino.Input.read(memory_threshold)
+      condition = if total_mib >= threshold, do: "At or above threshold", else: "Below threshold"
+      Kino.Layout.grid([
+        Kino.Markdown.new("**#{data.node}**  \n#{DateTime.to_iso8601(data.at)}"),
+        Kino.Markdown.new("**Memory:** #{total_mib} MiB — #{condition}  \nThreshold: #{threshold} MiB  \n**Processes:** #{data.processes} / #{data.process_limit}"),
+        Kino.Markdown.new("**Ports:** #{data.ports}  \n**Run queue:** #{data.run_queue}  \nDisplay updated: #{DateTime.to_iso8601(DateTime.utc_now())}")
+      ], columns: 1)
+    {:error, message} -> Kino.Text.new(message)
+  end
+end
+
+Kino.Frame.render(status_frame, render_status.())
+Kino.listen(refresh_button, fn _event ->
+  Kino.Frame.render(status_frame, render_status.())
+end)
+Kino.Layout.grid([refresh_button, status_frame], columns: 1)
+```
+
+## 6. Manual trend samples in a live chart
+
+Run the first cell to create an empty chart. Run the collection cell to obtain `trend_sample` from the target, then run the following cell to append that saved sample. Repeat those two steps at the pace appropriate for your node. The chart is session-local and is not a continuous monitoring system. If you change the connected node, create a new chart before comparing samples.
+
+<!-- livebook:{"beamdash_run_on_local":true} -->
+
+```elixir
+trend_chart =
+  VegaLite.new(width: 480, height: 240, title: "Total VM memory (manual samples)")
+  |> VegaLite.mark(:line, point: true)
+  |> VegaLite.encode_field(:x, "time", type: :temporal, title: "UTC")
+  |> VegaLite.encode_field(:y, "mib", type: :quantitative, title: "MiB")
+  |> Kino.VegaLite.new()
+
+trend_chart
+```
+
+Collect a sample on Beamdash by calling the connected node:
+
+<!-- livebook:{"beamdash_run_on_local":true} -->
+
+```elixir
+trend_sample = snapshot.()
+```
+
+Append the collected value to the existing chart without another RPC:
+
+<!-- livebook:{"beamdash_run_on_local":true} -->
+
+```elixir
+case trend_sample do
+  {:ok, data} ->
+    Kino.VegaLite.push(trend_chart, %{time: DateTime.to_iso8601(data.at), mib: data.memory.total / 1_048_576})
+    "Added sample from #{data.node}"
+  {:error, message} -> message
+end
+```
+
+Use Beamdash's **Processes**, **Memory**, **Load**, and **Logs** tabs to investigate changes. Compare representative samples and consider the operational impact before running deeper diagnostics.

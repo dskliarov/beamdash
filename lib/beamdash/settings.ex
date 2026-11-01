@@ -21,6 +21,7 @@ defmodule Beamdash.Settings do
   @nx_key {__MODULE__, :nx_enabled}
   @kev_port_key {__MODULE__, :kev_port}
   @kube_key {__MODULE__, :kubeconfig_dir}
+  @notebooks_key {__MODULE__, :notebooks_dir}
   @kube_selection_key {__MODULE__, :kube_selection}
   @reconnect_key {__MODULE__, :auto_reconnect}
   @source_dirs_key {__MODULE__, :source_dirs}
@@ -28,6 +29,36 @@ defmodule Beamdash.Settings do
   @syntaxes [:erlang, :elixir]
 
   def syntaxes, do: @syntaxes
+
+  def default_notebooks_dir,
+    do: Application.get_env(:beamdash, :notebooks_dir) || Path.expand("~/livebooks")
+
+  def notebooks_dir do
+    case :persistent_term.get(@notebooks_key, :unset) do
+      :unset ->
+        dir =
+          case read()["notebooks_dir"] do
+            value when is_binary(value) and value != "" -> Path.expand(value)
+            _ -> default_notebooks_dir()
+          end
+
+        :persistent_term.put(@notebooks_key, dir)
+        dir
+
+      dir ->
+        dir
+    end
+  end
+
+  def put_notebooks_dir(dir) when is_binary(dir) do
+    dir = dir |> String.trim() |> Path.expand()
+    :persistent_term.put(@notebooks_key, dir)
+    save("notebooks_dir", if(dir == default_notebooks_dir(), do: nil, else: dir))
+    Phoenix.PubSub.broadcast(Beamdash.PubSub, "settings", {:beamdash_notebooks_dir, dir})
+    :ok
+  end
+
+  def reset_notebooks_dir, do: put_notebooks_dir(default_notebooks_dir())
 
   @doc "The last Kubernetes connection form selections."
   def kube_selection do
@@ -362,6 +393,7 @@ defmodule Beamdash.Settings do
     :persistent_term.erase(@nx_key)
     :persistent_term.erase(@kev_port_key)
     :persistent_term.erase(@kube_key)
+    :persistent_term.erase(@notebooks_key)
     :persistent_term.erase(@kube_selection_key)
     :persistent_term.erase(@reconnect_key)
     :persistent_term.erase(@source_dirs_key)

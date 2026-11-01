@@ -18,6 +18,29 @@ defmodule Beamdash.Console do
 
   def eval(_, _, _, _), do: {:error, :invalid_command_or_timeout}
 
+  def eval_cell(node, session, cell_id, code, timeout \\ 5000)
+
+  def eval_cell(node, session, cell_id, code, timeout)
+      when is_binary(cell_id) and byte_size(cell_id) <= 256 and is_binary(code) and
+             byte_size(code) <= 32768 and is_integer(timeout) and timeout >= 100 and
+             timeout <= 60000,
+      do:
+        Target.rpc(
+          node,
+          :beamdash_console,
+          :eval_cell,
+          [session, cell_id, code, timeout],
+          timeout + 2000
+        )
+
+  def eval_cell(_, _, _, _, _), do: {:error, :invalid_command_or_timeout}
+
+  def release_cell(node, session, cell_id)
+      when is_pid(session) and is_binary(cell_id) and byte_size(cell_id) <= 256,
+      do: Target.rpc(node, :beamdash_console, :release_cell, [session, cell_id], 2000)
+
+  def release_cell(_, _, _), do: {:error, :invalid_cell}
+
   @doc "Submits REPL input, returning :incomplete when the parser needs another line."
   def submit(node, session, code, timeout \\ 5000)
 
@@ -27,6 +50,27 @@ defmodule Beamdash.Console do
       do: Target.rpc(node, :beamdash_console, :submit, [session, code, timeout], timeout + 2000)
 
   def submit(_, _, _, _), do: {:error, :invalid_command_or_timeout}
+
+  @doc "Updates a rendered Kino text input in the current evaluator session."
+  def set_input(node, session, id, value)
+      when is_pid(session) and is_binary(id) and is_binary(value) and byte_size(id) <= 256 and
+             byte_size(value) <= 4096 do
+    Target.rpc(node, :beamdash_console, :set_input, [session, id, value], 2000)
+  end
+
+  def set_input(_, _, _, _), do: {:error, :invalid_input}
+
+  def release_input(node, session, id)
+      when is_pid(session) and is_binary(id) and byte_size(id) <= 256,
+      do: Target.rpc(node, :beamdash_console, :release_input, [session, id], 2000)
+
+  def release_input(_, _, _), do: {:error, :invalid_input}
+
+  def release_frame(node, session, id)
+      when is_pid(session) and is_binary(id) and byte_size(id) <= 256,
+      do: Target.rpc(node, :beamdash_console, :release_frame, [session, id], 2000)
+
+  def release_frame(_, _, _), do: {:error, :invalid_input}
 
   @doc "Completes loaded module names and exported functions without evaluating code."
   def complete(node, language, token)

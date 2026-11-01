@@ -144,6 +144,12 @@ defmodule Beamdash.Notebook do
     end
   end
 
+  @doc "Removes saved execution output blocks without changing source cells."
+  def clear_outputs(notebook) do
+    blocks = Enum.reject(notebook.blocks, &(&1.kind == :output))
+    if blocks == notebook.blocks, do: notebook, else: %{notebook | blocks: blocks, changed: true}
+  end
+
   def update(notebook, id, source, _language) do
     case Enum.find_index(notebook.blocks, &(&1.id == id)) do
       nil ->
@@ -169,6 +175,48 @@ defmodule Beamdash.Notebook do
               else: after_cell
 
           %{notebook | blocks: before ++ after_cell, changed: true}
+        end
+    end
+  end
+
+  @doc "Returns the saved execution target of a code cell."
+  def execution_target(%{metadata: %{"beamdash_run_on_local" => true}}), do: :local
+  def execution_target(_), do: :remote
+
+  @doc "Updates a code cell's Beamdash execution target while preserving other LiveMarkdown metadata."
+  def set_execution_target(notebook, id, target) when target in [:local, :remote] do
+    case Enum.find_index(notebook.blocks, &(&1.id == id and &1.executable)) do
+      nil ->
+        notebook
+
+      index ->
+        block = Enum.at(notebook.blocks, index)
+
+        if execution_target(block) == target do
+          notebook
+        else
+          metadata =
+            if target == :local,
+              do: Map.put(block.metadata, "beamdash_run_on_local", true),
+              else: Map.delete(block.metadata, "beamdash_run_on_local")
+
+          prefix =
+            if map_size(metadata) == 0 do
+              ""
+            else
+              json = metadata |> Jason.encode!() |> String.replace("-->", "--\\u003e")
+              "<!-- livebook:#{json} -->\n"
+            end
+
+          raw_body =
+            binary_part(
+              block.raw,
+              byte_size(block.prefix),
+              byte_size(block.raw) - byte_size(block.prefix)
+            )
+
+          updated = %{block | prefix: prefix, metadata: metadata, raw: prefix <> raw_body}
+          %{notebook | blocks: List.replace_at(notebook.blocks, index, updated), changed: true}
         end
     end
   end

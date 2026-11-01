@@ -8,12 +8,13 @@ defmodule BeamdashWeb.MemoryLive do
   use Phoenix.LiveView
 
   alias Beamdash.{Format, Memory, MemoryAdvisor, Target}
-  alias BeamdashWeb.ProcessDetails
 
   @refresh_ms 2_000
   # 5 minutes of 2 s samples
   @history 150
+  @trend_history 301
   @ets_refresh_ms 5_000
+  @trend_windows [30, 60, 120, 300, 600]
 
   # The parts erlang:memory() splits `total` into, in this (fixed) order;
   # each has its own colour (see app.css, --mem-*).
@@ -44,6 +45,9 @@ defmodule BeamdashWeb.MemoryLive do
         node: node,
         snap: nil,
         history: [],
+        trend_history: [],
+        visible_trends: MapSet.new(Keyword.keys(@parts)),
+        trend_window: 300,
         recon: nil,
         error: nil,
         tab: nil,
@@ -102,10 +106,12 @@ defmodule BeamdashWeb.MemoryLive do
         }
 
         history = Enum.take(socket.assigns.history ++ [point], -@history)
+        trend_history = Enum.take(socket.assigns.trend_history ++ [point], -@trend_history)
 
         assign(socket,
           snap: snap,
           history: history,
+          trend_history: trend_history,
           forecast: Beamdash.Insights.Forecast.forecast(history, snap),
           error: nil
         )
@@ -186,6 +192,35 @@ defmodule BeamdashWeb.MemoryLive do
   def handle_event("tab", %{"tab" => tab}, socket) when tab in ~w(processes binary ets) do
     {:noreply,
      socket |> assign(tab: String.to_existing_atom(tab), inspect: nil, top: nil) |> load_tab()}
+  end
+
+  def handle_event("toggle_trend", %{"kind" => kind}, socket) do
+    case Enum.find(Keyword.keys(@parts), &(Atom.to_string(&1) == kind)) do
+      nil ->
+        {:noreply, socket}
+
+      key ->
+        visible = socket.assigns.visible_trends
+
+        visible =
+          if MapSet.member?(visible, key),
+            do: MapSet.delete(visible, key),
+            else: MapSet.put(visible, key)
+
+        {:noreply, assign(socket, visible_trends: visible)}
+    end
+  end
+
+  def handle_event("zoom_trend", %{"direction" => direction}, socket)
+      when direction in ["in", "out"] do
+    index = Enum.find_index(@trend_windows, &(&1 == socket.assigns.trend_window))
+
+    next =
+      if direction == "in",
+        do: max(index - 1, 0),
+        else: min(index + 1, length(@trend_windows) - 1)
+
+    {:noreply, assign(socket, trend_window: Enum.at(@trend_windows, next))}
   end
 
   def handle_event("attr", %{"attr" => attr, "n" => n}, socket) do
@@ -351,7 +386,9 @@ defmodule BeamdashWeb.MemoryLive do
   end
 
   def handle_info({:beamdash_target, {:connected, node}}, socket),
-    do: {:noreply, socket |> assign(status: :connected, node: node, history: []) |> start()}
+    do:
+      {:noreply,
+       socket |> assign(status: :connected, node: node, history: [], trend_history: []) |> start()}
 
   def handle_info({:beamdash_target, {:disconnected, _}}, socket),
     do:
@@ -434,7 +471,16 @@ defmodule BeamdashWeb.MemoryLive do
           <tbody>
             <tr :for={{key, label, bytes, pct} <- @parts}>
               <td>
-                <span class={["mem-swatch", "mem-#{key}"]}></span>{label}
+                <button
+                  type="button"
+                  class={["mem-trend-toggle", !MapSet.member?(@visible_trends, key) && "muted-trend"]}
+                  phx-click="toggle_trend"
+                  phx-value-kind={key}
+                  aria-pressed={to_string(MapSet.member?(@visible_trends, key))}
+                  aria-label={"#{if MapSet.member?(@visible_trends, key), do: "Hide", else: "Show"} #{label} trend"}
+                >
+                  <span class={["mem-swatch", "mem-#{key}"]}></span>{label}
+                </button>
                 <span :if={key == :processes} class="muted small">
                   ({Format.bytes(@snap.memory.processes_used)} used)
                 </span>
@@ -447,13 +493,11 @@ defmodule BeamdashWeb.MemoryLive do
               <td class={["num", growth_class(growth(@history, key))]}>
                 {growth_text(growth(@history, key))}
               </td>
-              <td class="trend">
-                <ProcessDetails.sparkline
-                  id={"mem-spark-#{key}"}
-                  title={label}
-                  points={for p <- @history, do: part_bytes(p.memory, key)}
-                  format={&Format.bytes/1}
-                  from_zero={false}
+              <td :if={key == :processes} class="memory-trend-cell" rowspan={length(@parts)}>
+                <.memory_trends
+                  history={@trend_history}
+                  visible={@visible_trends}
+                  window={@trend_window}
                 />
               </td>
             </tr>
@@ -656,6 +700,116 @@ defmodule BeamdashWeb.MemoryLive do
 
   ## Components
 
+  attr :history, :list, required: true
+  attr :visible, :any, required: true
+  attr :window, :integer, required: true
+
+  defp memory_trends(assigns) do
+    keys = Enum.filter(Keyword.keys(@parts), &MapSet.member?(assigns.visible, &1))
+
+    latest =
+      case List.last(assigns.history) do
+        nil -> nil
+        point -> point.at
+      end
+
+    start_at = if latest, do: latest - assigns.window * 1000, else: 0
+    samples = Enum.filter(assigns.history, &(&1.at >= start_at))
+    values = for point <- samples, key <- keys, do: part_bytes(point.memory, key)
+    {min_value, max_value} = trend_bounds(values)
+    scale = max(max_value - min_value, 1)
+
+    series =
+      for key <- keys do
+        points =
+          for point <- samples do
+            x = (point.at - start_at) * 600 / (assigns.window * 1000)
+            y = 150 - (part_bytes(point.memory, key) - min_value) / scale * 145
+            {Float.round(x * 1.0, 1), Float.round(y * 1.0, 1)}
+          end
+
+        %{
+          key: key,
+          label: Keyword.fetch!(@parts, key),
+          points: Enum.map_join(points, " ", fn {x, y} -> "#{x},#{y}" end),
+          last: List.last(points)
+        }
+      end
+
+    label =
+      if assigns.window < 60, do: "#{assigns.window} s", else: "#{div(assigns.window, 60)} min"
+
+    assigns =
+      assign(assigns,
+        series: series,
+        min_value: min_value,
+        max_value: max_value,
+        window_label: label
+      )
+
+    ~H"""
+    <div class="memory-trend-chart" id="memory-trend-chart">
+      <div class="memory-trend-zoom" role="group" aria-label="Trend time window">
+        <button
+          type="button"
+          class="secondary small-btn"
+          phx-click="zoom_trend"
+          phx-value-direction="in"
+          disabled={@window == 30}
+          aria-label="Zoom in on trend time window"
+        >+</button>
+        <span aria-live="polite">Last {@window_label}</span>
+        <button
+          type="button"
+          class="secondary small-btn"
+          phx-click="zoom_trend"
+          phx-value-direction="out"
+          disabled={@window == 600}
+          aria-label="Zoom out on trend time window"
+        >−</button>
+      </div>
+      <div class="memory-trend-axis" aria-hidden="true">
+        <span>{Format.bytes(@max_value)}</span><span>{Format.bytes(@min_value)}</span>
+      </div>
+      <svg
+        viewBox="0 0 600 155"
+        preserveAspectRatio="none"
+        role="img"
+        aria-label={"Memory trends, last #{@window_label}; series share an automatically scaled byte range"}
+      >
+        <line :for={y <- [5, 77.5, 150]} x1="0" x2="600" y1={y} y2={y} class="memory-trend-grid" />
+        <g :for={series <- @series} class={"memory-series-#{series.key}"}>
+          <title>{series.label}</title>
+          <polyline
+            points={series.points}
+            class="memory-trend-line"
+            vector-effect="non-scaling-stroke"
+          />
+          <circle
+            :if={series.last}
+            cx={elem(series.last, 0)}
+            cy={elem(series.last, 1)}
+            r="3"
+            class="memory-trend-dot"
+            vector-effect="non-scaling-stroke"
+          />
+        </g>
+      </svg>
+      <p :if={@series == []} class="muted small">Select a memory kind to show its trend.</p>
+      <p :if={@series != [] and @history == []} class="muted small">Collecting memory history…</p>
+      <div class="memory-trend-time muted small"><span>−{@window_label}</span><span>Now</span></div>
+    </div>
+    """
+  end
+
+  defp trend_bounds([]), do: {0, 0}
+
+  defp trend_bounds(values) do
+    {lowest, highest} = Enum.min_max(values)
+    padding = max((highest - lowest) * 0.05, max(highest * 0.001, 1))
+    {max(0, floor(lowest - padding)), ceil(highest + padding)}
+  end
+
   attr :forecast, :any, required: true
 
   # Nx: a straight line through each measure's history (Insights.Forecast)
@@ -670,7 +824,7 @@ defmodule BeamdashWeb.MemoryLive do
       </div>
       <p class="muted small">
         A straight line through the last few minutes of each measure (linear regression, with Nx),
-        and where it leads in an hour. Bold rows fit the line (R² ≥ 0.6) and grow by 5% an hour
+        and where it leads in an hour. Highlighted “Growing” rows fit the line (R² ≥ 0.6) and grow by 5% an hour
         or more; the rest are flat or too noisy to say.
       </p>
       <table :if={match?({:ok, _}, @forecast)} class="insights-table">
@@ -686,7 +840,7 @@ defmodule BeamdashWeb.MemoryLive do
         </thead>
         <tbody>
           <tr :for={f <- elem(@forecast, 1)} class={f.growing && "forecast-growing"}>
-            <td>{f.label}</td>
+            <td>{f.label} <span :if={f.growing} class="forecast-growing-badge">Growing</span></td>
             <td class="num mono">{forecast_value(f, f.now)}</td>
             <td class="num mono">{forecast_rate(f)}</td>
             <td class="num">{f.r2}</td>

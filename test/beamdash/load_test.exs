@@ -84,10 +84,46 @@ defmodule Beamdash.LoadTest do
     assert html =~ ~r/Schedulers\s*<span class="muted">· 2 · now avg 10%/
     assert html =~ ~r/Dirty CPU schedulers \(dotted\)\s*<span class="muted">· 1 · now avg 20%/
     assert html =~ ~s(title="Dirty CPU scheduler 1")
-    assert length(Regex.scan(~r/class="load-item"/, html)) == 3 + 6 + 2
-    # hovering an item highlights its line
-    assert html =~
-             ~s|#chart-sched:has(.load-item[data-s="2"]:is(:hover, :focus-visible)) polyline:not([data-s="2"])|
+    assert length(Regex.scan(~r/class="load-item(?: |")/, html)) == 3 + 6 + 2
+    refute html =~ "polyline:not([data-s="
+
+    socket = Phoenix.Component.assign(socket, load: s)
+
+    {:noreply, socket} =
+      LoadLive.handle_event("toggle_series", %{"chart" => "memory", "series" => "total"}, socket)
+
+    assert MapSet.member?(socket.assigns.hidden_series, {"memory", "total"})
+
+    hidden_html =
+      socket.assigns
+      |> Map.merge(%{syntax: :erlang, status: :connected})
+      |> LoadLive.render()
+      |> Phoenix.LiveViewTest.rendered_to_string()
+
+    assert length(Regex.scan(~r/<polyline/, hidden_html)) == 10
+    assert hidden_html =~ ~s(aria-label="Show total trend")
+
+    assert LoadLive.charts(s, socket.assigns.hidden_series).memory.max <
+             LoadLive.charts(s).memory.max
+
+    {:noreply, socket} =
+      LoadLive.handle_event("toggle_series", %{"chart" => "memory", "series" => "total"}, socket)
+
+    refute MapSet.member?(socket.assigns.hidden_series, {"memory", "total"})
+
+    {:noreply, invalid} =
+      LoadLive.handle_event("toggle_series", %{"chart" => "memory", "series" => "bogus"}, socket)
+
+    assert invalid.assigns.hidden_series == socket.assigns.hidden_series
+    all_memory_hidden = MapSet.new(Enum.map(Load.memory_kinds(), &{"memory", Atom.to_string(&1)}))
+    no_memory = LoadLive.charts(s, all_memory_hidden).memory
+    assert Enum.all?(no_memory.series, &(not &1.visible))
+    assert no_memory.max > 0
+    assert Enum.all?(no_memory.series, &is_binary(&1.points))
+    assert LoadLive.charts(s, MapSet.new([{"io", "input"}])).io.max < LoadLive.charts(s).io.max
+
+    assert LoadLive.charts(s, MapSet.new([{"util", "dirty:1"}])).util.max <
+             LoadLive.charts(s).util.max
 
     assert html =~ ~s(data-s="2")
     assert html =~ "3.9 KB/s"

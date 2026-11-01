@@ -9,6 +9,27 @@ defmodule Beamdash.SettingsTest do
     Beamdash.Test.Fixture.put_jev_config(api_key: "test-key")
   end
 
+  test "notebook folder setting persists and can be reset" do
+    on_exit(fn -> Settings.reset_notebooks_dir() end)
+    assert :ok = Settings.reset_notebooks_dir()
+    assert Settings.notebooks_dir() == Settings.default_notebooks_dir()
+    path = Path.join(System.tmp_dir!(), "beamdash-notebook-setting")
+    {:ok, socket} = BeamdashWeb.SettingsLive.mount(%{}, %{}, %Phoenix.LiveView.Socket{})
+
+    {:noreply, socket} =
+      BeamdashWeb.SettingsLive.handle_event(
+        "set_notebooks_dir",
+        %{"notebooks_dir" => path},
+        socket
+      )
+
+    assert socket.assigns.notebooks_dir == path
+    :ok = Settings.reload()
+    assert Settings.notebooks_dir() == path
+    {:noreply, _} = BeamdashWeb.SettingsLive.handle_event("reset_notebooks_dir", %{}, socket)
+    assert Settings.notebooks_dir() == Settings.default_notebooks_dir()
+  end
+
   test "AI provider settings persist without credentials and reject invalid providers" do
     previous = Settings.ai_provider()
     on_exit(fn -> Settings.put_ai_provider(previous["provider"], previous["model"]) end)

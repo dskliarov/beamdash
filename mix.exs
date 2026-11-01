@@ -30,10 +30,13 @@ defmodule Beamdash.MixProject do
     [
       {:phoenix, "~> 1.7"},
       {:phoenix_live_view, "~> 1.0"},
-      {:phoenix_html, "~> 4.1"},
+      {:phoenix_html, "~> 4.4"},
       {:bandit, "~> 1.14 and >= 1.14.1"},
       {:jason, "~> 1.4"},
       {:earmark_parser, "~> 1.4"},
+      {:kino, "~> 0.19"},
+      {:kino_vega_lite, "~> 0.1"},
+      {:vega_lite, "~> 0.1"},
       # loaded into the target for the Memory page (unless it has its own)
       {:recon, "~> 2.5"},
       # Insights (anomalies, groups, forecasts, message graph) and the local

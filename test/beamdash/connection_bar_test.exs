@@ -72,7 +72,9 @@ defmodule Beamdash.ConnectionBarTest do
     assert {:halt, s} = Connection.handle_info(:beamdash_conn_tick, s)
     assert s.assigns.conn.info.process_count > 0
 
+    s = %{s | view: BeamdashWeb.SystemLive, redirected: nil}
     {:halt, s} = Connection.handle_event("disconnect", %{}, s)
+    assert s.redirected == {:live, :redirect, %{kind: :push, to: "/"}}
     html = bar(s)
     assert html =~ ~s(id="connect-form")
     # the node typed last is offered again
@@ -108,12 +110,30 @@ defmodule Beamdash.ConnectionBarTest do
 
     assert {:cont, s2} = Connection.handle_info({:beamdash_target, {:disconnected, :user}}, s)
     assert s2.assigns.conn.status == :disconnected
+    assert s2.redirected == {:live, :redirect, %{kind: :push, to: "/"}}
     assert s2.assigns.conn.error == nil
 
     assert {:cont, s3} =
              Connection.handle_info({:beamdash_target, {:disconnected, :nodedown}}, s)
 
     assert bar(s3) =~ "Lost the connection to #{node}"
+    assert s3.redirected == {:live, :redirect, %{kind: :push, to: "/"}}
+  end
+
+  test "disconnect on the root stays there and switching nodes does not redirect" do
+    root = %{socket() | view: BeamdashWeb.HomeLive}
+
+    assert {:cont, root} =
+             Connection.handle_info({:beamdash_target, {:disconnected, :user}}, root)
+
+    assert root.redirected == nil
+
+    other = %{socket() | view: BeamdashWeb.MemoryLive}
+
+    assert {:cont, other} =
+             Connection.handle_info({:beamdash_target, {:disconnected, :reconnect}}, other)
+
+    assert other.redirected == nil
   end
 
   test "a lost connection being tried again shows in the bar, with Stop" do

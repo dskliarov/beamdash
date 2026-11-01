@@ -356,10 +356,11 @@ and [attached-node runtime](https://github.com/livebook-dev/livebook/blob/main/l
 for the Livebook functionality this integration is based on.
 
 Use **Save** to write a `.livemd` file to the folder shown in the notebook
-sidebar. `config :beamdash, :notebooks_dir, "/path/to/notebooks"` changes the
-folder; by default it is the `notebooks` folder in Beamdash's user data directory.
-**Download .livemd** exports a browser download, and **Import** opens a local
-`.livemd` file without executing it. Existing files are only overwritten if they
+sidebar. The default is `~/livebooks` on the Beamdash host; change it in
+**Settings → Notebooks**. Click a notebook in the sidebar to open it.
+**Download .livemd** exports a browser download, and **Import** copies a local
+`.livemd` file into the notebook folder and opens it without executing it. If a
+file with that name exists, the imported copy gets a numbered name. Existing files are only overwritten if they
 have not changed since opening/saving; otherwise choose a new filename. The
 source limit is 2 MiB. Optionally include evaluated text outputs when saving.
 Saving uses a loopback socket lock shared between beamdash processes on the same
@@ -377,15 +378,39 @@ cell. Closing the page closes notebook sessions; disconnecting preserves unsaved
 source but resets execution state. **Reset runtime** cancels an active evaluation.
 Effects on the node and processes spawned by code are not rolled back.
 
-This provides LiveMarkdown file interoperability and connected-node code/Markdown
-notebooks. It does not embed the Livebook application or its reactive dependency
+This provides LiveMarkdown file interoperability and code/Markdown notebooks. Each executable cell defaults to the connected node. Check **Run on Beamdash** to run that cell on the Beamdash node. Each node and language has its own session and bindings, so a variable created on one node is not automatically available on the other. Changing a cell’s node marks that cell’s old result stale without resetting the sessions. Save the notebook to retain each cell’s checkbox setting; cells without a saved setting default to the connected node. Local execution runs with Beamdash’s permissions and can affect the Beamdash VM. It does not embed the Livebook application or its reactive dependency
 graph. Smart cells, Python cells, persisted output blocks, unknown metadata and
 signatures are preserved when untouched. Unsupported cells cannot run, and
-branching notebooks are not executable here. Kino widgets, attachments, Mermaid,
+branching notebooks are not executable here. Directly returned `Kino.Input.text`,
+`Kino.Input.textarea`, `Kino.Input.password`, `Kino.Input.color`, `Kino.Input.url`, `Kino.Input.date`, `Kino.Input.checkbox`, `Kino.Input.number`, `Kino.Input.range`, `Kino.Input.select`, and `Kino.Control.button` widgets
+support input changes and `Kino.listen/2` subscriptions when Kino is installed
+and running on the selected node. Beamdash includes Kino and the Vega-Lite chart packages for local execution. The notebook runtime does not install Kino
+into a connected target. If a cell reports that `Kino.Input` is unavailable, include
+Kino in the target application and deploy it, or connect to a node where Kino
+is already installed and running. A node operator can check with
+`Code.ensure_loaded?(Kino.Input)` and
+`Enum.any?(Application.started_applications(), fn {app, _, _} -> app == :kino end)`.
+Read inputs with `Kino.Input.read/1` from a
+later cell. Listeners created directly by a cell with the bundled Kino are stopped
+when that cell is rerun or deleted, its execution node changes, or the session
+ends. Detection relies on Kino's task implementation, which can differ on a
+connected node; listeners created asynchronously inside other tasks are not
+tracked per cell. Reset the runtime to stop tracked listeners across the session.
+If a listener refuses shutdown, rerunning its cell is blocked until reset.
+Output printed asynchronously appears in **Live listener output**. Text
+outputs from `Kino.render/1`, directly returned `Kino.Text` and sanitized `Kino.Markdown`, and directly returned `Kino.Image` PNG, JPEG, and
+GIF images up to 1 MiB are supported; other output types and Kino widgets,
+attachments, Mermaid,
 math rendering, package installation, collaboration, and application deployment
 require Livebook. Signatures are not verified and are removed after content or
 output changes. No code runs merely by opening/importing a notebook, including
 setup cells and automatically reevaluating-cell annotations.
+
+Directly returned `Kino.Frame` values support text, sanitized Markdown, PNG, JPEG, or GIF images,
+and the supported input and button widgets with live replace, append, and clear updates. Each image is limited to 1 MiB,
+and frame updates to 2 MiB before encoding. Directly returned `Kino.Layout.grid` and
+`Kino.Layout.tabs` values support text, sanitized Markdown, images, and the supported input and button widgets (grids accept 1–8 columns).
+Frames, grids, and tabs can be nested within frames and layouts, up to eight levels. Vega-Lite charts can appear inside them and live charts receive updates. Recursive frame references and other JavaScript outputs are not supported. Directly returned `VegaLite` specifications and `Kino.VegaLite.static/1` values render as static charts using locally bundled Vega-Lite; include data inline, as external data URLs are disabled. Directly returned `Kino.VegaLite` live charts support streamed points, named datasets, clearing, and parameter updates during the notebook session. Charts created on other group leaders and `Kino.render/1` chart output are not supported.
 
 ### Modules source editor
 

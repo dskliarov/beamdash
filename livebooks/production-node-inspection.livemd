@@ -1,0 +1,151 @@
+# Production node inspection
+
+Use this notebook to take a read-only first look at a running Elixir node. In Beamdash, connect to the node, open **Notebooks**, and import this file. Elixir cells execute **on the connected node**; they do not inspect the computer running the browser. In Livebook, attach the runtime to the node you intend to inspect.
+
+Run cells individually as needed. Process-ranking cells visit every process and sort the results, which can add noticeable work on a busy or large node. Run them sparingly and compare several samples during representative traffic. Results can contain process names, module names, and other operational details; review them before sharing or saving output.
+
+The cells do not change application configuration, force garbage collection, enable tracing, or request process state. Measurements are snapshots and can change while a cell runs.
+
+## Confirm the target
+
+Check the node name and uptime before proceeding. Uptime is measured since the VM started, not since the application was deployed.
+
+```elixir
+(fn ->
+  uptime_ms = System.convert_time_unit(System.monotonic_time() - :erlang.system_info(:start_time), :native, :millisecond)
+
+  %{
+    node: node(),
+    otp_release: :erlang.system_info(:otp_release) |> List.to_string(),
+    elixir_version: System.version(),
+    uptime_seconds: div(uptime_ms, 1_000),
+    schedulers_online: :erlang.system_info(:schedulers_online),
+    logical_processors_available: :erlang.system_info(:logical_processors_available)
+  }
+end).()
+```
+
+## VM resources and limits
+
+Memory values are bytes. Process and port counts are point-in-time values. Atom and ETS table counts approaching their limits deserve investigation; do not assume a high value alone means a leak.
+
+```elixir
+(fn ->
+  %{
+    memory_bytes: Map.new(:erlang.memory()),
+    processes: %{used: :erlang.system_info(:process_count), limit: :erlang.system_info(:process_limit)},
+    ports: %{used: :erlang.system_info(:port_count), limit: :erlang.system_info(:port_limit)},
+    atoms: %{used: :erlang.system_info(:atom_count), limit: :erlang.system_info(:atom_limit)},
+    ets_tables: %{used: :erlang.system_info(:ets_count), limit: :erlang.system_info(:ets_limit)},
+    run_queue: :erlang.statistics(:run_queue)
+  }
+end).()
+```
+
+`run_queue` is a snapshot of runnable work, not CPU percentage. Compare it over time and alongside scheduler utilization and application latency.
+
+## Running applications
+
+List started OTP applications and their versions. This does not list every module loaded into the VM.
+
+```elixir
+(fn ->
+  Application.started_applications()
+  |> Enum.map(fn {name, _description, version} -> %{application: name, version: List.to_string(version)} end)
+  |> Enum.sort_by(& &1.application)
+end).()
+```
+
+## Processes using the most memory
+
+This scan visits every local process. Values are process memory in bytes, not exclusive ownership of shared binaries. A process that exits during the scan is skipped. Use the PID to inspect a candidate in Beamdash's **Processes** or **Memory** tab.
+
+```elixir
+(fn ->
+  fields = [:registered_name, :memory, :message_queue_len, :reductions, :current_function]
+
+  :erlang.processes()
+  |> Enum.flat_map(fn pid ->
+    case :erlang.process_info(pid, fields) do
+      nil -> []
+      info -> [info |> Map.new() |> Map.put(:pid, pid)]
+    end
+  end)
+  |> Enum.sort_by(& &1.memory, :desc)
+  |> Enum.take(10)
+end).()
+```
+
+## Largest mailboxes
+
+A large message queue can indicate a process receiving work faster than it handles it. Queue length alone does not reveal message size or establish the cause. This is another full process scan; it reads queue lengths, not message contents.
+
+```elixir
+(fn ->
+  fields = [:registered_name, :message_queue_len, :memory, :current_function]
+
+  :erlang.processes()
+  |> Enum.flat_map(fn pid ->
+    case :erlang.process_info(pid, fields) do
+      nil -> []
+      info -> [info |> Map.new() |> Map.put(:pid, pid)]
+    end
+  end)
+  |> Enum.sort_by(& &1.message_queue_len, :desc)
+  |> Enum.take(10)
+end).()
+```
+
+## Inspect one process
+
+Replace `self()` with a local PID from the rankings, for example `:erlang.list_to_pid(String.to_charlist("<0.123.0>"))`. The default is the notebook evaluator, so select a candidate before drawing conclusions. If the process exits during inspection, the result is `nil`.
+
+The stack and registered name can reveal internal application details. This cell does not fetch the process dictionary, mailbox contents, or OTP state.
+
+```elixir
+(fn ->
+  pid = self()
+  fields = [:registered_name, :status, :memory, :message_queue_len, :reductions,
+            :current_function, :initial_call, :current_stacktrace, :garbage_collection]
+
+  case :erlang.process_info(pid, fields) do
+    nil -> nil
+    info -> info |> Map.new() |> Map.put(:pid, pid)
+  end
+end).()
+```
+
+## Compare one process over an interval
+
+Replace `self()` with the same candidate PID. The cell samples twice, one second apart. The reductions difference indicates BEAM work performed by that process during the interval; **it is not CPU percentage**. Memory and queue changes are snapshots, not proof of a leak. A restarted or exited process requires a new PID.
+
+```elixir
+(fn ->
+  pid = self()
+  fields = [:memory, :message_queue_len, :reductions, :current_function]
+  sample = fn ->
+    case :erlang.process_info(pid, fields) do
+      nil -> nil
+      info -> Map.new(info)
+    end
+  end
+
+  before = sample.()
+  Process.sleep(1_000)
+  after_sample = sample.()
+
+  reductions_delta =
+    if before && after_sample do
+      after_sample.reductions - before.reductions
+    end
+
+  %{pid: pid, interval_ms: 1_000, before: before, after: after_sample, reductions_delta: reductions_delta}
+end).()
+```
+
+## Follow up
+
+- Use **Load** for scheduler utilization, memory and I/O trends, and **Processes** for sampled process CPU estimates.
+- Use **Memory** for memory trends, the largest processes and binary references. Compare the same metric across representative intervals.
+- Use **Apps** to inspect application supervision and **Logs** to correlate symptoms with events, if those features are available for the connection.
+- Before requesting process state, fetching mailbox contents, tracing, or forcing garbage collection, consider the operational impact and sensitivity of the data.
