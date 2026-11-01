@@ -30,6 +30,56 @@ defmodule Beamdash.NotebookLiveTest do
     %{socket: socket, dir: dir}
   end
 
+  test "a listener that refuses shutdown blocks cell deletion and node changes", %{socket: socket} do
+    cell = Enum.find(socket.assigns.notebook.blocks, & &1.executable)
+    {:ok, _} = Application.ensure_all_started(:kino)
+    {:ok, session} = Beamdash.Console.start(node(), self(), :elixir)
+    on_exit(fn -> Beamdash.Console.stop(session) end)
+
+    owner = self() |> :erlang.term_to_binary() |> Base.encode64()
+
+    assert {:ok, %{status: :ok}} =
+             Beamdash.Console.eval_cell(
+               node(),
+               session,
+               cell.id,
+               "owner = :erlang.binary_to_term(Base.decode64!(\"#{owner}\")); Kino.listen(5, fn _ -> Process.flag(:trap_exit, true); send(owner, :listener_ready); Process.sleep(10000) end)"
+             )
+
+    assert_receive :listener_ready, 2_000
+
+    socket =
+      Phoenix.Component.assign(socket,
+        sessions: %{{:local, :elixir} => session},
+        cell_targets: %{cell.id => :local},
+        results: %{
+          cell.id => %{
+            status: :ok,
+            output: "",
+            result: "",
+            execution_target: :local,
+            execution_session: session
+          }
+        }
+      )
+
+    {:noreply, unchanged} =
+      NotebookLive.handle_event(
+        "execution_target",
+        %{"cell_id" => cell.id, "target" => "remote"},
+        socket
+      )
+
+    assert unchanged.assigns.cell_targets[cell.id] == :local
+    assert unchanged.assigns.error =~ "Reset the notebook runtime"
+
+    {:noreply, unchanged} =
+      NotebookLive.handle_event("delete_cell", %{"id" => cell.id}, unchanged)
+
+    assert Enum.any?(unchanged.assigns.notebook.blocks, &(&1.id == cell.id))
+    assert unchanged.assigns.error =~ "Reset the notebook runtime"
+  end
+
   test "reset clears runtime results and saved output blocks while preserving source", %{
     socket: socket
   } do

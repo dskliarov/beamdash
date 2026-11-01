@@ -127,22 +127,17 @@ defmodule BeamdashWeb.NotebookLive do
     target = if target == "local", do: :local, else: :remote
 
     if block && target != cell_target(socket, id) do
-      result = socket.assigns.results[id]
-      if result, do: release_result(socket, result)
+      case release_cell_listeners(socket, id) do
+        :ok ->
+          change_execution_target(socket, id, target)
 
-      results =
-        if result,
-          do: Map.put(socket.assigns.results, id, %{result | status: :stale}),
-          else: socket.assigns.results
-
-      {:noreply,
-       assign(socket,
-         notebook: Notebook.set_execution_target(socket.assigns.notebook, id, target),
-         cell_targets: Map.put(socket.assigns.cell_targets, id, target),
-         results: results,
-         dirty: true,
-         error: nil
-       )}
+        _ ->
+          {:noreply,
+           assign(socket,
+             error:
+               "A listener did not stop. Reset the notebook runtime before changing the execution node."
+           )}
+      end
     else
       {:noreply, socket}
     end
@@ -281,15 +276,16 @@ defmodule BeamdashWeb.NotebookLive do
          )}
 
   def handle_event("delete_cell", %{"id" => id}, %{assigns: %{pending: nil}} = socket) do
-    release_widgets(socket)
+    case release_cell_listeners(socket, id) do
+      :ok ->
+        delete_notebook_cell(socket, id)
 
-    {:noreply,
-     assign(socket,
-       notebook: Notebook.remove(socket.assigns.notebook, id),
-       cell_targets: Map.delete(socket.assigns.cell_targets, id),
-       dirty: true,
-       results: stale(socket.assigns.results)
-     )}
+      _ ->
+        {:noreply,
+         assign(socket,
+           error: "A listener did not stop. Reset the notebook runtime before deleting this cell."
+         )}
+    end
   end
 
   def handle_event(
@@ -364,6 +360,37 @@ defmodule BeamdashWeb.NotebookLive do
   end
 
   def handle_event(_, _, socket), do: {:noreply, socket}
+
+  defp change_execution_target(socket, id, target) do
+    result = socket.assigns.results[id]
+    if result, do: release_result(socket, result)
+
+    results =
+      if result,
+        do: Map.put(socket.assigns.results, id, %{result | status: :stale}),
+        else: socket.assigns.results
+
+    {:noreply,
+     assign(socket,
+       notebook: Notebook.set_execution_target(socket.assigns.notebook, id, target),
+       cell_targets: Map.put(socket.assigns.cell_targets, id, target),
+       results: results,
+       dirty: true,
+       error: nil
+     )}
+  end
+
+  defp delete_notebook_cell(socket, id) do
+    release_widgets(socket)
+
+    {:noreply,
+     assign(socket,
+       notebook: Notebook.remove(socket.assigns.notebook, id),
+       cell_targets: Map.delete(socket.assigns.cell_targets, id),
+       dirty: true,
+       results: stale(socket.assigns.results)
+     )}
+  end
 
   defp select_layout_tab(%{type: :layout, layout: :tabs, items: items} = layout, id, index)
        when (is_nil(id) or :erlang.map_get(:id, layout) == id) and index >= 0 and
@@ -457,6 +484,23 @@ defmodule BeamdashWeb.NotebookLive do
   defp result_session(socket, result),
     do: Map.get(result, :execution_session) || socket.assigns.sessions[{:remote, :elixir}]
 
+  defp release_cell_listeners(socket, id) do
+    case socket.assigns.results[id] do
+      %{execution_session: session, execution_target: target} when is_pid(session) ->
+        if current_target?(socket, target) do
+          case Console.release_cell(execution_node(socket, target), session, id) do
+            {:ok, :ok} -> :ok
+            error -> error
+          end
+        else
+          :ok
+        end
+
+      _ ->
+        :ok
+    end
+  end
+
   defp release_widgets(socket) do
     Enum.each(socket.assigns.results, fn {_id, result} -> release_result(socket, result) end)
   end
@@ -524,7 +568,9 @@ defmodule BeamdashWeb.NotebookLive do
                   execution_session: pid
                 })
             )
-            |> start_async({:notebook_cell, ref}, fn -> Console.eval(node, pid, code, timeout) end)
+            |> start_async({:notebook_cell, ref}, fn ->
+              Console.eval_cell(node, pid, id, code, timeout)
+            end)
 
           {:error, reason} ->
             assign(socket, queue: [], error: Format.error(reason))

@@ -1,6 +1,6 @@
 %%% Per-page remote evaluator. Only kernel/stdlib are required for Erlang mode.
 -module(beamdash_console).
--export([start/2, eval/2, eval/3, submit/3, set_input/3, release_input/2, release_frame/2]).
+-export([start/2, eval/2, eval/3, eval_cell/4, release_cell/2, submit/3, set_input/3, release_input/2, release_frame/2]).
 
 start(Owner, Language) when is_pid(Owner), (Language =:= erlang orelse Language =:= elixir) ->
     {ok, spawn(fun() ->
@@ -15,6 +15,15 @@ eval(Session, Code) -> eval(Session, Code, 5000).
 eval(Session, Code, Timeout) when is_pid(Session), is_binary(Code), byte_size(Code) =< 32768,
                                   is_integer(Timeout), Timeout >= 100, Timeout =< 60000 ->
     request(Session, Code, Timeout).
+
+eval_cell(Session, Cell, Code, Timeout) when is_pid(Session), is_binary(Cell), byte_size(Cell) =< 256,
+    is_binary(Code), byte_size(Code) =< 32768, is_integer(Timeout), Timeout >= 100, Timeout =< 60000 ->
+    request(Session, {cell, Cell, Code}, Timeout).
+
+release_cell(Session, Cell) when is_pid(Session), is_binary(Cell), byte_size(Cell) =< 256 ->
+    Ref = make_ref(),
+    Session ! {release_cell, self(), Ref, Cell},
+    receive {Ref, Reply} -> Reply after 1000 -> {error, timeout} end.
 
 submit(Session, Code, Timeout) when is_pid(Session), is_binary(Code), byte_size(Code) =< 32768,
                                     is_integer(Timeout), Timeout >= 100, Timeout =< 60000 ->
@@ -449,7 +458,19 @@ release_unowned(Id) ->
 
 loop(OwnerRef, Language, Worker, WorkerRef, Pending) ->
     receive
+        {eval, From, Ref, {cell, Cell, Code}, Timeout} when Pending =:= none ->
+            case stop_cell_listeners(Cell) of
+                ok ->
+                    put(beamdash_current_cell, Cell),
+                    Timer = erlang:send_after(Timeout, self(), {timeout, Ref}),
+                    Worker ! {eval, Ref, Code},
+                    loop(OwnerRef, Language, Worker, WorkerRef, {From, Ref, Timer, <<>>});
+                {error, _} ->
+                    From ! {Ref, result(error, <<"A listener did not stop; reset the notebook runtime before rerunning this cell.">>, <<>>)},
+                    loop(OwnerRef, Language, Worker, WorkerRef, none)
+            end;
         {eval, From, Ref, Code, Timeout} when Pending =:= none ->
+            erase(beamdash_current_cell),
             Timer = erlang:send_after(Timeout, self(), {timeout, Ref}),
             Worker ! {eval, Ref, Code},
             loop(OwnerRef, Language, Worker, WorkerRef, {From, Ref, Timer, <<>>});
@@ -457,6 +478,7 @@ loop(OwnerRef, Language, Worker, WorkerRef, Pending) ->
             From ! {Ref, result(error, <<"Console is busy.">>, <<>>)},
             loop(OwnerRef, Language, Worker, WorkerRef, Pending);
         {evaluated, Ref, Status, Value, Widget} when Pending =/= none, element(2, Pending) =:= Ref ->
+            erase(beamdash_current_cell),
             {From, Ref, Timer, Output} = Pending,
             erlang:cancel_timer(Timer),
             Response = case Widget of
@@ -541,17 +563,23 @@ loop(OwnerRef, Language, Worker, WorkerRef, Pending) ->
         {release_input, From, Ref, Id} ->
             release_root({kino_chart_direct, Id}), release_chart_if_unowned(Id), release_root({kino_direct, Id}), release_unowned(Id), From ! {Ref, ok},
             loop(OwnerRef, Language, Worker, WorkerRef, Pending);
+        {release_cell, From, Ref, Cell} ->
+            Reply = stop_cell_listeners(Cell), From ! {Ref, Reply},
+            loop(OwnerRef, Language, Worker, WorkerRef, Pending);
         {release_frame, From, Ref, Id} ->
             release_kino_frame(Id), From ! {Ref, ok},
             loop(OwnerRef, Language, Worker, WorkerRef, Pending);
         {timeout, Ref} when Pending =/= none, element(2, Pending) =:= Ref ->
             {From, Ref, _, Output} = Pending,
             exit(Worker, kill), demonitor(WorkerRef, [flush]),
+            erase(beamdash_current_cell), clear_listeners(),
             From ! {Ref, result(error, <<"Evaluation timed out; bindings were reset. Side effects are not undone.">>, Output)},
             {Next, NextRef} = worker_start(Language),
             loop(OwnerRef, Language, Next, NextRef, none);
-        {'DOWN', OwnerRef, process, _, _} -> clear_kino(), exit(Worker, kill);
+        {'DOWN', OwnerRef, process, _, _} -> exit(Worker, kill), clear_listeners(), clear_kino();
         {'DOWN', WorkerRef, process, _, Reason} ->
+            erase(beamdash_current_cell),
+            clear_listeners(),
             case Pending of
                 {From, Ref, Timer, Output} ->
                     erlang:cancel_timer(Timer),
@@ -582,6 +610,11 @@ loop(OwnerRef, Language, Worker, WorkerRef, Pending) ->
                 error -> From ! {io_reply, ReplyAs, {error, {request, unsupported}}}
             end,
             loop(OwnerRef, Language, Worker, WorkerRef, Pending);
+        {io_request, From, ReplyAs, {livebook_reference_object, Object, Worker} = Request} ->
+            track_cell_listener(Object),
+            {Reply, _} = io_request(Request),
+            From ! {io_reply, ReplyAs, Reply},
+            loop(OwnerRef, Language, Worker, WorkerRef, Pending);
         {io_request, From, ReplyAs, Request} ->
             {Reply, Text} = io_request(Request),
             From ! {io_reply, ReplyAs, Reply},
@@ -595,9 +628,62 @@ loop(OwnerRef, Language, Worker, WorkerRef, Pending) ->
                     none
             end,
             loop(OwnerRef, Language, Worker, WorkerRef, NextPending);
-        stop -> clear_kino(), exit(Worker, kill);
+        stop -> exit(Worker, kill), clear_listeners(), clear_kino();
         _ -> loop(OwnerRef, Language, Worker, WorkerRef, Pending)
     end.
+
+%% Kino.listen uses Kino.Terminator.start_task. Other Kino children (frames,
+%% charts and supervisors) may be shared across cells and must not be stopped.
+track_cell_listener(Pid) when is_pid(Pid) ->
+    case {get(beamdash_current_cell), process_info(Pid, dictionary)} of
+        {Cell, {dictionary, Dict}} when is_binary(Cell) ->
+            case lists:keyfind('$initial_call', 1, Dict) of
+                {'$initial_call', {'Elixir.Kino.Terminator', Function, 0}} when is_atom(Function) ->
+                    case atom_to_binary(Function, utf8) of
+                        <<"-start_task/", _/binary>> ->
+                            Key = {beamdash_cell_listeners, Cell},
+                            Existing = case get(Key) of undefined -> []; Pids -> Pids end,
+                            put(Key, [Pid | [P || P <- Existing, is_process_alive(P)]]);
+                        _ -> ok
+                    end;
+                _ -> ok
+            end;
+        _ -> ok
+    end;
+track_cell_listener(_) -> ok.
+
+stop_cell_listeners(Cell) ->
+    case erase({beamdash_cell_listeners, Cell}) of
+        Pids when is_list(Pids) ->
+            Remaining = shutdown_listeners(Pids),
+            case Remaining of
+                [] -> ok;
+                _ -> put({beamdash_cell_listeners, Cell}, Remaining), {error, listeners_still_running}
+            end;
+        _ -> ok
+    end.
+
+shutdown_listeners(Pids) ->
+    Monitors = maps:from_list([{monitor(process, Pid), Pid} || Pid <- lists:usort(Pids)]),
+    [exit(Pid, shutdown) || Pid <- maps:values(Monitors)],
+    await_listeners(Monitors, erlang:monotonic_time(millisecond) + 250).
+
+await_listeners(Monitors, _) when map_size(Monitors) =:= 0 -> [];
+await_listeners(Monitors, Deadline) ->
+    Remaining = max(0, Deadline - erlang:monotonic_time(millisecond)),
+    receive
+        {'DOWN', Ref, process, _, _} when is_map_key(Ref, Monitors) ->
+            await_listeners(maps:remove(Ref, Monitors), Deadline)
+    after Remaining ->
+        [demonitor(Ref, [flush]) || Ref <- maps:keys(Monitors)],
+        [Pid || Pid <- maps:values(Monitors), is_process_alive(Pid)]
+    end.
+
+clear_listeners() ->
+    Cells = [{Cell, Pids} || {{beamdash_cell_listeners, Cell}, Pids} <- get()],
+    [erase({beamdash_cell_listeners, Cell}) || {Cell, _} <- Cells],
+    Remaining = shutdown_listeners(lists:append([Pids || {_, Pids} <- Cells])),
+    [exit(Pid, kill) || Pid <- Remaining], ok.
 
 %% A connect reply is ordered after earlier broadcasts from the same Kino server.
 %% Discard those broadcasts: the connect snapshot already includes their data.

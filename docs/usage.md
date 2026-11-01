@@ -391,8 +391,13 @@ is already installed and running. A node operator can check with
 `Code.ensure_loaded?(Kino.Input)` and
 `Enum.any?(Application.started_applications(), fn {app, _, _} -> app == :kino end)`.
 Read inputs with `Kino.Input.read/1` from a
-later cell. Listeners are released when their widget is cleared or the session
-ends; output printed asynchronously appears in **Live listener output**. Text
+later cell. Listeners created directly by a cell with the bundled Kino are stopped
+when that cell is rerun or deleted, its execution node changes, or the session
+ends. Detection relies on Kino's task implementation, which can differ on a
+connected node; listeners created asynchronously inside other tasks are not
+tracked per cell. Reset the runtime to stop tracked listeners across the session.
+If a listener refuses shutdown, rerunning its cell is blocked until reset.
+Output printed asynchronously appears in **Live listener output**. Text
 outputs from `Kino.render/1`, directly returned `Kino.Text` and sanitized `Kino.Markdown`, and directly returned `Kino.Image` PNG, JPEG, and
 GIF images up to 1 MiB are supported; other output types and Kino widgets,
 attachments, Mermaid,
