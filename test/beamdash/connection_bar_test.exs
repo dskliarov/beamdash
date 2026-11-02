@@ -66,8 +66,10 @@ defmodule Beamdash.ConnectionBarTest do
         }
       })
 
-    assert html =~ "prod · shop · app-1"
-    assert :binary.match(html, "prod · shop") < :binary.match(html, "app@app-1")
+    assert html =~ "<strong>prod</strong>"
+    assert html =~ "<strong>shop</strong>"
+    assert html =~ "<strong>app-1</strong>"
+    assert :binary.match(html, "<strong>prod</strong>") < :binary.match(html, "app@app-1")
   end
 
   test "a Kubernetes source gives its cluster name, namespace and pod" do

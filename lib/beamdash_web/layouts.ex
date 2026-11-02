@@ -293,7 +293,18 @@ defmodule BeamdashWeb.Layouts do
           <span class="dot" aria-hidden="true"></span>
           <span class="connected-name">
             <span :if={@conn[:kube_target]} class="kube-target">
-              {@conn.kube_target.cluster} · {@conn.kube_target.namespace} · {@conn.kube_target.pod}
+              <span class="kube-part">
+                <span class="kube-key">cluster</span>
+                <strong>{@conn.kube_target.cluster}</strong>
+              </span>
+              <span class="kube-part">
+                <span class="kube-key">namespace</span>
+                <strong>{@conn.kube_target.namespace}</strong>
+              </span>
+              <span class="kube-part">
+                <span class="kube-key">pod</span>
+                <strong>{@conn.kube_target.pod}</strong>
+              </span>
             </span>
             <strong>{@conn.node}</strong>
           </span>
