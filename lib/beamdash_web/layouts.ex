@@ -292,7 +292,7 @@ defmodule BeamdashWeb.Layouts do
         <div :if={@conn.status == :connected} class="connected">
           <span class="dot" aria-hidden="true"></span>
           <span class="connected-name">
-            <span :if={@conn[:kube_target]} class="kube-target muted small">
+            <span :if={@conn[:kube_target]} class="kube-target">
               {@conn.kube_target.cluster} · {@conn.kube_target.namespace} · {@conn.kube_target.pod}
             </span>
             <strong>{@conn.node}</strong>
