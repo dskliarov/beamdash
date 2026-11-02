@@ -83,29 +83,41 @@ defmodule Beamdash.LogsGroupTest do
   end
 
   describe "group/1" do
-    test "combines consecutive similar entries only" do
-      c1 = e(1, "miss user:1")
-      b = e(2, "other")
-      c2 = e(3, "miss user:2")
-      c3 = e(4, "miss user:3")
+    test "a similar entry joins a row among the 4 newest, which moves to the top" do
+      a1 = e(1, "miss user:1")
+      b = e(2, "alpha")
+      c = e(3, "beta")
+      d = e(4, "gamma")
+      a5 = e(5, "miss user:5")
 
-      assert [r1, r2, r3] = Group.group([c3, c2, b, c1])
+      assert [r1, r2, r3, r4] = Group.group([a5, d, c, b, a1])
 
       assert r1.count == 2
-      assert r1.ids == [c3.id, c2.id]
-      assert r1.entry == c3
-      assert r1.id == "g-#{c2.id}"
-      assert r1.first_at == c2.at
-      assert r1.key == Group.key(c3)
+      assert r1.ids == [a5.id, a1.id]
+      assert r1.entry == a5
+      assert r1.id == "g-#{a1.id}"
+      assert r1.first_at == a1.at
+      assert r1.key == Group.key(a5)
 
-      assert r2.count == 1
-      assert r2.entry == b
-      assert r2.ids == [b.id]
-      assert r2.id == "g-#{b.id}"
+      assert [r2.entry, r3.entry, r4.entry] == [d, c, b]
+      assert Enum.all?([r2, r3, r4], &(&1.count == 1))
+    end
 
-      assert r3.count == 1
-      assert r3.entry == c1
-      assert r3.first_at == c1.at
+    test "beyond the 4 newest rows a similar entry starts a new row" do
+      a1 = e(1, "miss user:1")
+      b = e(2, "alpha")
+      c = e(3, "beta")
+      d = e(4, "gamma")
+      f = e(5, "delta")
+      a6 = e(6, "miss user:6")
+
+      rows = Group.group([a6, f, d, c, b, a1])
+
+      assert length(rows) == 6
+      assert hd(rows).id == "g-6"
+      assert hd(rows).count == 1
+      assert List.last(rows).ids == [a1.id]
+      assert Enum.all?(rows, &(&1.count == 1))
     end
 
     test "empty" do

@@ -14,45 +14,74 @@ defmodule BeamdashWeb.LogsTable do
   use Phoenix.Component
 
   alias Beamdash.Format
-  alias Beamdash.Logs.Filter
+  alias Beamdash.Logs.{Filter, Pretty}
   alias Beamdash.Target
 
   attr :info, :map, required: true, doc: "`Beamdash.Logs.info/1`"
   attr :node, :atom, default: nil
   attr :view, :atom, required: true, doc: ":live or :previous"
+  attr :connected?, :boolean, default: false
+  attr :loading?, :boolean, default: false
 
   @doc "Where the lines come from, the stream's state, and the Live / Previous container switch."
   def source_bar(assigns) do
     ~H"""
     <div class="active-traces logs-source">
-      <.source info={@info} node={@node} />
-      <span :if={@info.status == :streaming} class="muted small">streaming</span>
-      <span :if={match?({:ended, _}, @info.status)} class="muted small">
-        {ended(@info.status)}
-      </span>
-      <button
-        :if={match?({:ended, _}, @info.status)}
-        type="button"
-        class="secondary"
-        phx-click="reconnect"
-      >
-        Reconnect
-      </button>
-      <div
-        :if={@info.source == :kubectl or @view == :previous}
-        class="seg"
-        role="group"
-        aria-label="Container"
-      >
-        <button
-          :for={{value, label} <- [{"live", "Live"}, {"previous", "Previous container"}]}
-          type="button"
-          class={["seg-btn", Atom.to_string(@view) == value && "active"]}
-          aria-pressed={to_string(Atom.to_string(@view) == value)}
-          phx-click="view"
-          phx-value-view={value}
+      <div class="logs-source-switches">
+        <div
+          :if={@connected? and is_map(@info.kubectl)}
+          class="seg"
+          role="group"
+          aria-label="Log source"
         >
-          {label}
+          <button
+            :for={
+              {value, label} <- [
+                {:combined, "Combined"},
+                {:kubectl, "kubectl only"},
+                {:node, "Node only"}
+              ]
+            }
+            type="button"
+            class={["seg-btn", @info.mode == value && "active"]}
+            aria-pressed={to_string(@info.mode == value)}
+            disabled={@loading?}
+            phx-click="set_source"
+            phx-value-source={value}
+          >{label}</button>
+        </div>
+        <div
+          :if={@info.mode != :node and (is_map(@info.kubectl) or @view == :previous)}
+          class="seg"
+          role="group"
+          aria-label="Container"
+        >
+          <button
+            :for={{value, label} <- [{"live", "Live"}, {"previous", "Previous container"}]}
+            type="button"
+            class={["seg-btn", Atom.to_string(@view) == value && "active"]}
+            aria-pressed={to_string(Atom.to_string(@view) == value)}
+            phx-click="view"
+            phx-value-view={value}
+          >
+            {label}
+          </button>
+        </div>
+      </div>
+      <div class="logs-source-info">
+        <.source info={@info} node={@node} />
+        <span :if={@loading?} class="muted small" role="status">Changing log source…</span>
+        <span :if={@info.status == :streaming} class="muted small">streaming</span>
+        <span :if={match?({:ended, _}, @info.status)} class="muted small">
+          {ended(@info.status)}
+        </span>
+        <button
+          :if={match?({:ended, _}, @info.status)}
+          type="button"
+          class="secondary"
+          phx-click="reconnect"
+        >
+          Reconnect
         </button>
       </div>
     </div>
@@ -103,7 +132,7 @@ defmodule BeamdashWeb.LogsTable do
 
   def table(assigns) do
     ~H"""
-    <div class="log logs-table" role="table" aria-label="Log lines">
+    <div class="log logs-table" role="table" aria-label="Log lines" tabindex="0">
       <div class="log-cols logs-cols log-head" role="row">
         <span role="columnheader">Time (UTC)</span>
         <span role="columnheader">Level</span>
@@ -112,7 +141,7 @@ defmodule BeamdashWeb.LogsTable do
         <span role="columnheader">Message</span>
         <span role="columnheader"><span class="sr-only">Actions</span></span>
       </div>
-      <div id="logs-rows" phx-update="stream" role="rowgroup">
+      <div id="logs-rows" phx-update="stream" phx-hook="LogsScroll" role="rowgroup">
         <div
           :for={{dom_id, row} <- @rows}
           id={dom_id}
@@ -230,28 +259,53 @@ defmodule BeamdashWeb.LogsTable do
   attr :entry, :map, required: true
   attr :node, :atom, default: nil
 
+  @json_time_keys ~w(time timestamp @timestamp ts)
+
   defp details(assigns) do
+    json_rows = json_rows(assigns.entry.message)
+    # the line's own JSON fields are listed above, so the props below would repeat them
+    own_json? = assigns.entry.json_line? and is_list(json_rows)
+    json_time? = own_json? and Enum.any?(@json_time_keys, &List.keymember?(json_rows, &1, 0))
+
+    assigns =
+      assign(assigns, json_rows: json_rows, props?: not own_json?, time?: not json_time?)
+
     ~H"""
     <div class="detail log-detail" role="region">
-      <pre>{@entry.message}</pre>
+      <%= if @json_rows do %>
+        <table class="logs-json" aria-label="JSON message fields">
+          <tbody>
+            <tr :for={{key, value} <- @json_rows}>
+              <th scope="row">{key}</th>
+              <td><pre>{value}</pre></td>
+            </tr>
+          </tbody>
+        </table>
+        <p :if={@json_rows == []} class="muted small">Empty JSON object or array.</p>
+        <details class="logs-json-original">
+          <summary>Original message</summary><pre>{@entry.message}</pre>
+        </details>
+      <% else %>
+        <pre>{pretty_message(@entry.message)}</pre>
+      <% end %>
       <table class="props">
-        <tr>
+        <tr :if={@time?}>
           <th>time</th>
           <td class="mono">{if @entry.at, do: DateTime.to_iso8601(@entry.at), else: "—"}</td>
         </tr>
-        <tr :if={@entry.level}>
+        <tr :if={@props? and @entry.level}>
           <th>level</th>
-          <td class="mono">{@entry.level}</td>
+          <td><.level level={@entry.level} /></td>
         </tr>
-        <tr :if={@entry.pid}>
+        <tr :if={@props? and @entry.pid}>
           <th>pid</th>
           <td class="mono"><.pid pid={@entry.pid} node={@node} /></td>
         </tr>
-        <tr :if={@entry.where}>
+        <tr :if={@props? and @entry.where}>
           <th>where</th>
-          <td class="mono">{@entry.where}</td>
+          <td class="mono">{@entry.where} <.where_links where={@entry.where} /></td>
         </tr>
-        <tr :for={{k, v} <- @entry.meta}>
+        <tr :for={{k, v} <- if(@props?, do: @entry.meta, else: [])}>
           <th>{k}</th>
           <td class="mono"><pre>{v}</pre></td>
         </tr>
@@ -259,6 +313,69 @@ defmodule BeamdashWeb.LogsTable do
     </div>
     """
   end
+
+  defp pretty_message(message) do
+    {:safe, Enum.map(Pretty.segments(message), fn {_kind, text} -> escape(text) end)}
+  end
+
+  defp json_rows(message) when is_binary(message) and byte_size(message) <= 262_144 do
+    case Jason.decode(message) do
+      {:ok, value} when is_map(value) ->
+        value
+        |> Enum.sort_by(&elem(&1, 0))
+        |> Enum.map(fn {key, val} -> {key, json_value(val)} end)
+
+      {:ok, value} when is_list(value) ->
+        value
+        |> Enum.with_index()
+        |> Enum.map(fn {val, index} -> {"[#{index}]", json_value(val)} end)
+
+      {:ok, value} ->
+        [{"value", json_value(value)}]
+
+      _ ->
+        nil
+    end
+  end
+
+  defp json_rows(_), do: nil
+  defp json_value(value) when is_binary(value), do: value
+  defp json_value(value), do: Jason.encode!(value, pretty: true)
+
+  attr :where, :string, required: true
+
+  # Source, and Trace / Profile for the function, when `where` names a module
+  defp where_links(assigns) do
+    assigns = assign(assigns, :target, where_target(assigns.where))
+
+    ~H"""
+    <span :if={@target} class="where-links">
+      <.link navigate={"/modules?" <> URI.encode_query(%{module: @target.module})}>Source</.link>
+      <.link navigate={"/trace?" <> @target.query}>Trace</.link>
+      <.link navigate={"/profile?" <> @target.query}>Profile</.link>
+    </span>
+    """
+  end
+
+  # `Mod:fun/arity` (node logger) or a bare module name (a JSON line's `where`)
+  defp where_target(where) do
+    {mod, query} =
+      case Regex.run(~r/^([\w.]+):([^\s:\/]+)\/(\d+)$/, where) do
+        [_, mod, fun, arity] -> {mod, %{mod: module_name(mod), fun: fun, arity: arity}}
+        nil -> {module_part(where), %{mod: module_name(module_part(where))}}
+      end
+
+    if Regex.match?(~r/^[\w.]+$/, mod),
+      do: %{module: module_name(mod), query: URI.encode_query(query)}
+  end
+
+  # a function name the MFA pattern does not cover (compiler-generated closures) still names its module
+  defp module_part(where), do: where |> String.split(":", parts: 2) |> hd()
+
+  # the Elixir alias is printed without its "Elixir." prefix
+  defp module_name("Elixir." <> _ = name), do: name
+  defp module_name(<<c, _::binary>> = name) when c in ?A..?Z, do: "Elixir." <> name
+  defp module_name(name), do: name
 
   attr :pid, :string, default: nil
   attr :node, :atom, default: nil

@@ -270,14 +270,16 @@ defmodule Beamdash.ModuleSourceTest do
         ~w(highlight.min.js erlang.min.js elixir.min.js)
         |> Enum.map(&"/assets/vendor/highlight/#{&1}")
 
-      assert Enum.take(scripts, -10) ==
+      assert Enum.take(scripts, -12) ==
                hl ++
                  [
                    "/assets/source_editor.js",
+                   "/assets/follow_bottom.js",
                    "/assets/console_completion.js",
                    "/assets/notebook_files.js",
                    "/assets/vendor/codemirror/editor.js",
                    "/assets/module_editor.js",
+                   "/assets/logs_scroll.js",
                    "/assets/kino_chart.js",
                    "/assets/app.js"
                  ]

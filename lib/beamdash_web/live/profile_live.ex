@@ -15,7 +15,15 @@ defmodule BeamdashWeb.ProfileLive do
   alias BeamdashWeb.SourceTabs
 
   import BeamdashWeb.FunctionList,
-    only: [matching_modules: 3, functions_of: 2, needle: 1, matches?: 3, fn_name: 2, highlight: 1]
+    only: [
+      matching_modules: 3,
+      functions_of: 2,
+      find_function: 4,
+      needle: 1,
+      matches?: 3,
+      fn_name: 2,
+      highlight: 1
+    ]
 
   @types [
     call_time: {"Call time", "time spent in each function"},
@@ -85,8 +93,28 @@ defmodule BeamdashWeb.ProfileLive do
 
   defp load_modules(socket), do: socket
 
-  # ?mod= opens that module (a link from "Ask beamdash")
+  # ?mod=&fun=&arity= also picks that function (a link from a log line)
   @impl true
+  def handle_params(%{"mod" => mod, "fun" => fun, "arity" => arity}, uri, socket) do
+    {:noreply, socket} = handle_params(%{"mod" => mod}, uri, socket)
+    pick_mod = socket.assigns.pick_mod
+
+    with true <- is_atom(pick_mod) and Atom.to_string(pick_mod) == mod,
+         {f, a} <- find_function(socket.assigns.modules, pick_mod, fun, arity) do
+      pattern = {pick_mod, f, a}
+
+      picked =
+        if pattern in socket.assigns.picked,
+          do: socket.assigns.picked,
+          else: socket.assigns.picked ++ [pattern]
+
+      {:noreply, assign(socket, picked: picked, form_error: nil)}
+    else
+      _ -> {:noreply, socket}
+    end
+  end
+
+  # ?mod= opens that module (a link from "Ask beamdash")
   def handle_params(%{"mod" => mod}, _uri, socket) do
     case Enum.find(socket.assigns.modules, fn {m, _, _} -> Atom.to_string(m) == mod end) do
       {m, _, _} ->

@@ -46,6 +46,8 @@ defmodule Beamdash.Logs do
             source_fun: nil,
             logs_cmd: nil,
             kubectl_logger: true,
+            mode: :combined,
+            handler_attached: false,
             node: nil,
             source: nil,
             kubectl: nil,
@@ -87,6 +89,14 @@ defmodule Beamdash.Logs do
 
   @doc "Restarts the current source (after its stream ended, say)."
   def reconnect(server \\ __MODULE__), do: GenServer.call(server, :reconnect, 15_000)
+
+  @doc "Selects the log source for a Kubernetes connection and clears the old source's entries."
+  def set_source(mode, server \\ __MODULE__) when mode in [:combined, :kubectl, :node],
+    do: GenServer.call(server, {:set_source, mode}, 40_000)
+
+  @doc false
+  def send_snapshot(server, recipient, ref),
+    do: GenServer.call(server, {:send_snapshot, recipient, ref}, 40_000)
 
   @doc """
   The previous container's logs (`kubectl logs --previous`), newest first.
@@ -137,6 +147,15 @@ defmodule Beamdash.Logs do
 
   def handle_call(:info, _from, state), do: {:reply, info_of(state), state}
 
+  def handle_call({:send_snapshot, recipient, ref}, _from, state) when is_pid(recipient) do
+    send(
+      recipient,
+      {:beamdash_logs, {:snapshot, ref, info_of(state), Enum.take(state.entries, @max_entries)}}
+    )
+
+    {:reply, :ok, state}
+  end
+
   def handle_call(:clear, _from, state) do
     notify(state, :cleared)
     {:reply, :ok, %{state | entries: [], pending: []}}
@@ -152,6 +171,20 @@ defmodule Beamdash.Logs do
   def handle_call(:reconnect, _from, state) do
     {:reply, :ok, changed(state, state |> stop() |> start())}
   end
+
+  def handle_call({:set_source, mode}, _from, %{node: node, kubectl: kubectl} = state)
+      when not is_nil(node) and is_map(kubectl) and mode in [:combined, :kubectl, :node] do
+    if mode == state.mode do
+      {:reply, :ok, state}
+    else
+      stopped = stop(state)
+      notify(stopped, :cleared)
+      new = start(%{stopped | mode: mode, entries: [], pending: [], dropped: 0})
+      {:reply, :ok, changed(state, new)}
+    end
+  end
+
+  def handle_call({:set_source, _}, _from, state), do: {:reply, {:error, :not_kubectl}, state}
 
   def handle_call(:previous_cmd, _from, state), do: {:reply, previous_cmd(state), state}
 
@@ -189,8 +222,8 @@ defmodule Beamdash.Logs do
 
   # a batch from the node's collector (Direct, or kubectl after its
   # history), oldest first
-  def handle_info({:beamdash_logs, list, dropped}, %{source: source, port: nil} = state)
-      when is_list(list) and source in [:direct, :kubectl] do
+  def handle_info({:beamdash_logs, list, dropped}, %{handler_attached: true, port: nil} = state)
+      when is_list(list) do
     {entries, next_id} =
       Enum.map_reduce(list, state.next_id, fn m, id ->
         {Map.put(from_agent(m), :id, id), id + 1}
@@ -249,10 +282,23 @@ defmodule Beamdash.Logs do
 
   defp start(state) do
     case safe(fn -> state.source_fun.(state.target) end) do
-      {:ok, :direct} -> start_direct(state)
-      {:ok, {:kubectl, %{} = k}} -> start_kubectl(%{state | source: :kubectl, kubectl: k})
-      {:ok, _none} -> state
-      {:error, reason} -> %{state | status: {:ended, reason}}
+      {:ok, :direct} ->
+        start_direct(state)
+
+      {:ok, {:kubectl, %{} = k}} ->
+        state = %{state | kubectl: k}
+
+        case state.mode do
+          :node -> start_direct(state)
+          :kubectl -> start_kubectl_stream(%{state | source: :kubectl})
+          :combined -> start_kubectl(%{state | source: :kubectl})
+        end
+
+      {:ok, _none} ->
+        state
+
+      {:error, reason} ->
+        %{state | status: {:ended, reason}}
     end
   end
 
@@ -260,7 +306,7 @@ defmodule Beamdash.Logs do
     state = %{state | source: :direct}
 
     case attach_handler(state) do
-      {:ok, level} -> %{state | status: :streaming, level: level}
+      {:ok, level} -> %{state | status: :streaming, level: level, handler_attached: true}
       {:error, reason} -> %{state | status: {:ended, reason}}
     end
   end
@@ -283,7 +329,7 @@ defmodule Beamdash.Logs do
     with {:ok, since} when is_integer(since) <-
            Target.rpc(state.node, :os, :system_time, [:microsecond]),
          {:ok, level} <- attach_handler(state) do
-      %{state | status: :streaming, level: level}
+      %{state | status: :streaming, level: level, handler_attached: true}
       |> add_history(DateTime.from_unix!(since, :microsecond))
     else
       _ -> start_kubectl_stream(state)
@@ -337,6 +383,9 @@ defmodule Beamdash.Logs do
   defp stop(state) do
     close_port(state.port)
 
+    if state.handler_attached and state.node,
+      do: Target.rpc(state.node, :beamdash_agent, :log_detach, [])
+
     %{
       flush(state)
       | port: nil,
@@ -346,7 +395,8 @@ defmodule Beamdash.Logs do
         source: nil,
         kubectl: nil,
         status: :idle,
-        level: nil
+        level: nil,
+        handler_attached: false
     }
   end
 
@@ -359,7 +409,7 @@ defmodule Beamdash.Logs do
     end
   end
 
-  defp previous_cmd(%{source: :kubectl} = state) do
+  defp previous_cmd(%{kubectl: kubectl} = state) when is_map(kubectl) do
     case safe(fn -> kubectl_cmd(state, previous: true) end) do
       {:ok, result} -> result
       error -> error
@@ -545,6 +595,7 @@ defmodule Beamdash.Logs do
       pid: pid_text(m[:pid]),
       where: where,
       message: message,
+      json_line?: false,
       meta: meta(m[:meta]),
       raw: raw
     }
@@ -614,6 +665,7 @@ defmodule Beamdash.Logs do
   defp info_of(state) do
     %{
       source: state.source,
+      mode: state.mode,
       status: state.status,
       level: state.level,
       dropped: state.dropped,

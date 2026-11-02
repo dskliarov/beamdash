@@ -91,6 +91,7 @@ defmodule Beamdash.LogsTest do
 
       assert e in Logs.entries(logs)
       assert %{source: :direct, status: :streaming} = Logs.info(logs)
+      assert {:error, :not_kubectl} = Logs.set_source(:kubectl, logs)
     end
 
     test "where is the mfa in Erlang syntax, without the Elixir. prefix", ctx do
@@ -155,6 +156,35 @@ defmodule Beamdash.LogsTest do
   describe "kubectl source with the logger handler" do
     @history "printf '2026-10-23T12:00:00Z [info] one\\n2026-10-23T12:00:01Z [error] two\\n" <>
                "2026-10-23T12:00:01Z     at line 1\\n2099-01-01T00:00:00Z [info] after attach\\n'"
+
+    test "switches between exclusive kubectl and node sources", ctx do
+      logs = start_logs(ctx, source_fun: fn _ -> @kubectl end, logs_cmd: sh(@history))
+      :ok = connect(ctx)
+      eventually(fn -> Logs.info(logs).status == :streaming end)
+
+      assert :ok = Logs.set_source(:kubectl, logs)
+
+      eventually(fn ->
+        match?(%{source: :kubectl, mode: :kubectl, status: {:ended, 0}}, Logs.info(logs))
+      end)
+
+      refute :beamdash_logs in :erpc.call(ctx.node, :logger, :get_handler_ids, [])
+      assert Enum.any?(Logs.entries(logs), &(&1.message == "one"))
+      entries = Logs.entries(logs)
+      send(logs, {:beamdash_logs, [%{message: "stale node event"}], 0})
+      assert Logs.entries(logs) == entries
+
+      assert :ok = Logs.set_source(:node, logs)
+      assert %{source: :direct, mode: :node, kubectl: %{pod: "p"}} = Logs.info(logs)
+      assert Logs.entries(logs) == []
+      :ok = Fixture.log(ctx.node, :warning, "node only")
+      eventually(fn -> Enum.any?(Logs.entries(logs), &(&1.message == "node only")) end)
+      assert {:ok, _} = Logs.previous(logs)
+
+      assert :ok = Logs.set_source(:kubectl, logs)
+      eventually(fn -> match?(%{status: {:ended, 0}}, Logs.info(logs)) end)
+      refute Enum.any?(Logs.entries(logs), &(&1.message == "node only"))
+    end
 
     test "recent output first, minus lines from after attaching, then handler events", ctx do
       logs =

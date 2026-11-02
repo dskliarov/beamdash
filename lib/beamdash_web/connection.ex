@@ -55,7 +55,7 @@ defmodule BeamdashWeb.Connection do
           node_input: if(node, do: Atom.to_string(node), else: last_node(saved.node)),
           cookie_input: saved.cookie,
           error: nil,
-          method: :direct,
+          method: Settings.connection_method(),
           kube_cluster: cluster,
           kube_namespace:
             if(cluster == kube_saved["cluster"], do: kube_saved["namespace"], else: ""),
@@ -80,6 +80,9 @@ defmodule BeamdashWeb.Connection do
       :ok = Target.subscribe()
       :ok = Phoenix.PubSub.subscribe(Beamdash.PubSub, "plugins")
       send(self(), :beamdash_conn_tick)
+
+      if socket.assigns.conn.method == :kubectl and status != :connected and first_kube_restore?(),
+        do: send(self(), :beamdash_restore_saved_kube)
     end
 
     {:cont, socket}
@@ -130,42 +133,10 @@ defmodule BeamdashWeb.Connection do
   # namespaces are re-listed each time Kubernetes is picked from another
   # method, so ones created meanwhile show up too
   def handle_event("set_conn_method", %{"method" => method}, socket) do
-    method = String.to_existing_atom(method)
-    switched? = socket.assigns.conn[:method] != method
-    socket = update(socket, method: method, error: nil)
-
-    socket =
-      if switched?,
-        do: update(socket, kube_restore_ref: nil, kube_pods_listing: false),
-        else: socket
-
-    if method == :kubectl and switched? do
-      socket = list_namespaces(socket)
-
-      if socket.assigns.conn.kube_cluster &&
-           Map.get(socket.assigns.conn, :kube_namespace, "") != "" &&
-           is_nil(socket.assigns.conn[:kube_pods]) do
-        cluster = socket.assigns.conn.kube_cluster
-        namespace = socket.assigns.conn.kube_namespace
-        saved = Settings.kube_selection()
-        ref = make_ref()
-        pid = self()
-
-        {:ok, _} =
-          Task.start(fn ->
-            send(
-              pid,
-              {:beamdash_restore_kube, ref, cluster, namespace,
-               restore_kube(cluster, namespace, saved)}
-            )
-          end)
-
-        {:halt, update(socket, kube_pods_listing: true, kube_restore_ref: ref)}
-      else
-        {:halt, socket}
-      end
-    else
-      {:halt, socket}
+    case method do
+      "direct" -> {:halt, select_conn_method(socket, :direct)}
+      "kubectl" -> {:halt, select_conn_method(socket, :kubectl)}
+      _ -> {:halt, socket}
     end
   end
 
@@ -346,6 +317,14 @@ defmodule BeamdashWeb.Connection do
   def handle_event(_event, _params, socket), do: {:cont, socket}
 
   @doc false
+  def handle_info(
+        :beamdash_restore_saved_kube,
+        %{assigns: %{conn: %{method: :kubectl, status: :disconnected}}} = socket
+      ),
+      do: {:halt, restore_saved_kube(socket)}
+
+  def handle_info(:beamdash_restore_saved_kube, socket), do: {:halt, socket}
+
   def handle_info(:beamdash_conn_tick, socket) do
     Process.send_after(self(), :beamdash_conn_tick, @refresh_ms)
     {:halt, refresh(socket)}
@@ -513,6 +492,59 @@ defmodule BeamdashWeb.Connection do
       end)
 
     update(socket, kube_namespaces: [])
+  end
+
+  defp first_kube_restore? do
+    key = {__MODULE__, :kube_restored}
+
+    if :persistent_term.get(key, false) do
+      false
+    else
+      :persistent_term.put(key, true)
+      true
+    end
+  end
+
+  defp select_conn_method(socket, method) do
+    :ok = Settings.put_connection_method(method)
+    switched? = socket.assigns.conn[:method] != method
+    socket = update(socket, method: method, error: nil)
+
+    socket =
+      if switched?,
+        do: update(socket, kube_restore_ref: nil, kube_pods_listing: false),
+        else: socket
+
+    if method == :kubectl and switched?,
+      do: restore_saved_kube(socket),
+      else: socket
+  end
+
+  defp restore_saved_kube(socket) do
+    socket = list_namespaces(socket)
+
+    if socket.assigns.conn.kube_cluster &&
+         Map.get(socket.assigns.conn, :kube_namespace, "") != "" &&
+         is_nil(socket.assigns.conn[:kube_pods]) do
+      cluster = socket.assigns.conn.kube_cluster
+      namespace = socket.assigns.conn.kube_namespace
+      saved = Settings.kube_selection()
+      ref = make_ref()
+      pid = self()
+
+      {:ok, _} =
+        Task.start(fn ->
+          send(
+            pid,
+            {:beamdash_restore_kube, ref, cluster, namespace,
+             restore_kube(cluster, namespace, saved)}
+          )
+        end)
+
+      update(socket, kube_pods_listing: true, kube_restore_ref: ref)
+    else
+      socket
+    end
   end
 
   # All kubectl calls run in the task, since a pod or container can be slow to answer.

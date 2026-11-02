@@ -12,11 +12,14 @@ defmodule Beamdash.ConnectionBarTest do
 
   setup do
     Target.disconnect()
+    previous_method = Settings.connection_method()
+    :ok = Settings.put_connection_method(:direct)
     {peer, node} = Fixture.start_peer()
 
     on_exit(fn ->
       Target.disconnect()
       Fixture.stop_peer(peer)
+      Settings.put_connection_method(previous_method)
     end)
 
     %{node: node}
@@ -176,6 +179,38 @@ defmodule Beamdash.ConnectionBarTest do
 
     {:cont, s} = Connection.on_mount(:default, %{}, %{}, socket)
     s
+  end
+
+  test "connection method selection survives settings reload and restores on mount" do
+    dir = Path.join(System.tmp_dir!(), "beamdash-method-#{System.unique_integer([:positive])}")
+    previous = Application.get_env(:beamdash, :settings_file)
+    Application.put_env(:beamdash, :settings_file, Path.join(dir, "settings.json"))
+    Settings.reload()
+
+    on_exit(fn ->
+      Application.put_env(:beamdash, :settings_file, previous)
+      Settings.reload()
+      File.rm_rf!(dir)
+    end)
+
+    assert mounted_bar().assigns.conn.method == :direct
+
+    {:halt, selected} =
+      Connection.handle_event("set_conn_method", %{"method" => "kubectl"}, mounted_bar())
+
+    assert selected.assigns.conn.method == :kubectl
+
+    assert %{"connection_method" => "kubectl"} =
+             dir |> Path.join("settings.json") |> File.read!() |> Jason.decode!()
+
+    Settings.reload()
+    assert mounted_bar().assigns.conn.method == :kubectl
+    {:halt, _} = Connection.handle_event("set_conn_method", %{"method" => "direct"}, selected)
+    Settings.reload()
+    assert mounted_bar().assigns.conn.method == :direct
+    File.write!(Path.join(dir, "settings.json"), ~s({"connection_method":"invalid"}))
+    Settings.reload()
+    assert mounted_bar().assigns.conn.method == :direct
   end
 
   test "the last node and cookie that connected are offered again, also after a restart",
@@ -505,9 +540,26 @@ defmodule Beamdash.ConnectionBarTest do
 
     :ok = Settings.reload()
 
-    {:halt, s} =
-      Connection.handle_event("set_conn_method", %{"method" => "kubectl"}, mounted_bar())
+    {:halt, s} = Connection.handle_info(:beamdash_restore_saved_kube, mounted_bar())
 
+    assert_receive {:beamdash_restore_kube, ref, ^cluster, "prod", result}, 10_000
+    {:halt, s} = Connection.handle_info({:beamdash_restore_kube, ref, cluster, "prod", result}, s)
+    assert s.assigns.conn.kube_pod == "pod-a"
+    assert s.assigns.conn.kube_container == "app"
+    assert s.assigns.conn.kube_binary == "/app/bin/one"
+
+    :ok = Settings.put_connection_method(:kubectl)
+    :ok = Settings.reload()
+
+    socket = %Phoenix.LiveView.Socket{
+      transport_pid: self(),
+      private: %{lifecycle: %Phoenix.LiveView.Lifecycle{}, live_temp: %{}}
+    }
+
+    {:cont, s} = Connection.on_mount(:default, %{}, %{}, socket)
+    assert s.assigns.conn.method == :kubectl
+    assert_receive :beamdash_restore_saved_kube
+    {:halt, s} = Connection.handle_info(:beamdash_restore_saved_kube, s)
     assert_receive {:beamdash_restore_kube, ref, ^cluster, "prod", result}, 10_000
     {:halt, s} = Connection.handle_info({:beamdash_restore_kube, ref, cluster, "prod", result}, s)
     assert s.assigns.conn.kube_pod == "pod-a"

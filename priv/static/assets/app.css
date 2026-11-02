@@ -19,6 +19,18 @@
   --status-suspended-fg: #92400e; --status-suspended-bg: #fef3c7;
   --status-exiting-fg: #991b1b; --status-exiting-bg: #fee2e2;
   --status-gc-fg: #6b21a8; --status-gc-bg: #f3e8ff;
+  --log-default-fg: #475569; --log-default-bg: #f1f5f9;
+  --log-all-fg: #115e59; --log-all-bg: #ccfbf1;
+  --log-debug-fg: #1d4ed8; --log-debug-bg: #dbeafe;
+  --log-info-fg: #166534; --log-info-bg: #dcfce7;
+  --log-notice-fg: #0e7490; --log-notice-bg: #cffafe;
+  --log-warning-fg: #92400e; --log-warning-bg: #fef3c7;
+  --log-error-fg: #b91c1c; --log-error-bg: #fee2e2;
+  --log-critical-fg: #9a3412; --log-critical-bg: #ffedd5;
+  --log-alert-fg: #9d174d; --log-alert-bg: #fce7f3;
+  --log-emergency-fg: #6b21a8; --log-emergency-bg: #f3e8ff;
+  --log-none-fg: #3f3f46; --log-none-bg: #e4e4e7;
+  --log-mixed-fg: #5b21b6; --log-mixed-bg: #ede9fe;
   /* memory kinds: categorical slots 1-6, validated on this surface */
   --mem-1: #2a78d6; --mem-2: #eb6834; --mem-3: #1baf7a;
   --mem-4: #eda100; --mem-5: #e87ba4; --mem-6: #008300;
@@ -50,6 +62,18 @@
     --status-suspended-fg: #fcd34d; --status-suspended-bg: #78350f;
     --status-exiting-fg: #fca5a5; --status-exiting-bg: #7f1d1d;
     --status-gc-fg: #d8b4fe; --status-gc-bg: #581c87;
+    --log-default-fg: #cbd5e1; --log-default-bg: #1e293b;
+    --log-all-fg: #99f6e4; --log-all-bg: #134e4a;
+    --log-debug-fg: #bfdbfe; --log-debug-bg: #1e3a5f;
+    --log-info-fg: #bbf7d0; --log-info-bg: #14532d;
+    --log-notice-fg: #a5f3fc; --log-notice-bg: #164e63;
+    --log-warning-fg: #fde68a; --log-warning-bg: #78350f;
+    --log-error-fg: #fecaca; --log-error-bg: #7f1d1d;
+    --log-critical-fg: #fed7aa; --log-critical-bg: #7c2d12;
+    --log-alert-fg: #fbcfe8; --log-alert-bg: #831843;
+    --log-emergency-fg: #f5d0fe; --log-emergency-bg: #701a75;
+    --log-none-fg: #e4e4e7; --log-none-bg: #3f3f46;
+    --log-mixed-fg: #ddd6fe; --log-mixed-bg: #4c1d95;
     --mem-1: #3987e5; --mem-2: #d95926; --mem-3: #199e70;
     --mem-4: #c98500; --mem-5: #d55181; --mem-6: #008300;
     --up: #f87171; --down: #4ade80;
@@ -1147,8 +1171,16 @@ dl.relations .pid-link:hover { border-color: var(--accent); background: var(--ap
 dl.relations .pid-other { background: var(--app-box); border: 1.5px solid var(--app-pen); border-radius: 8px; padding: 2px 8px; color: var(--fg); }
 
 /* Logs tab */
-.logs-source { margin-bottom: 4px; }
-.logs-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 8px 0; }
+.logs-source { flex-direction: column; align-items: stretch; gap: 6px; margin-bottom: 4px; }
+.logs-source-switches { display: flex; flex-wrap: wrap; justify-content: flex-end; align-items: center; gap: 8px; }
+.logs-source-info { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.logs-source .seg { height: 32px; }
+.logs-source .seg .seg-btn { box-sizing: border-box; height: 32px; padding: 0 14px; display: inline-flex; align-items: center; font-size: inherit; }
+.logs-controls { display: flex; position: sticky; top: 0; z-index: 3; flex-wrap: wrap; align-items: flex-start; gap: 8px; margin: 8px 0; padding: 6px 0; background: var(--bg); }
+.logs-pause-controls { position: relative; height: 32px; margin-bottom: 40px; }
+.logs-pause-controls > button { box-sizing: border-box; justify-self: start; height: 32px; padding: 0 14px; }
+.logs-scroll-controls { display: inline-flex; position: absolute; top: 40px; left: 0; align-items: center; gap: 8px; white-space: nowrap; }
+.logs-scroll-controls button { box-sizing: border-box; height: 32px; padding: 0 14px; }
 .logs-controls form { margin: 0; }
 .logs-controls select {
   box-sizing: border-box; height: 32px; padding: 0 8px;
@@ -1174,21 +1206,44 @@ dl.relations .pid-other { background: var(--app-box); border: 1.5px solid var(--
   border: 1px solid var(--line); border-radius: 6px;
 }
 .logs-app-levels-table select:focus, .logs-primary-level select:focus { border-color: var(--accent); }
+.logs-app-levels select[data-level] { color: var(--level-fg, var(--fg)); background: var(--level-bg, var(--bg)); border-color: var(--level-fg, var(--line)); font-weight: 600; }
+.logs-app-levels select[data-level="default"] { --level-fg: var(--log-default-fg); --level-bg: var(--log-default-bg); }
+.logs-app-levels select[data-level="all"] { --level-fg: var(--log-all-fg); --level-bg: var(--log-all-bg); }
+.logs-app-levels select[data-level="debug"] { --level-fg: var(--log-debug-fg); --level-bg: var(--log-debug-bg); }
+.logs-app-levels select[data-level="info"] { --level-fg: var(--log-info-fg); --level-bg: var(--log-info-bg); }
+.logs-app-levels select[data-level="notice"] { --level-fg: var(--log-notice-fg); --level-bg: var(--log-notice-bg); }
+.logs-app-levels select[data-level="warning"] { --level-fg: var(--log-warning-fg); --level-bg: var(--log-warning-bg); }
+.logs-app-levels select[data-level="error"] { --level-fg: var(--log-error-fg); --level-bg: var(--log-error-bg); }
+.logs-app-levels select[data-level="critical"] { --level-fg: var(--log-critical-fg); --level-bg: var(--log-critical-bg); }
+.logs-app-levels select[data-level="alert"] { --level-fg: var(--log-alert-fg); --level-bg: var(--log-alert-bg); }
+.logs-app-levels select[data-level="emergency"] { --level-fg: var(--log-emergency-fg); --level-bg: var(--log-emergency-bg); }
+.logs-app-levels select[data-level="none"] { --level-fg: var(--log-none-fg); --level-bg: var(--log-none-bg); }
+.logs-app-levels select[data-level="mixed"] { --level-fg: var(--log-mixed-fg); --level-bg: var(--log-mixed-bg); }
+.logs-app-levels select[data-level] option { color: var(--fg); background: var(--bg); }
 .logs-note { color: var(--ok); }
 .logs-note.error { color: var(--error); }
-.logs-check { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; }
+.logs-check { display: inline-flex; align-items: center; min-height: 32px; gap: 4px; white-space: nowrap; }
 .logs-cols { grid-template-columns: 110px 76px 110px minmax(0, 160px) minmax(0, 1fr) auto; }
+.logs-table { max-height: max(180px, calc(100dvh - 280px)); overflow: auto; overscroll-behavior: contain; }
+.logs-table .log-head { position: sticky; top: 0; z-index: 1; background: var(--bg); }
 .logs-actions { display: inline-flex; align-items: center; gap: 4px; justify-content: flex-end; }
 .logs-lines { margin: 0 0 6px 16px; border-left: 3px solid var(--accent); }
 .logs-line .log-row { font-size: 12.5px; }
 .logs-line.open > .log-row { background: var(--traced-bg-strong); }
 .logs-table .log-cols > .logs-line-msg { white-space: pre-wrap; word-break: break-word; }
 .logs-table .log-detail pre { white-space: pre-wrap; word-break: break-word; }
+.logs-json { border-collapse: collapse; width: 100%; margin-bottom: 8px; }
+.logs-json th, .logs-json td { padding: 5px 8px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
+.logs-json th { width: 1%; white-space: nowrap; color: var(--muted); }
+.logs-json td pre { margin: 0; }
+.logs-json-original { margin: 8px 0; }
+.logs-json-original summary { cursor: pointer; color: var(--muted); }
 .lvl { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
 .lvl-emergency, .lvl-alert, .lvl-critical, .lvl-error { color: var(--error); font-weight: 600; }
-.lvl-warning { color: var(--statem); }
-.lvl-notice, .lvl-info { color: var(--fg); }
-.lvl-debug { color: var(--muted); }
+.lvl-warning { color: var(--log-warning-fg); }
+.lvl-notice { color: var(--log-notice-fg); }
+.lvl-info { color: var(--log-info-fg); }
+.lvl-debug { color: var(--log-debug-fg); }
 .log-row.lvl-row-error { color: var(--error); }
 .count-badge { display: inline-block; padding: 0 7px; border-radius: 9px; background: var(--traced-bg-strong); color: var(--fg); font-size: 11.5px; font-weight: 600; line-height: 1.6; }
 .logs-table mark { background: var(--warn-bg); color: inherit; }

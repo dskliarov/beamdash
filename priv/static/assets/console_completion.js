@@ -200,7 +200,7 @@ globalThis.BeamReplConsole = {
     this.resize();
   },
   beforeUpdate() {
-    this.followOutput = this.transcript.scrollHeight - this.transcript.scrollTop - this.transcript.clientHeight < 60;
+    this.followOutput = window.BeamFollow.nearBottom(this.transcript);
     this.hadFocus = document.activeElement === this.input;
   },
   updated() {
@@ -213,7 +213,7 @@ globalThis.BeamReplConsole = {
       this.input.setSelectionRange(this.input.value.length, this.input.value.length);
     }
     this.resize();
-    if (this.followOutput) this.transcript.scrollTop = this.transcript.scrollHeight;
+    if (this.followOutput) window.BeamFollow.snapToBottom(this.transcript);
     if (this.hadFocus) this.input.focus();
   },
   destroyed() {
