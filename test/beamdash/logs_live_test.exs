@@ -321,6 +321,20 @@ defmodule Beamdash.LogsLiveTest do
     assert html =~ "/modules?module=Elixir.Beamdash.Worker"
   end
 
+  test "a JSON line's level, mfa and text get the same formatting as a plain line", ctx do
+    {_, socket} = ctx |> mount() |> render()
+    message = ~S|{"level":"error","mfa":"Elixir.Beamdash.Worker:run/2","text":"got {ok,[1,2]}"}|
+    entry = %{new_entry(16, message) | json_line?: true}
+
+    socket = info(socket, {:beamdash_logs, {:entries, [entry]}})
+    {_, socket} = render(socket)
+    {html, _} = socket |> event("toggle_entry", %{"id" => "16", "row" => "g-16"}) |> render()
+
+    assert html =~ ~s(<span class="lvl lvl-error">error</span>)
+    assert html =~ "mod=Elixir.Beamdash.Worker"
+    assert html =~ "got {ok, [1, 2]}"
+  end
+
   test "a plain message's embedded terms are pretty-printed", ctx do
     {_, socket} = ctx |> mount() |> render()
     socket = info(socket, {:beamdash_logs, {:entries, [new_entry(13, "got {ok,[1,2]}")]}})

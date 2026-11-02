@@ -277,7 +277,7 @@ defmodule BeamdashWeb.LogsTable do
           <tbody>
             <tr :for={{key, value} <- @json_rows}>
               <th scope="row">{key}</th>
-              <td><pre>{value}</pre></td>
+              <td><.json_cell key={key} value={value} node={@node} /></td>
             </tr>
           </tbody>
         </table>
@@ -400,6 +400,47 @@ defmodule BeamdashWeb.LogsTable do
   end
 
   defp process_href(_pid, _node), do: nil
+
+  @log_levels ~w(emergency alert critical error warning notice info debug)
+
+  defp json_cell(%{key: "level", value: value} = assigns) do
+    assigns = assign(assigns, :level, log_level(value))
+
+    ~H"""
+    <%= if @level do %>
+      <.level level={@level} />
+    <% else %>
+      <pre>{@value}</pre>
+    <% end %>
+    """
+  end
+
+  defp json_cell(%{key: "pid", value: value} = assigns) do
+    assigns = assign(assigns, :value, value)
+    ~H|<.pid pid={@value} node={@node} />|
+  end
+
+  defp json_cell(%{key: key, value: value} = assigns) when key in ["mfa", "where"] do
+    assigns = assign(assigns, :value, value)
+
+    ~H"""
+    <pre>{@value}</pre>
+    <.where_links where={@value} />
+    """
+  end
+
+  defp json_cell(%{key: key, value: value} = assigns) when key in ["text", "msg", "message"] do
+    assigns = assign(assigns, :segments, pretty_message(value))
+    ~H|<pre>{@segments}</pre>|
+  end
+
+  defp json_cell(assigns), do: ~H|<pre>{@value}</pre>|
+
+  defp log_level(value) do
+    name = String.downcase(value)
+    name = %{"warn" => "warning", "err" => "error"}[name] || name
+    if name in @log_levels, do: String.to_existing_atom(name)
+  end
 
   attr :level, :atom, default: nil
 
