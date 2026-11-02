@@ -14,7 +14,7 @@ defmodule BeamdashWeb.LogsTable do
   use Phoenix.Component
 
   alias Beamdash.Format
-  alias Beamdash.Logs.{Filter, Pretty}
+  alias Beamdash.Logs.{Filter, Parse, Pretty}
   alias Beamdash.Target
 
   attr :info, :map, required: true, doc: "`Beamdash.Logs.info/1`"
@@ -275,9 +275,9 @@ defmodule BeamdashWeb.LogsTable do
       <%= if @json_rows do %>
         <table class="logs-json" aria-label="JSON message fields">
           <tbody>
-            <tr :for={{key, value} <- @json_rows}>
+            <tr :for={{key, value, string?} <- @json_rows}>
               <th scope="row">{key}</th>
-              <td><pre>{value}</pre></td>
+              <td><.json_cell key={key} value={value} string?={string?} node={@node} /></td>
             </tr>
           </tbody>
         </table>
@@ -323,12 +323,12 @@ defmodule BeamdashWeb.LogsTable do
       {:ok, value} when is_map(value) ->
         value
         |> Enum.sort_by(&elem(&1, 0))
-        |> Enum.map(fn {key, val} -> {key, json_value(val)} end)
+        |> Enum.map(fn {key, val} -> {key, json_value(val), is_binary(val)} end)
 
       {:ok, value} when is_list(value) ->
         value
         |> Enum.with_index()
-        |> Enum.map(fn {val, index} -> {"[#{index}]", json_value(val)} end)
+        |> Enum.map(fn {val, index} -> {"[#{index}]", json_value(val), is_binary(val)} end)
 
       # a bare number, string, true or null is text, not JSON fields
       _ ->
@@ -400,6 +400,39 @@ defmodule BeamdashWeb.LogsTable do
   end
 
   defp process_href(_pid, _node), do: nil
+
+  # the keys Beamdash.Logs.Parse reads as level, where and message
+  @level_keys ~w(level severity lvl log.level)
+  @where_keys ~w(mfa module logger where)
+  @message_keys ~w(text msg message)
+
+  defp json_cell(%{key: key, value: value} = assigns) when key in @level_keys do
+    assigns = assign(assigns, :level, Parse.level_atom(value))
+
+    ~H"""
+    <%= if @level do %>
+      <.level level={@level} />
+    <% else %>
+      <pre>{@value}</pre>
+    <% end %>
+    """
+  end
+
+  defp json_cell(%{key: "pid"} = assigns), do: ~H|<.pid pid={@value} node={@node} />|
+
+  defp json_cell(%{key: key, string?: true} = assigns) when key in @where_keys do
+    ~H"""
+    <pre>{@value}</pre>
+    <.where_links where={@value} />
+    """
+  end
+
+  defp json_cell(%{key: key, value: value} = assigns) when key in @message_keys do
+    assigns = assign(assigns, :segments, pretty_message(value))
+    ~H|<pre>{@segments}</pre>|
+  end
+
+  defp json_cell(assigns), do: ~H|<pre>{@value}</pre>|
 
   attr :level, :atom, default: nil
 
