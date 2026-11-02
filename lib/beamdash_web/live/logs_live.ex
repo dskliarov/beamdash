@@ -896,7 +896,8 @@ defmodule BeamdashWeb.LogsLive do
   defp lines_scope({:ids, _, _}), do: nil
   defp lines_scope(scope), do: scope
 
-  defp tree_scope?(scope), do: is_tuple(scope) and elem(scope, 0) in [:app, :module, :template]
+  defp tree_scope?(scope),
+    do: is_tuple(scope) and elem(scope, 0) in [:app, :module, :function, :template]
 
   defp scope_label({:ids, label, _}), do: label
   defp scope_label({:window, label, _, _}), do: label

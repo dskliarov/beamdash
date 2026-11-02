@@ -90,8 +90,8 @@ defmodule Beamdash.Logs.Tree do
 
   @doc """
   True when the line is in the part of the tree `scope` names:
-  `{:app, app}`, `{:module, app, module}` or `{:template, app, module,
-  template}` (a node's `scope`).
+  `{:app, app}`, `{:module, app, module}`, `{:function, app, module, fun}`
+  or `{:template, app, module, fun, template}` (a node's `scope`).
   """
   def in_scope?({:app, app}, entry, apps), do: elem(place(entry, apps), 0) == app
   def in_scope?({:module, app, mod}, entry, apps), do: place(entry, apps) == {app, mod}
