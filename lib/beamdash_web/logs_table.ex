@@ -330,9 +330,7 @@ defmodule BeamdashWeb.LogsTable do
         |> Enum.with_index()
         |> Enum.map(fn {val, index} -> {"[#{index}]", json_value(val)} end)
 
-      {:ok, value} ->
-        [{"value", json_value(value)}]
-
+      # a bare number, string, true or null is text, not JSON fields
       _ ->
         nil
     end

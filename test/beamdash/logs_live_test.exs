@@ -402,6 +402,20 @@ defmodule Beamdash.LogsLiveTest do
     refute html =~ ~s(class="logs-json")
   end
 
+  test "a message that is a bare JSON number, string or null stays plain text", ctx do
+    for {message, id} <- [{"42", 8}, {"null", 9}, {~S|"done"|, 10}, {"true", 11}] do
+      {_, socket} = ctx |> mount() |> render()
+      socket = info(socket, {:beamdash_logs, {:entries, [new_entry(id, message)]}})
+      {_, socket} = render(socket)
+
+      {html, _} =
+        socket |> event("toggle_entry", %{"id" => "#{id}", "row" => "g-#{id}"}) |> render()
+
+      refute html =~ ~s(class="logs-json"), message
+      assert html =~ "<pre>", message
+    end
+  end
+
   test "Show all like this sets a pattern; the chip clears it", ctx do
     {_, socket} = ctx |> mount() |> render()
     {html, socket} = socket |> event("like", %{"id" => "g-1"}) |> render()

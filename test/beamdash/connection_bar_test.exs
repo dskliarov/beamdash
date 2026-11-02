@@ -12,6 +12,7 @@ defmodule Beamdash.ConnectionBarTest do
 
   setup do
     Target.disconnect()
+    Connection.forget_kube_cache()
     previous_method = Settings.connection_method()
     :ok = Settings.put_connection_method(:direct)
     {peer, node} = Fixture.start_peer()
@@ -565,6 +566,33 @@ defmodule Beamdash.ConnectionBarTest do
     assert s.assigns.conn.kube_pod == "pod-a"
     assert s.assigns.conn.kube_container == "app"
     assert s.assigns.conn.kube_binary == "/app/bin/one"
+
+    # every later page's bar fills from what kubectl just answered, without
+    # running it again
+    # (the listings the earlier restores started, answered by now)
+    Process.sleep(300)
+    flush_namespaces()
+
+    {:halt, _} =
+      Connection.handle_info({:beamdash_kube_namespaces, cluster, {:ok, ["default", "prod"]}}, s)
+
+    {:cont, s} = Connection.on_mount(:default, %{}, %{}, socket)
+    assert_receive :beamdash_restore_saved_kube
+    {:halt, s} = Connection.handle_info(:beamdash_restore_saved_kube, s)
+    refute_receive {:beamdash_restore_kube, _, _, _, _}, 300
+    refute_receive {:beamdash_kube_namespaces, _, _}
+    assert s.assigns.conn.kube_namespaces == ["default", "prod"]
+    assert s.assigns.conn.kube_pods == ["pod-a", "pod-b"]
+    assert s.assigns.conn.kube_pod == "pod-a"
+    assert s.assigns.conn.kube_binary == "/app/bin/one"
+  end
+
+  defp flush_namespaces do
+    receive do
+      {:beamdash_kube_namespaces, _, _} -> flush_namespaces()
+    after
+      0 -> :ok
+    end
   end
 
   defp kube_socket(namespaces) do

@@ -32,6 +32,10 @@ defmodule BeamdashWeb.Connection do
 
   @refresh_ms 2_000
   @last_node {__MODULE__, :last_node}
+  # the last kubectl listings (namespaces, a restored selection), so the
+  # bar of each page mounted soon after fills without running kubectl again
+  @kube_cache {__MODULE__, :kube_cache}
+  @kube_cache_ms 60_000
 
   def on_mount(:default, _params, _session, socket) do
     %{status: status, node: node} = Target.status()
@@ -81,7 +85,7 @@ defmodule BeamdashWeb.Connection do
       :ok = Phoenix.PubSub.subscribe(Beamdash.PubSub, "plugins")
       send(self(), :beamdash_conn_tick)
 
-      if socket.assigns.conn.method == :kubectl and status != :connected and first_kube_restore?(),
+      if socket.assigns.conn.method == :kubectl and status != :connected,
         do: send(self(), :beamdash_restore_saved_kube)
     end
 
@@ -395,7 +399,7 @@ defmodule BeamdashWeb.Connection do
     if cluster == socket.assigns.conn.kube_cluster do
       namespaces =
         case result do
-          {:ok, names} -> names
+          {:ok, names} -> kube_cache_put({:namespaces, cluster}, names)
           {:error, _} -> []
         end
 
@@ -411,19 +415,12 @@ defmodule BeamdashWeb.Connection do
     if conn.kube_restore_ref == ref and conn.method == :kubectl and conn.kube_cluster == cluster and
          conn.kube_namespace == namespace and conn.kube_pods_listing and is_nil(conn.kube_pods) do
       case result do
-        {status, %{pods: pods} = restored} when status in [:ok, :partial] ->
-          socket =
-            update(socket,
-              kube_pods: pods,
-              kube_pods_listing: false,
-              kube_restore_ref: nil,
-              kube_pod: restored[:pod] || "",
-              kube_containers: restored[:containers],
-              kube_container: restored[:container],
-              kube_binaries: restored[:binaries],
-              kube_binary: restored[:binary],
-              error: if(status == :partial, do: Format.error(restored.error), else: nil)
-            )
+        {status, %{pods: _} = restored} when status in [:ok, :partial] ->
+          if status == :ok,
+            do:
+              kube_cache_put({:restore, cluster, namespace, Settings.kube_selection()}, restored)
+
+          socket = apply_restored(socket, status, restored)
 
           if status == :ok and restored[:pod], do: save_kube_selection(socket, restored[:binary])
           {:halt, socket}
@@ -494,16 +491,47 @@ defmodule BeamdashWeb.Connection do
     update(socket, kube_namespaces: [])
   end
 
-  defp first_kube_restore? do
-    key = {__MODULE__, :kube_restored}
+  defp apply_restored(socket, status, restored) do
+    update(socket,
+      kube_pods: restored.pods,
+      kube_pods_listing: false,
+      kube_restore_ref: nil,
+      kube_pod: restored[:pod] || "",
+      kube_containers: restored[:containers],
+      kube_container: restored[:container],
+      kube_binaries: restored[:binaries],
+      kube_binary: restored[:binary],
+      error: if(status == :partial, do: Format.error(restored.error), else: nil)
+    )
+  end
 
-    if :persistent_term.get(key, false) do
-      false
-    else
-      :persistent_term.put(key, true)
-      true
+  # A listing from the last @kube_cache_ms, or :none. (persistent_term:
+  # written only when kubectl answers, read by every page's bar.)
+  defp kube_cache_get(key) do
+    case :persistent_term.get(@kube_cache, %{}) do
+      %{^key => {at, value}} ->
+        if System.monotonic_time(:millisecond) - at < @kube_cache_ms,
+          do: {:ok, value},
+          else: :none
+
+      _ ->
+        :none
     end
   end
+
+  defp kube_cache_put(key, value) do
+    cache = :persistent_term.get(@kube_cache, %{})
+
+    :persistent_term.put(
+      @kube_cache,
+      Map.put(cache, key, {System.monotonic_time(:millisecond), value})
+    )
+
+    value
+  end
+
+  @doc false
+  def forget_kube_cache, do: :persistent_term.erase(@kube_cache)
 
   defp select_conn_method(socket, method) do
     :ok = Settings.put_connection_method(method)
@@ -520,9 +548,26 @@ defmodule BeamdashWeb.Connection do
       else: socket
   end
 
+  # From the cache when kubectl answered in the last minute (another
+  # page's bar), else in the background.
   defp restore_saved_kube(socket) do
-    socket = list_namespaces(socket)
+    cluster = socket.assigns.conn.kube_cluster
+    namespace = Map.get(socket.assigns.conn, :kube_namespace, "")
 
+    socket =
+      case cluster && kube_cache_get({:namespaces, cluster}) do
+        {:ok, names} -> update(socket, kube_namespaces: names)
+        _ -> list_namespaces(socket)
+      end
+
+    case cluster && is_nil(socket.assigns.conn[:kube_pods]) &&
+           kube_cache_get({:restore, cluster, namespace, Settings.kube_selection()}) do
+      {:ok, restored} -> apply_restored(socket, :ok, restored)
+      _ -> restore_saved_kube_listing(socket)
+    end
+  end
+
+  defp restore_saved_kube_listing(socket) do
     if socket.assigns.conn.kube_cluster &&
          Map.get(socket.assigns.conn, :kube_namespace, "") != "" &&
          is_nil(socket.assigns.conn[:kube_pods]) do
@@ -636,7 +681,9 @@ defmodule BeamdashWeb.Connection do
         binary =
           if saved["cluster"] == cluster and saved["namespace"] == namespace and
                saved["pod"] == pod and saved["container"] == container and
-               saved["binary"] in binaries, do: saved["binary"], else: List.first(binaries)
+               saved["binary"] in binaries,
+             do: saved["binary"],
+             else: List.first(binaries)
 
         socket =
           update(socket,

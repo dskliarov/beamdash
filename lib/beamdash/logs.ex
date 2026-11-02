@@ -169,7 +169,7 @@ defmodule Beamdash.Logs do
   def handle_call(:reconnect, _from, %{node: nil} = state), do: {:reply, :ok, state}
 
   def handle_call(:reconnect, _from, state) do
-    {:reply, :ok, changed(state, state |> stop() |> start())}
+    {:reply, :ok, changed(state, state |> stop(detach: true) |> start())}
   end
 
   def handle_call({:set_source, mode}, _from, %{node: node, kubectl: kubectl} = state)
@@ -177,7 +177,7 @@ defmodule Beamdash.Logs do
     if mode == state.mode do
       {:reply, :ok, state}
     else
-      stopped = stop(state)
+      stopped = stop(state, detach: true)
       notify(stopped, :cleared)
       new = start(%{stopped | mode: mode, entries: [], pending: [], dropped: 0})
       {:reply, :ok, changed(state, new)}
@@ -378,12 +378,15 @@ defmodule Beamdash.Logs do
     end
   end
 
-  # Stops the running source (the node side of Direct is detached by
-  # Target), keeping the entries.
-  defp stop(state) do
+  # Stops the running source, keeping the entries. `detach: true` also
+  # removes the logger handler from the node: for a restart while still
+  # connected (Reconnect, a source switch). On a disconnect or a new
+  # connection Target has detached it already, and an rpc to the dropped
+  # node would dial it again (or wait out the timeout when it is gone).
+  defp stop(state, opts \\ []) do
     close_port(state.port)
 
-    if state.handler_attached and state.node,
+    if opts[:detach] && state.handler_attached && state.node,
       do: Target.rpc(state.node, :beamdash_agent, :log_detach, [])
 
     %{
