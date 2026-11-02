@@ -304,22 +304,35 @@ defmodule BeamdashWeb.LogsTable do
       <% else %>
         <pre>{pretty_message(@entry.message)}</pre>
       <% end %>
-      <div
-        :if={@available != []}
-        class="logs-fields"
-        role="group"
-        aria-label="Available fields in this message"
-      >
-        <span class="muted small">Available fields:</span>
-        <button
-          :for={{key, value} <- @available}
-          type="button"
-          class="secondary small-btn"
-          phx-click="field_select"
-          phx-value-key={key}
-          phx-value-value={value}
-          title="Add to the filter list"
-        >{key} = {value}</button>
+      <div :if={@available != [] or @selected != []} class="logs-field-lists">
+        <div class="logs-field-col" role="group" aria-label="Available fields in this message">
+          <span class="muted small">Available fields</span>
+          <button
+            :for={{key, value} <- @available}
+            type="button"
+            class="secondary small-btn"
+            phx-click="field_select"
+            phx-value-key={key}
+            phx-value-value={value}
+            title="Add to the filter list"
+          >{key} = {value}</button>
+        </div>
+        <div class="logs-field-col" role="group" aria-label="Filter list">
+          <span class="muted small">Filter list</span>
+          <span :for={{key, value} <- @selected} class="chip">
+            {key} = {value}
+            <button
+              type="button"
+              phx-click="field_unselect"
+              phx-value-key={key}
+              phx-value-value={value}
+              aria-label={"Remove #{key} = #{value} from the filter list"}
+            >
+              ×
+            </button>
+          </span>
+          <button :if={@selected != []} type="button" phx-click="field_apply">Apply filter</button>
+        </div>
       </div>
       <table class="props">
         <tr :if={@time?}>

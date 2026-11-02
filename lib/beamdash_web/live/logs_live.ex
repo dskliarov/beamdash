@@ -150,12 +150,12 @@ defmodule BeamdashWeb.LogsLive do
 
   defp event("field_select", %{"key" => key, "value" => value}, socket) do
     field_selected = Enum.uniq(socket.assigns.field_selected ++ [{key, value}])
-    {:noreply, assign(socket, field_selected: field_selected)}
+    {:noreply, socket |> assign(field_selected: field_selected) |> reset_rows()}
   end
 
   defp event("field_unselect", %{"key" => key, "value" => value}, socket) do
-    {:noreply,
-     assign(socket, field_selected: List.delete(socket.assigns.field_selected, {key, value}))}
+    field_selected = List.delete(socket.assigns.field_selected, {key, value})
+    {:noreply, socket |> assign(field_selected: field_selected) |> reset_rows()}
   end
 
   defp event("field_apply", _params, socket) do
@@ -1185,22 +1185,6 @@ defmodule BeamdashWeb.LogsLive do
             aria-label="Filter logs"
           />
         </form>
-        <div :if={@field_selected != []} class="logs-field-list" role="group" aria-label="Filter list">
-          <span class="muted small">Filter list:</span>
-          <span :for={{key, value} <- @field_selected} class="chip">
-            {key} = {value}
-            <button
-              type="button"
-              phx-click="field_unselect"
-              phx-value-key={key}
-              phx-value-value={value}
-              aria-label={"Remove #{key} = #{value} from the filter list"}
-            >
-              ×
-            </button>
-          </span>
-          <button type="button" phx-click="field_apply">Apply filter</button>
-        </div>
         <span :for={{key, value} <- @field_filters} class="chip">
           {key} = {value}
           <button
