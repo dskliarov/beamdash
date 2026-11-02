@@ -35,6 +35,8 @@ defmodule Beamdash.Logs.Cascade do
   @gap_us 10_000_000
   @same_crash_us 1_000_000
   @max_reason 160
+  # every format parse/1 reads has one of these
+  @markers ["terminating", "crasher:", "upervisor", "pplication"]
 
   # Functions, not attributes: compiled regexes can't be escaped into code
   # on OTP 28 with Elixir < 1.19.
@@ -92,8 +94,9 @@ defmodule Beamdash.Logs.Cascade do
   `:app_exit`.
   """
   def event(%{message: message} = entry) when is_binary(message) do
-    case parse(message) do
-      nil -> nil
+    # most lines are no report: a substring check before the regexes
+    case String.contains?(message, @markers) && parse(message) do
+      result when result in [nil, false] -> nil
       event -> Map.put_new(event, :pid, if(event.kind == :crash, do: pid_text(entry[:pid])))
     end
   end
@@ -268,14 +271,41 @@ defmodule Beamdash.Logs.Cascade do
 
   Options: `ancestors` (name to its supervisors, nearest first).
   """
-  def build(entries, opts \\ []) do
-    known = Keyword.get(opts, :ancestors, %{})
+  def build(entries, opts \\ []),
+    do: analyze(entries, Keyword.get(opts, :ancestors, %{}), %{}).incidents
+
+  @doc """
+  `build/2` and `unknown_names/2` in one pass, each line parsed once:
+  `%{incidents, unknown, cache}`. `cache` holds each line's `event/1`
+  (by id and message, so a line that grew is parsed again); pass it back
+  on the next call, so only new lines are parsed.
+  """
+  def analyze(entries, known, cache) do
+    parsed = for entry <- entries, do: {entry, cached_event(entry, cache)}
+    cache = Map.new(parsed, fn {entry, event} -> {cache_key(entry), event} end)
 
     events =
-      for %{at: %DateTime{} = at} = entry <- Enum.reverse(entries),
-          event = event(entry),
+      for {%{at: %DateTime{} = at} = entry, event} <- Enum.reverse(parsed),
+          event != nil,
           do: Map.merge(event, %{at: DateTime.to_unix(at, :microsecond), entry_id: entry.id})
 
+    %{
+      incidents: incidents(events, known),
+      unknown: unknown(for({_, event} <- parsed, event != nil, do: event), known),
+      cache: cache
+    }
+  end
+
+  defp cache_key(entry), do: {entry[:id], :erlang.phash2(entry[:message])}
+
+  defp cached_event(entry, cache) do
+    case Map.fetch(cache, cache_key(entry)) do
+      {:ok, event} -> event
+      :error -> event(entry)
+    end
+  end
+
+  defp incidents(events, known) do
     {crash_events, others} =
       Enum.split_with(events, &(&1.kind in [:crash, :child_terminated]))
 
@@ -359,12 +389,14 @@ defmodule Beamdash.Logs.Cascade do
   # ancestors, then the node's
   defp parents(occurrences, others, known) do
     from_reports =
-      for occ <- occurrences, occ.supervisor != nil, into: %{}, do: {key(occ), occ.supervisor}
+      for occ <- occurrences, occ.supervisor != nil, reduce: %{} do
+        acc -> link(acc, key(occ), occ.supervisor)
+      end
 
     from_reports =
       Enum.reduce(others, from_reports, fn
         %{kind: kind, name: child, supervisor: sup}, acc when kind in [:start_error, :shutdown] ->
-          if child != sup, do: Map.put_new(acc, child, sup), else: acc
+          link(acc, child, sup)
 
         _, acc ->
           acc
@@ -381,10 +413,27 @@ defmodule Beamdash.Logs.Cascade do
     Enum.reduce(chains, from_reports, fn {name, chain}, acc ->
       [name | chain]
       |> Enum.chunk_every(2, 1, :discard)
-      |> Enum.reduce(acc, fn [child, parent], acc ->
-        if child != parent, do: Map.put_new(acc, child, parent), else: acc
-      end)
+      |> Enum.reduce(acc, fn [child, parent], acc -> link(acc, child, parent) end)
     end)
+  end
+
+  # child → parent, unless the child has one already or it would close a
+  # loop (names from different sources can disagree): every node stays
+  # under a root
+  defp link(parents, child, parent) do
+    if child == parent or Map.has_key?(parents, child) or above?(parents, parent, child, 0),
+      do: parents,
+      else: Map.put(parents, child, parent)
+  end
+
+  defp above?(_parents, _name, _target, 20), do: true
+
+  defp above?(parents, name, target, depth) do
+    case parents[name] do
+      nil -> false
+      ^target -> true
+      parent -> above?(parents, parent, target, depth + 1)
+    end
   end
 
   defp chunk([]), do: []
@@ -554,8 +603,10 @@ defmodule Beamdash.Logs.Cascade do
   defp datetime(us), do: DateTime.from_unix!(us, :microsecond)
 
   @doc "The names whose supervisors no line gave and `known` lacks, to ask the node for."
-  def unknown_names(entries, known) do
-    for %{kind: :crash} = event <- Enum.map(entries, &event/1),
+  def unknown_names(entries, known), do: analyze(entries, known, %{}).unknown
+
+  defp unknown(events, known) do
+    for %{kind: :crash} = event <- events,
         event[:ancestors] in [nil, []],
         name = event[:name],
         name != nil and not Map.has_key?(known, name) and not String.starts_with?(name, "<"),

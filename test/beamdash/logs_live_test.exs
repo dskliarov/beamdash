@@ -1142,4 +1142,55 @@ defmodule Beamdash.LogsLiveTest do
     # 12:00:07..12:00:11: the fixture's lines at 07 and the two crashes
     assert html =~ "3 of 9 lines"
   end
+
+  test "an answer about supervisors from an earlier node records nothing", ctx do
+    {_, socket} = ctx |> mount() |> render()
+    socket = event(socket, "tab", %{"tab" => "crashes"})
+
+    {:noreply, socket} =
+      LogsLive.handle_async(
+        :cascade_ancestors,
+        {:ok, {:other@host, ["MyApp.Worker"], {:ok, []}}},
+        socket
+      )
+
+    assert socket.assigns.cascade_known == %{}
+
+    {:noreply, socket} =
+      LogsLive.handle_async(:cascade_ancestors, {:ok, {ctx.node, ["W"], {:error, :x}}}, socket)
+
+    assert socket.assigns.cascade_known == %{}
+  end
+
+  test "lines arriving on the Tree tab don't touch the hidden table; Clear drops a crash scope",
+       ctx do
+    {_, socket} = ctx |> mount() |> render()
+    socket = socket |> event("tab", %{"tab" => "tree"}) |> async_result(:tree_apps)
+
+    line = %{
+      id: 100,
+      at: ~U[2026-10-23 12:00:09Z],
+      level: :info,
+      pid: nil,
+      where: nil,
+      message: "new line",
+      meta: [],
+      raw: "new line"
+    }
+
+    rendered = socket.assigns.rendered
+    socket = info(socket, {:beamdash_logs, {:entries, [line]}})
+    assert socket.assigns.rendered == rendered
+    assert socket.assigns.total == 8
+
+    {html, socket} = socket |> event("tab", %{"tab" => "lines"}) |> render()
+    assert "new line" in messages(html)
+
+    socket = assign_scope(socket, {:ids, "crashes of W", MapSet.new([4])})
+    socket = info(socket, {:beamdash_logs, :cleared})
+    assert socket.assigns.scope == nil
+  end
+
+  defp assign_scope(socket, scope),
+    do: %{socket | assigns: Map.put(socket.assigns, :scope, scope)}
 end

@@ -26,6 +26,15 @@ function setup() {
   return {hook, table, window, buttons, listeners};
 }
 
+test('mounts at the newest line and follows appended rows', () => {
+  const {hook, table} = setup();
+  assert.equal(table.scrollTop, 1500);
+  hook.beforeUpdate();
+  table.scrollHeight = 1700;
+  hook.updated();
+  assert.equal(table.scrollTop, 1700);
+});
+
 test('navigation scrolls only the log list and follows appended rows', () => {
   const {hook, table, window, buttons} = setup();
   buttons['logs-scroll-bottom'].click();

@@ -212,6 +212,34 @@ defmodule Beamdash.LogsCascadeTest do
       assert incident |> Map.get(:rows) |> hd() |> get_in([:node, :supervisor?])
     end
 
+    test "names that would make a loop of supervisors still all show" do
+      # a supervisor report puts b under a; the node says a is under b
+      lines = [
+        {:error, "<0.80.0>",
+         "Child b of Supervisor a terminated\n** (exit) killed\nPid: #PID<0.81.0>"}
+      ]
+
+      [incident] = Cascade.build(entries(lines), ancestors: %{"a" => ["b"]})
+      assert chain(incident) == [{0, "a", 0}, {1, "b", 1}]
+    end
+
+    test "analyze parses each line once and reuses the cache" do
+      lines = entries([{:error, "<0.90.0>", "GenServer W terminating\n** (RuntimeError) boom"}])
+      result = Cascade.analyze(lines, %{}, %{})
+      assert [%{crashes: 1}] = result.incidents
+      assert result.unknown == ["W"]
+      assert map_size(result.cache) == 1
+
+      # a cached event is used as it is (the line isn't parsed again)
+      [{key, event}] = Map.to_list(result.cache)
+      cache = %{key => %{event | name: "Cached"}}
+      assert Cascade.analyze(lines, %{}, cache).unknown == ["Cached"]
+
+      # a line whose message grew is parsed again
+      grown = Enum.map(lines, &%{&1 | message: &1.message <> "\nState: nil"})
+      assert Cascade.analyze(grown, %{}, cache).unknown == ["W"]
+    end
+
     test "names are made comparable" do
       assert Cascade.name("{local,demo_sup}") == "demo_sup"
       assert Cascade.name("#PID<0.1.0>") == "<0.1.0>"

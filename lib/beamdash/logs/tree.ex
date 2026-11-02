@@ -98,14 +98,15 @@ defmodule Beamdash.Logs.Tree do
 
   @doc """
   The tree of `entries` (newest first): `%{nodes, lines, modules,
-  templates, new, window}`, `window` the `{oldest, newest}` line times
+  templates, new, window, template_cache}`, `window` the `{oldest, newest}` line times
   (nil when no line has one). A node is `%{id, kind, label, scope, count,
   problems, warnings, levels, first_at, last_at, spark, new, children,
   more, sample}`; `kind` is `:app`, `:module` or `:template`, `sample` a
   template's newest line.
 
   Options: `apps` (`apps_map/1`), `since` (a `DateTime`: templates first
-  seen after it are new).
+  seen after it are new), `template_cache` (the previous result's: each
+  line's template by id and message, so only new lines are masked).
   """
   def build(entries, opts \\ []) do
     apps = Keyword.get(opts, :apps, %{})
@@ -113,11 +114,14 @@ defmodule Beamdash.Logs.Tree do
     times = for %{at: %DateTime{} = at} <- entries, do: DateTime.to_unix(at, :microsecond)
     window = if times != [], do: {Enum.min(times), Enum.max(times)}
 
+    cache = Keyword.get(opts, :template_cache, %{})
+    keyed = for entry <- entries, do: {entry, cached_template(entry, cache)}
+
     leaves =
-      Enum.reduce(entries, %{}, fn entry, acc ->
+      Enum.reduce(keyed, %{}, fn {entry, {_key, template}}, acc ->
         {app, mod} = place(entry, apps)
         s = line_stats(entry, window)
-        Map.update(acc, {app, mod, template(entry)}, s, &merge(&1, s))
+        Map.update(acc, {app, mod, template}, s, &merge(&1, s))
       end)
 
     templates =
@@ -148,8 +152,18 @@ defmodule Beamdash.Logs.Tree do
       modules: length(modules),
       templates: length(templates),
       new: Enum.reduce(nodes, 0, &(&1.new + &2)),
-      window: window && {datetime(elem(window, 0)), datetime(elem(window, 1))}
+      window: window && {datetime(elem(window, 0)), datetime(elem(window, 1))},
+      template_cache: Map.new(keyed, fn {_entry, key_template} -> key_template end)
     }
+  end
+
+  defp cached_template(entry, cache) do
+    key = {entry[:id], :erlang.phash2(entry[:message])}
+
+    case Map.fetch(cache, key) do
+      {:ok, template} -> {key, template}
+      :error -> {key, template(entry)}
+    end
   end
 
   defp line_stats(entry, window) do

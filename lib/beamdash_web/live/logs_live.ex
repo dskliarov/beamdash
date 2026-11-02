@@ -114,6 +114,8 @@ defmodule BeamdashWeb.LogsLive do
         tree_timer: nil,
         cascades: nil,
         cascade_known: %{},
+        tree_cache: %{},
+        cascade_cache: %{},
         cascade_asking?: false,
         scope: nil
       )
@@ -511,10 +513,17 @@ defmodule BeamdashWeb.LogsLive do
      |> load_app_levels()}
   end
 
-  def handle_async(:tree_apps, {:ok, {node, {:ok, list}}}, socket) when is_list(list) do
+  # (a Lines scope from the tree places lines with the map too)
+  def handle_async(:tree_apps, {:ok, {node, {:ok, list}}}, socket)
+      when is_list(list) and node == socket.assigns.node do
     socket = assign(socket, tree_apps: Tree.apps_map(list), tree_apps_node: node)
-    {:noreply, refresh_tree(socket)}
+
+    {:noreply,
+     if(tree_scope?(socket.assigns.scope), do: reset_rows(socket), else: refresh_tree(socket))}
   end
+
+  def handle_async(:tree_apps, {:ok, {node, _}}, socket) when node != socket.assigns.node,
+    do: {:noreply, socket}
 
   def handle_async(:tree_apps, result, socket) do
     reason =
@@ -528,13 +537,11 @@ defmodule BeamdashWeb.LogsLive do
   end
 
   # names the node didn't list (not registered now) stay known as [], so
-  # they are asked once per connection
-  def handle_async(:cascade_ancestors, {:ok, {node, names, result}}, socket) do
-    found =
-      case {node == socket.assigns.node, result} do
-        {true, {:ok, list}} when is_list(list) -> Map.new(list)
-        _ -> %{}
-      end
+  # they are asked once per connection; an answer from an earlier node, or
+  # an error, records nothing
+  def handle_async(:cascade_ancestors, {:ok, {node, names, {:ok, list}}}, socket)
+      when is_list(list) and node == socket.assigns.node do
+    found = Map.new(list)
 
     known =
       Enum.reduce(names, socket.assigns.cascade_known, &Map.put(&2, &1, Map.get(found, &1, [])))
@@ -589,7 +596,8 @@ defmodule BeamdashWeb.LogsLive do
        previous_error: nil,
        paused?: false,
        pending: 0,
-       source_error: nil
+       source_error: nil,
+       scope: lines_scope(socket.assigns.scope)
      )
      |> reset_rows()}
   end
@@ -629,11 +637,22 @@ defmodule BeamdashWeb.LogsLive do
   end
 
   def handle_info({:beamdash_target, {:connected, node}}, socket) do
+    # a new connection may be a restarted node: its applications and
+    # processes are read again
     socket =
-      assign(socket, status: :connected, node: node, app_level_note: nil, cascade_known: %{})
+      assign(socket,
+        status: :connected,
+        node: node,
+        app_level_note: nil,
+        cascade_known: %{},
+        tree_apps_node: nil
+      )
 
     socket = if socket.assigns.app_levels_open?, do: load_app_levels(socket), else: socket
-    {:noreply, if(socket.assigns.tab == :tree, do: load_tree_apps(socket), else: socket)}
+    a = socket.assigns
+
+    {:noreply,
+     if(a.tab == :tree or tree_scope?(a.scope), do: load_tree_apps(socket), else: socket)}
   end
 
   def handle_info({:beamdash_target, {:disconnected, _}}, socket),
@@ -655,7 +674,14 @@ defmodule BeamdashWeb.LogsLive do
   end
 
   defp cleared(socket) do
-    socket = assign(socket, entries: [], expanded: %{}, open: MapSet.new())
+    socket =
+      assign(socket,
+        entries: [],
+        expanded: %{},
+        open: MapSet.new(),
+        scope: lines_scope(socket.assigns.scope)
+      )
+
     if socket.assigns.view == :live, do: reset_rows(socket), else: socket
   end
 
@@ -674,10 +700,11 @@ defmodule BeamdashWeb.LogsLive do
       evicted = Enum.drop(all, @max_entries)
       new = batch |> Enum.reverse() |> Enum.filter(&visible?(&1, a))
       shown = a.shown + length(new) - Enum.count(evicted, &visible?(&1, a))
+      socket = assign(socket, total: length(entries), shown: shown)
 
-      socket
-      |> assign(total: length(entries), shown: shown)
-      |> insert_rows(new, evicted)
+      # the table isn't rendered on Tree or Crashes, and going back to
+      # Lines rebuilds it
+      if a.tab == :lines, do: insert_rows(socket, new, evicted), else: socket
     else
       socket
     end
@@ -865,6 +892,12 @@ defmodule BeamdashWeb.LogsLive do
   defp in_scope?({:window, _, _, _}, _entry, _a), do: false
   defp in_scope?(scope, entry, a), do: Tree.in_scope?(scope, entry, a.tree_apps)
 
+  # the lines a crash scope names are gone once the entries are replaced
+  defp lines_scope({:ids, _, _}), do: nil
+  defp lines_scope(scope), do: scope
+
+  defp tree_scope?(scope), do: is_tuple(scope) and elem(scope, 0) in [:app, :module, :template]
+
   defp scope_label({:ids, label, _}), do: label
   defp scope_label({:window, label, _, _}), do: label
   defp scope_label(scope), do: "tree: " <> Tree.scope_label(scope)
@@ -984,16 +1017,23 @@ defmodule BeamdashWeb.LogsLive do
   # filters (not a pattern or a tree scope: the tree is where those come
   # from). Only while the Tree tab shows.
   defp refresh_tree(%{assigns: %{tab: :tree} = a} = socket) do
-    assign(socket, tree: Tree.build(filtered(a), apps: a.tree_apps, since: a.tree_since))
+    tree =
+      Tree.build(filtered(a),
+        apps: a.tree_apps,
+        since: a.tree_since,
+        template_cache: a.tree_cache
+      )
+
+    assign(socket, tree: tree, tree_cache: tree.template_cache)
   end
 
   # Crashes, the same way; then the node is asked for the supervisors of
   # the crashed names no line gave
   defp refresh_tree(%{assigns: %{tab: :crashes} = a} = socket) do
-    entries = filtered(a)
-    socket = assign(socket, cascades: Cascade.build(entries, ancestors: a.cascade_known))
+    result = Cascade.analyze(filtered(a), a.cascade_known, a.cascade_cache)
+    socket = assign(socket, cascades: result.incidents, cascade_cache: result.cache)
 
-    case {a.status, a.cascade_asking?, Cascade.unknown_names(entries, a.cascade_known)} do
+    case {a.status, a.cascade_asking?, result.unknown} do
       {:connected, false, [_ | _] = names} ->
         {target, node} = {a.target, a.node}
 

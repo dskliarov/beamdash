@@ -136,6 +136,19 @@ defmodule Beamdash.LogsTreeTest do
     assert Tree.scope_label({:module, "my_app", "MyApp.Repo"}) == "my_app › MyApp.Repo"
   end
 
+  test "template_cache keeps each line's template, so only new lines are masked" do
+    tree = Tree.build(entries(), apps: apps())
+    assert map_size(tree.template_cache) == 7
+
+    # a cached template is used as it is
+    [e7 | _] = entries()
+    key = {e7.id, :erlang.phash2(e7.message)}
+    cache = Map.put(tree.template_cache, key, "cached kind")
+    again = Tree.build(entries(), apps: apps(), template_cache: cache)
+    [my_app | _] = again.nodes
+    assert "cached kind" in Enum.map(hd(my_app.children).children, & &1.label)
+  end
+
   test "an empty buffer" do
     assert %{nodes: [], lines: 0, window: nil, new: 0} = Tree.build([])
   end

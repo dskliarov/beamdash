@@ -27,7 +27,9 @@ window.BeamLogsScroll = {
     this.topButton?.addEventListener('click', this.toTop);
     this.bottomButton?.addEventListener('click', this.toBottom);
     this.table?.addEventListener('scroll', this.onScroll, {passive: true});
-    this.onScroll();
+    // the table is oldest first: start at the newest line, following it
+    // (also when coming back from the Tree or Crashes tab)
+    this.toBottom();
     if (window.MutationObserver) {
       this.observer = new window.MutationObserver(() => this.scheduleFollow());
       this.observer.observe(this.el, {childList: true, subtree: true, characterData: true});
