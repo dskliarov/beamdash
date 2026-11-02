@@ -36,13 +36,37 @@ defmodule Beamdash.Logs.Pretty do
     |> Enum.reject(&match?({:text, ""}, &1))
   end
 
-  @doc "The `{key, value}` pairs (as printed) of the map entries and `{key, value}` tuples in `text`."
-  def fields(text) do
-    text
-    |> terms()
-    |> Enum.flat_map(fn {_start, node, _stop} -> node |> pairs([]) |> Enum.reverse() end)
-    |> Enum.uniq()
+  @doc """
+  The `{key, value}` pairs of `text`: the top-level keys of a JSON object
+  (values as text, non-strings encoded), else the map entries and
+  `{key, value}` tuples of its Erlang or Elixir terms, as printed.
+  """
+  def fields(text) when byte_size(text) <= 262_144 do
+    case json_object(text) do
+      {:ok, map} ->
+        for {key, value} <- Enum.sort(map), do: {key, json_text(value)}
+
+      :error ->
+        text
+        |> terms()
+        |> Enum.flat_map(fn {_start, node, _stop} -> node |> pairs([]) |> Enum.reverse() end)
+        |> Enum.uniq()
+    end
   end
+
+  def fields(_text), do: []
+
+  defp json_object("{" <> _ = text) do
+    case Jason.decode(text) do
+      {:ok, %{} = map} -> {:ok, map}
+      _ -> :error
+    end
+  end
+
+  defp json_object(_text), do: :error
+
+  defp json_text(value) when is_binary(value), do: value
+  defp json_text(value), do: Jason.encode!(value)
 
   @doc "True when `text` has every `{key, value}` in `filters`."
   def fields_match?([], _text), do: true

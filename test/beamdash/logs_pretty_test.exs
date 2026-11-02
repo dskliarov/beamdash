@@ -96,6 +96,14 @@ defmodule Beamdash.LogsPrettyTest do
              [{"req", "[{user, {id, 7}}]"}, {"user", "{id, 7}"}, {"id", "7"}]
   end
 
+  test "a JSON object's top-level keys are its fields, with non-strings encoded" do
+    json = ~S|{"level":"info","count":3,"meta":{"a":1}}|
+
+    assert Pretty.fields(json) == [{"count", "3"}, {"level", "info"}, {"meta", ~S|{"a":1}|}]
+    assert Pretty.fields_match?([{"level", "info"}], json)
+    refute Pretty.fields_match?([{"level", "warn"}], json)
+  end
+
   test "a message without a key-value term has no fields" do
     assert Pretty.fields("plain text 42") == []
     assert Pretty.fields("{1,2,3}") == []

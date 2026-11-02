@@ -407,6 +407,32 @@ defmodule Beamdash.LogsLiveTest do
     assert "state #st{count = 4,name = other}" in messages(html)
   end
 
+  test "a JSON line's fields filter the lines the same way", ctx do
+    {_, socket} = ctx |> mount() |> render()
+
+    socket =
+      info(
+        socket,
+        {:beamdash_logs,
+         {:entries,
+          [
+            %{new_entry(32, ~S|{"count":3,"name":"fixture"}|) | json_line?: true},
+            %{new_entry(33, ~S|{"count":4,"name":"other"}|) | json_line?: true}
+          ]}}
+      )
+
+    {_, socket} = render(socket)
+    {html, socket} = socket |> event("toggle_entry", %{"id" => "32", "row" => "g-32"}) |> render()
+    assert html =~ ~s(phx-value-key="count")
+
+    {html, socket} =
+      socket |> event("filter_field", %{"key" => "count", "value" => "3"}) |> render()
+
+    assert html =~ ~s(aria-label="Remove filter count = 3")
+    assert "{&quot;count&quot;:3,&quot;name&quot;:&quot;fixture&quot;}" in messages(html)
+    refute "{&quot;count&quot;:4,&quot;name&quot;:&quot;other&quot;}" in messages(html)
+  end
+
   test "a plain message's embedded terms are pretty-printed", ctx do
     {_, socket} = ctx |> mount() |> render()
     socket = info(socket, {:beamdash_logs, {:entries, [new_entry(13, "got {ok,[1,2]}")]}})
