@@ -49,6 +49,13 @@ defmodule BeamdashWeb.FunctionList do
     end
   end
 
+  @doc "The `{fun, arity}` named `fun/arity` among `mod`'s functions, or nil."
+  def find_function(modules, mod, fun, arity) do
+    Enum.find_value(functions_of(modules, mod), fn {f, a, _} ->
+      if Atom.to_string(f) == fun and Integer.to_string(a) == arity, do: {f, a}
+    end)
+  end
+
   def needle(query), do: query |> String.trim() |> String.downcase()
 
   @doc ~s|"name" matches anywhere in the name; "name/arity" (or "name/") also checks the arity.|

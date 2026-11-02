@@ -310,6 +310,17 @@ defmodule Beamdash.LogsLiveTest do
     refute html =~ "Elixir.Elixir"
   end
 
+  test "a closure's where still links to its module", ctx do
+    {_, socket} = ctx |> mount() |> render()
+    entry = %{new_entry(15, "boom") | where: "Beamdash.Worker:-run/2-fun-0-/0", json_line?: false}
+
+    socket = info(socket, {:beamdash_logs, {:entries, [entry]}})
+    {_, socket} = render(socket)
+    {html, _} = socket |> event("toggle_entry", %{"id" => "15", "row" => "g-15"}) |> render()
+
+    assert html =~ "/modules?module=Elixir.Beamdash.Worker"
+  end
+
   test "a plain message's embedded terms are pretty-printed", ctx do
     {_, socket} = ctx |> mount() |> render()
     socket = info(socket, {:beamdash_logs, {:entries, [new_entry(13, "got {ok,[1,2]}")]}})

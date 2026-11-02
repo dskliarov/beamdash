@@ -15,7 +15,15 @@ defmodule BeamdashWeb.ProfileLive do
   alias BeamdashWeb.SourceTabs
 
   import BeamdashWeb.FunctionList,
-    only: [matching_modules: 3, functions_of: 2, needle: 1, matches?: 3, fn_name: 2, highlight: 1]
+    only: [
+      matching_modules: 3,
+      functions_of: 2,
+      find_function: 4,
+      needle: 1,
+      matches?: 3,
+      fn_name: 2,
+      highlight: 1
+    ]
 
   @types [
     call_time: {"Call time", "time spent in each function"},
@@ -85,29 +93,14 @@ defmodule BeamdashWeb.ProfileLive do
 
   defp load_modules(socket), do: socket
 
-  # ?mod= opens that module (a link from "Ask beamdash")
-  @impl true
-  def handle_params(%{"mod" => mod} = params, _uri, socket)
-      when not is_map_key(params, "arity") do
-    case Enum.find(socket.assigns.modules, fn {m, _, _} -> Atom.to_string(m) == mod end) do
-      {m, _, _} ->
-        {:noreply, socket |> assign(pick_mod: m, pick_q: mod) |> SourceTabs.check(m)}
-
-      nil ->
-        {:noreply, socket}
-    end
-  end
-
   # ?mod=&fun=&arity= also picks that function (a link from a log line)
+  @impl true
   def handle_params(%{"mod" => mod, "fun" => fun, "arity" => arity}, uri, socket) do
     {:noreply, socket} = handle_params(%{"mod" => mod}, uri, socket)
     pick_mod = socket.assigns.pick_mod
 
     with true <- is_atom(pick_mod) and Atom.to_string(pick_mod) == mod,
-         {f, a, _} <-
-           Enum.find(functions_of(socket.assigns.modules, pick_mod), fn {f, a, _} ->
-             Atom.to_string(f) == fun and Integer.to_string(a) == arity
-           end) do
+         {f, a} <- find_function(socket.assigns.modules, pick_mod, fun, arity) do
       pattern = {pick_mod, f, a}
 
       picked =
@@ -118,6 +111,17 @@ defmodule BeamdashWeb.ProfileLive do
       {:noreply, assign(socket, picked: picked, form_error: nil)}
     else
       _ -> {:noreply, socket}
+    end
+  end
+
+  # ?mod= opens that module (a link from "Ask beamdash")
+  def handle_params(%{"mod" => mod}, _uri, socket) do
+    case Enum.find(socket.assigns.modules, fn {m, _, _} -> Atom.to_string(m) == mod end) do
+      {m, _, _} ->
+        {:noreply, socket |> assign(pick_mod: m, pick_q: mod) |> SourceTabs.check(m)}
+
+      nil ->
+        {:noreply, socket}
     end
   end
 

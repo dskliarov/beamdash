@@ -362,12 +362,15 @@ defmodule BeamdashWeb.LogsTable do
     {mod, query} =
       case Regex.run(~r/^([\w.]+):([^\s:\/]+)\/(\d+)$/, where) do
         [_, mod, fun, arity] -> {mod, %{mod: module_name(mod), fun: fun, arity: arity}}
-        nil -> {where, %{mod: module_name(where)}}
+        nil -> {module_part(where), %{mod: module_name(module_part(where))}}
       end
 
     if Regex.match?(~r/^[\w.]+$/, mod),
       do: %{module: module_name(mod), query: URI.encode_query(query)}
   end
+
+  # a function name the MFA pattern does not cover (compiler-generated closures) still names its module
+  defp module_part(where), do: where |> String.split(":", parts: 2) |> hd()
 
   # the Elixir alias is printed without its "Elixir." prefix
   defp module_name("Elixir." <> _ = name), do: name
