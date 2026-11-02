@@ -100,22 +100,11 @@ defmodule Beamdash.LogsPrettyTest do
     json = ~S|{"level":"info","count":3,"meta":{"a":1}}|
 
     assert Pretty.fields(json) == [{"count", "3"}, {"level", "info"}, {"meta", ~S|{"a":1}|}]
-    assert Pretty.fields_match?([{"level", "info"}], json)
-    refute Pretty.fields_match?([{"level", "warn"}], json)
   end
 
   test "a message without a key-value term has no fields" do
     assert Pretty.fields("plain text 42") == []
     assert Pretty.fields("{1,2,3}") == []
-  end
-
-  test "fields_match? needs every filter pair" do
-    text = ~S|state #st{count = 3,name = fixture}|
-    assert Pretty.fields_match?([], text)
-    assert Pretty.fields_match?([{"count", "3"}], text)
-    assert Pretty.fields_match?([{"count", "3"}, {"name", "fixture"}], text)
-    refute Pretty.fields_match?([{"count", "4"}], text)
-    refute Pretty.fields_match?([{"count", "3"}], "no terms here")
   end
 
   test "deep nesting does not crash" do

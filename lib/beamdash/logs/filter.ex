@@ -4,6 +4,8 @@ defmodule Beamdash.Logs.Filter do
   minimum level.
   """
 
+  alias Beamdash.Logs.Pretty
+
   @term ~r/(-?)(?:"([^"]*)"|(\S+))/
 
   @doc "Parses a query into lowercased `%{include: [...], exclude: [...]}` terms."
@@ -21,12 +23,38 @@ defmodule Beamdash.Logs.Filter do
     }
   end
 
-  @doc "True when every include term and no exclude term is in the entry's text."
+  @doc """
+  True when every include term and no exclude term is in the entry's text.
+  A `key=value` term is also in the entry when one of its fields is that pair.
+  """
   def match?(%{include: include, exclude: exclude}, entry) do
     haystack = haystack(entry)
 
-    Enum.all?(include, &String.contains?(haystack, &1)) and
-      not Enum.any?(exclude, &String.contains?(haystack, &1))
+    Enum.all?(include, &term?(&1, haystack, entry)) and
+      not Enum.any?(exclude, &term?(&1, haystack, entry))
+  end
+
+  @doc "The filter text for a `key=value` pair, quoted when it has spaces."
+  def pair_term(pair) do
+    if String.contains?(pair, [" ", "\t"]), do: ~s("#{pair}"), else: pair
+  end
+
+  defp term?(term, haystack, entry) do
+    String.contains?(haystack, term) or field?(term, entry)
+  end
+
+  defp field?(term, entry) do
+    case String.split(term, "=", parts: 2) do
+      [key, value] when key != "" and value != "" ->
+        value = String.trim(value)
+
+        Enum.any?(Pretty.fields(entry[:message] || ""), fn {k, v} ->
+          String.downcase(k) == key and String.downcase(v) == value
+        end)
+
+      _ ->
+        false
+    end
   end
 
   defp haystack(entry) do

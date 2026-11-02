@@ -103,6 +103,10 @@ defmodule Beamdash.LogsLiveTest do
   # the streamed rows' DOM ids, in order
   defp row_ids(html), do: Regex.scan(~r/id="rows-([^"]+)"/, html) |> Enum.map(&List.last/1)
 
+  # a details header cell whose key is the label, with or without its checkbox
+  defp th_key(key),
+    do: ~r/<th[^>]*>(?:(?!<\/th>)[\s\S])*?\b#{key}\s*(?:<\/label>|<\/span>)?\s*<\/th>/
+
   # the text of each row's Message column, in order
   defp messages(html) do
     Regex.scan(~r/<span class="logs-msg"[^>]*>(.*?)<\/span>/s, html)
@@ -392,26 +396,17 @@ defmodule Beamdash.LogsLiveTest do
 
     {_, socket} = render(socket)
     {html, socket} = socket |> event("toggle_entry", %{"id" => "30", "row" => "g-30"}) |> render()
-    assert html =~ ~s(phx-value-key="count")
+    assert html =~ ~s(name="pairs[]" value="count=3")
 
     {html, socket} =
-      socket |> event("field_select", %{"key" => "count", "value" => "3"}) |> render()
+      socket |> event("field_filter", %{"pairs" => ["count=3"]}) |> render()
 
-    assert html =~ ~s(aria-label="Remove count = 3 from the filter list")
-
-    {html, socket} = socket |> event("field_apply") |> render()
-
-    assert html =~ ~s(aria-label="Remove filter count = 3")
+    assert socket.assigns.filter_text == "count=3"
     assert "state #st{count = 3,name = fixture}" in messages(html)
     refute "state #st{count = 4,name = other}" in messages(html)
-
-    {html, _} =
-      socket |> event("remove_field_filter", %{"key" => "count", "value" => "3"}) |> render()
-
-    assert "state #st{count = 4,name = other}" in messages(html)
   end
 
-  test "unselecting a field before applying leaves the lines unfiltered", ctx do
+  test "checked fields join the text filter and keep the terms already typed", ctx do
     {_, socket} = ctx |> mount() |> render()
 
     socket =
@@ -426,13 +421,12 @@ defmodule Beamdash.LogsLiveTest do
       )
 
     {_, socket} = render(socket)
-    socket = socket |> event("field_select", %{"key" => "count", "value" => "3"})
-    socket = socket |> event("field_unselect", %{"key" => "count", "value" => "3"})
-    {html, _} = socket |> event("field_apply") |> render()
+    {_, socket} = socket |> event("filter", %{"q" => "state"}) |> render()
+    {html, socket} = socket |> event("field_filter", %{"pairs" => ["name=other"]}) |> render()
 
-    refute html =~ ~s(aria-label="Remove filter count = 3")
-    assert "state #st{count = 3,name = fixture}" in messages(html)
+    assert socket.assigns.filter_text == "state name=other"
     assert "state #st{count = 4,name = other}" in messages(html)
+    refute "state #st{count = 3,name = fixture}" in messages(html)
   end
 
   test "a JSON line's fields filter the lines the same way", ctx do
@@ -451,15 +445,10 @@ defmodule Beamdash.LogsLiveTest do
 
     {_, socket} = render(socket)
     {html, socket} = socket |> event("toggle_entry", %{"id" => "32", "row" => "g-32"}) |> render()
-    assert html =~ ~s(phx-value-key="count")
+    assert html =~ ~s(name="pairs[]" value="count=3")
 
-    {html, socket} =
-      socket |> event("field_select", %{"key" => "count", "value" => "3"}) |> render()
+    {html, _} = socket |> event("field_filter", %{"pairs" => ["count=3"]}) |> render()
 
-    assert html =~ ~s(aria-label="Remove count = 3 from the filter list")
-    {html, _} = socket |> event("field_apply") |> render()
-
-    assert html =~ ~s(aria-label="Remove filter count = 3")
     assert "{&quot;count&quot;:3,&quot;name&quot;:&quot;fixture&quot;}" in messages(html)
     refute "{&quot;count&quot;:4,&quot;name&quot;:&quot;other&quot;}" in messages(html)
   end
@@ -520,7 +509,7 @@ defmodule Beamdash.LogsLiveTest do
     {html, _} = socket |> event("toggle_entry", %{"id" => "9", "row" => "g-9"}) |> render()
 
     for key <- ~w(level module count) do
-      assert length(Regex.scan(~r/<th[^>]*>#{key}<\/th>/, html)) == 1
+      assert length(Regex.scan(th_key(key), html)) == 1
     end
   end
 
@@ -533,7 +522,7 @@ defmodule Beamdash.LogsLiveTest do
     {_, socket} = render(socket)
     {html, _} = socket |> event("toggle_entry", %{"id" => "10", "row" => "g-10"}) |> render()
 
-    assert length(Regex.scan(~r/<th[^>]*>time<\/th>/, html)) == 1
+    assert length(Regex.scan(th_key("time"), html)) == 1
   end
 
   test "non-JSON messages remain plain text in details", ctx do

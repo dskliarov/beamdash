@@ -68,14 +68,6 @@ defmodule Beamdash.Logs.Pretty do
   defp json_text(value) when is_binary(value), do: value
   defp json_text(value), do: Jason.encode!(value)
 
-  @doc "True when `text` has every `{key, value}` in `filters`."
-  def fields_match?([], _text), do: true
-
-  def fields_match?(filters, text) do
-    found = fields(text)
-    Enum.all?(filters, &(&1 in found))
-  end
-
   defp terms(text) do
     starts =
       @candidate

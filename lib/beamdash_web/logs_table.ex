@@ -130,8 +130,6 @@ defmodule BeamdashWeb.LogsTable do
     default: nil,
     doc: "the attached node, when connected: pids link to its processes"
 
-  attr :field_selected, :list, default: [], doc: "the filter list: the pairs picked so far"
-
   def table(assigns) do
     ~H"""
     <div class="log logs-table" role="table" aria-label="Log lines" tabindex="0">
@@ -232,7 +230,6 @@ defmodule BeamdashWeb.LogsTable do
             :if={row.count == 1 and open?(row)}
             entry={row.entry}
             node={@node}
-            selected={@field_selected}
           />
           <div :if={row.expanded?} class="logs-lines" role="rowgroup">
             <div :for={{e, spans} <- row.lines} class={["logs-line", e.id in row.open && "open"]}>
@@ -254,7 +251,7 @@ defmodule BeamdashWeb.LogsTable do
                 <span class="logs-line-msg" role="cell">{masked(spans)}</span>
                 <span role="cell"></span>
               </div>
-              <.details :if={e.id in row.open} entry={e} node={@node} selected={@field_selected} />
+              <.details :if={e.id in row.open} entry={e} node={@node} />
             </div>
           </div>
         </div>
@@ -265,7 +262,6 @@ defmodule BeamdashWeb.LogsTable do
 
   attr :entry, :map, required: true
   attr :node, :atom, default: nil
-  attr :selected, :list, default: [], doc: "the pairs already on the filter list"
 
   @json_time_keys ~w(time timestamp @timestamp ts)
 
@@ -274,88 +270,78 @@ defmodule BeamdashWeb.LogsTable do
     # the line's own JSON fields are listed above, so the props below would repeat them
     own_json? = assigns.entry.json_line? and is_list(json_rows)
     json_time? = own_json? and Enum.any?(@json_time_keys, &List.keymember?(json_rows, &1, 0))
-
-    available =
-      for pair <- Pretty.fields(assigns.entry.message), pair not in assigns.selected, do: pair
+    pairs = Pretty.fields(assigns.entry.message)
 
     assigns =
       assign(assigns,
         json_rows: json_rows,
         props?: not own_json?,
         time?: not json_time?,
-        available: available
+        pairs: pairs,
+        pair_map: Map.new(pairs),
+        plain_pairs: if(json_rows == nil, do: pairs, else: [])
       )
 
     ~H"""
     <div class="detail log-detail" role="region">
-      <%= if @json_rows do %>
-        <table class="logs-json" aria-label="JSON message fields">
-          <tbody>
-            <tr :for={{key, value, string?} <- @json_rows}>
-              <th scope="row">{key}</th>
-              <td><.json_cell key={key} value={value} string?={string?} node={@node} /></td>
-            </tr>
-          </tbody>
+      <form phx-submit="field_filter" class="logs-field-form">
+        <%= if @json_rows do %>
+          <table class="logs-json" aria-label="JSON message fields">
+            <tbody>
+              <tr :for={{key, value, string?} <- @json_rows}>
+                <th scope="row">
+                  <label :if={Map.has_key?(@pair_map, key)} class="field-pick">
+                    <input type="checkbox" name="pairs[]" value={"#{key}=#{@pair_map[key]}"} />
+                    {key}
+                  </label>
+                  <span :if={!Map.has_key?(@pair_map, key)}>{key}</span>
+                </th>
+                <td><.json_cell key={key} value={value} string?={string?} node={@node} /></td>
+              </tr>
+            </tbody>
+          </table>
+          <p :if={@json_rows == []} class="muted small">Empty JSON object or array.</p>
+          <details class="logs-json-original">
+            <summary>Original message</summary><pre>{@entry.message}</pre>
+          </details>
+        <% else %>
+          <pre>{pretty_message(@entry.message)}</pre>
+        <% end %>
+        <table class="props">
+          <tr :for={{key, value} <- @plain_pairs}>
+            <th>
+              <label class="field-pick">
+                <input type="checkbox" name="pairs[]" value={"#{key}=#{value}"} />
+                {key}
+              </label>
+            </th>
+            <td class="mono">{value}</td>
+          </tr>
+          <tr :if={@time?}>
+            <th>time</th>
+            <td class="mono">{if @entry.at, do: DateTime.to_iso8601(@entry.at), else: "—"}</td>
+          </tr>
+          <tr :if={@props? and @entry.level}>
+            <th>level</th>
+            <td><.level level={@entry.level} /></td>
+          </tr>
+          <tr :if={@props? and @entry.pid}>
+            <th>pid</th>
+            <td class="mono"><.pid pid={@entry.pid} node={@node} /></td>
+          </tr>
+          <tr :if={@props? and @entry.where}>
+            <th>where</th>
+            <td class="mono">{@entry.where} <.where_links where={@entry.where} /></td>
+          </tr>
+          <tr :for={{k, v} <- if(@props?, do: @entry.meta, else: [])}>
+            <th>{k}</th>
+            <td class="mono"><pre>{v}</pre></td>
+          </tr>
         </table>
-        <p :if={@json_rows == []} class="muted small">Empty JSON object or array.</p>
-        <details class="logs-json-original">
-          <summary>Original message</summary><pre>{@entry.message}</pre>
-        </details>
-      <% else %>
-        <pre>{pretty_message(@entry.message)}</pre>
-      <% end %>
-      <div :if={@available != [] or @selected != []} class="logs-field-lists">
-        <div class="logs-field-col" role="group" aria-label="Available fields in this message">
-          <span class="muted small">Available fields</span>
-          <button
-            :for={{key, value} <- @available}
-            type="button"
-            class="secondary small-btn"
-            phx-click="field_select"
-            phx-value-key={key}
-            phx-value-value={value}
-            title="Add to the filter list"
-          >{key} = {value}</button>
-        </div>
-        <div class="logs-field-col" role="group" aria-label="Filter list">
-          <span class="muted small">Filter list</span>
-          <span :for={{key, value} <- @selected} class="chip">
-            {key} = {value}
-            <button
-              type="button"
-              phx-click="field_unselect"
-              phx-value-key={key}
-              phx-value-value={value}
-              aria-label={"Remove #{key} = #{value} from the filter list"}
-            >
-              ×
-            </button>
-          </span>
-          <button :if={@selected != []} type="button" phx-click="field_apply">Apply filter</button>
-        </div>
-      </div>
-      <table class="props">
-        <tr :if={@time?}>
-          <th>time</th>
-          <td class="mono">{if @entry.at, do: DateTime.to_iso8601(@entry.at), else: "—"}</td>
-        </tr>
-        <tr :if={@props? and @entry.level}>
-          <th>level</th>
-          <td><.level level={@entry.level} /></td>
-        </tr>
-        <tr :if={@props? and @entry.pid}>
-          <th>pid</th>
-          <td class="mono"><.pid pid={@entry.pid} node={@node} /></td>
-        </tr>
-        <tr :if={@props? and @entry.where}>
-          <th>where</th>
-          <td class="mono">{@entry.where} <.where_links where={@entry.where} /></td>
-        </tr>
-        <tr :for={{k, v} <- if(@props?, do: @entry.meta, else: [])}>
-          <th>{k}</th>
-          <td class="mono"><pre>{v}</pre></td>
-        </tr>
-      </table>
+        <button :if={@pairs != []} type="submit" class="secondary small-btn">
+          Filter by checked fields
+        </button>
+      </form>
     </div>
     """
   end
