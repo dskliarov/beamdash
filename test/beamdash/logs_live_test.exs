@@ -395,7 +395,11 @@ defmodule Beamdash.LogsLiveTest do
     assert html =~ ~s(phx-value-key="count")
 
     {html, socket} =
-      socket |> event("filter_field", %{"key" => "count", "value" => "3"}) |> render()
+      socket |> event("field_select", %{"key" => "count", "value" => "3"}) |> render()
+
+    assert html =~ ~s(aria-label="Remove count = 3 from the filter list")
+
+    {html, socket} = socket |> event("field_apply") |> render()
 
     assert html =~ ~s(aria-label="Remove filter count = 3")
     assert "state #st{count = 3,name = fixture}" in messages(html)
@@ -404,6 +408,30 @@ defmodule Beamdash.LogsLiveTest do
     {html, _} =
       socket |> event("remove_field_filter", %{"key" => "count", "value" => "3"}) |> render()
 
+    assert "state #st{count = 4,name = other}" in messages(html)
+  end
+
+  test "unselecting a field before applying leaves the lines unfiltered", ctx do
+    {_, socket} = ctx |> mount() |> render()
+
+    socket =
+      info(
+        socket,
+        {:beamdash_logs,
+         {:entries,
+          [
+            new_entry(34, "state #st{count = 3,name = fixture}"),
+            new_entry(35, "state #st{count = 4,name = other}")
+          ]}}
+      )
+
+    {_, socket} = render(socket)
+    socket = socket |> event("field_select", %{"key" => "count", "value" => "3"})
+    socket = socket |> event("field_unselect", %{"key" => "count", "value" => "3"})
+    {html, _} = socket |> event("field_apply") |> render()
+
+    refute html =~ ~s(aria-label="Remove filter count = 3")
+    assert "state #st{count = 3,name = fixture}" in messages(html)
     assert "state #st{count = 4,name = other}" in messages(html)
   end
 
@@ -426,7 +454,10 @@ defmodule Beamdash.LogsLiveTest do
     assert html =~ ~s(phx-value-key="count")
 
     {html, socket} =
-      socket |> event("filter_field", %{"key" => "count", "value" => "3"}) |> render()
+      socket |> event("field_select", %{"key" => "count", "value" => "3"}) |> render()
+
+    assert html =~ ~s(aria-label="Remove count = 3 from the filter list")
+    {html, _} = socket |> event("field_apply") |> render()
 
     assert html =~ ~s(aria-label="Remove filter count = 3")
     assert "{&quot;count&quot;:3,&quot;name&quot;:&quot;fixture&quot;}" in messages(html)

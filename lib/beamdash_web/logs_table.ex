@@ -130,6 +130,8 @@ defmodule BeamdashWeb.LogsTable do
     default: nil,
     doc: "the attached node, when connected: pids link to its processes"
 
+  attr :field_selected, :list, default: [], doc: "the filter list: the pairs picked so far"
+
   def table(assigns) do
     ~H"""
     <div class="log logs-table" role="table" aria-label="Log lines" tabindex="0">
@@ -226,7 +228,12 @@ defmodule BeamdashWeb.LogsTable do
               <% end %>
             </span>
           </div>
-          <.details :if={row.count == 1 and open?(row)} entry={row.entry} node={@node} />
+          <.details
+            :if={row.count == 1 and open?(row)}
+            entry={row.entry}
+            node={@node}
+            selected={@field_selected}
+          />
           <div :if={row.expanded?} class="logs-lines" role="rowgroup">
             <div :for={{e, spans} <- row.lines} class={["logs-line", e.id in row.open && "open"]}>
               <div
@@ -247,7 +254,7 @@ defmodule BeamdashWeb.LogsTable do
                 <span class="logs-line-msg" role="cell">{masked(spans)}</span>
                 <span role="cell"></span>
               </div>
-              <.details :if={e.id in row.open} entry={e} node={@node} />
+              <.details :if={e.id in row.open} entry={e} node={@node} selected={@field_selected} />
             </div>
           </div>
         </div>
@@ -258,6 +265,7 @@ defmodule BeamdashWeb.LogsTable do
 
   attr :entry, :map, required: true
   attr :node, :atom, default: nil
+  attr :selected, :list, default: [], doc: "the pairs already on the filter list"
 
   @json_time_keys ~w(time timestamp @timestamp ts)
 
@@ -267,14 +275,15 @@ defmodule BeamdashWeb.LogsTable do
     own_json? = assigns.entry.json_line? and is_list(json_rows)
     json_time? = own_json? and Enum.any?(@json_time_keys, &List.keymember?(json_rows, &1, 0))
 
-    fields = Pretty.fields(assigns.entry.message)
+    available =
+      for pair <- Pretty.fields(assigns.entry.message), pair not in assigns.selected, do: pair
 
     assigns =
       assign(assigns,
         json_rows: json_rows,
         props?: not own_json?,
         time?: not json_time?,
-        fields: fields
+        available: available
       )
 
     ~H"""
@@ -295,16 +304,21 @@ defmodule BeamdashWeb.LogsTable do
       <% else %>
         <pre>{pretty_message(@entry.message)}</pre>
       <% end %>
-      <div :if={@fields != []} class="logs-fields" role="group" aria-label="Fields in this message">
-        <span class="muted small">Filter by field:</span>
+      <div
+        :if={@available != []}
+        class="logs-fields"
+        role="group"
+        aria-label="Available fields in this message"
+      >
+        <span class="muted small">Available fields:</span>
         <button
-          :for={{key, value} <- @fields}
+          :for={{key, value} <- @available}
           type="button"
           class="secondary small-btn"
-          phx-click="filter_field"
+          phx-click="field_select"
           phx-value-key={key}
           phx-value-value={value}
-          title="Show only lines with this field"
+          title="Add to the filter list"
         >{key} = {value}</button>
       </div>
       <table class="props">

@@ -77,6 +77,7 @@ defmodule BeamdashWeb.LogsLive do
         info: Logs.info(logs),
         filter_text: "",
         filter: Filter.parse(""),
+        field_selected: [],
         field_filters: [],
         min_level: nil,
         pattern: nil,
@@ -147,9 +148,18 @@ defmodule BeamdashWeb.LogsLive do
     {:noreply, socket |> assign(min_level: min_level) |> reset_rows()}
   end
 
-  defp event("filter_field", %{"key" => key, "value" => value}, socket) do
-    field_filters = Enum.uniq(socket.assigns.field_filters ++ [{key, value}])
-    {:noreply, socket |> assign(field_filters: field_filters) |> reset_rows()}
+  defp event("field_select", %{"key" => key, "value" => value}, socket) do
+    field_selected = Enum.uniq(socket.assigns.field_selected ++ [{key, value}])
+    {:noreply, assign(socket, field_selected: field_selected)}
+  end
+
+  defp event("field_unselect", %{"key" => key, "value" => value}, socket) do
+    {:noreply,
+     assign(socket, field_selected: List.delete(socket.assigns.field_selected, {key, value}))}
+  end
+
+  defp event("field_apply", _params, socket) do
+    {:noreply, socket |> assign(field_filters: socket.assigns.field_selected) |> reset_rows()}
   end
 
   defp event("remove_field_filter", %{"key" => key, "value" => value}, socket) do
@@ -163,6 +173,7 @@ defmodule BeamdashWeb.LogsLive do
      |> assign(
        filter_text: "",
        filter: Filter.parse(""),
+       field_selected: [],
        field_filters: [],
        min_level: nil,
        pattern: nil,
@@ -1174,6 +1185,22 @@ defmodule BeamdashWeb.LogsLive do
             aria-label="Filter logs"
           />
         </form>
+        <div :if={@field_selected != []} class="logs-field-list" role="group" aria-label="Filter list">
+          <span class="muted small">Filter list:</span>
+          <span :for={{key, value} <- @field_selected} class="chip">
+            {key} = {value}
+            <button
+              type="button"
+              phx-click="field_unselect"
+              phx-value-key={key}
+              phx-value-value={value}
+              aria-label={"Remove #{key} = #{value} from the filter list"}
+            >
+              ×
+            </button>
+          </span>
+          <button type="button" phx-click="field_apply">Apply filter</button>
+        </div>
         <span :for={{key, value} <- @field_filters} class="chip">
           {key} = {value}
           <button
@@ -1300,6 +1327,7 @@ defmodule BeamdashWeb.LogsLive do
         :if={@tab == :lines}
         rows={@streams.rows}
         filter={@filter}
+        field_selected={@field_selected}
         node={if @status == :connected, do: @node}
       />
 
