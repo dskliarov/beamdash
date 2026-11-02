@@ -360,6 +360,22 @@ defmodule Beamdash.LogsLiveTest do
     assert html =~ ~s(class="proc-link")
   end
 
+  test "JSON values that are not strings or MFAs get no links and keep their text", ctx do
+    {_, socket} = ctx |> mount() |> render()
+    message = ~S|{"mfa":null,"where":"a free text","level":5,"pid":1234}|
+    entry = %{new_entry(19, message) | json_line?: true}
+
+    socket = info(socket, {:beamdash_logs, {:entries, [entry]}})
+    {_, socket} = render(socket)
+    {html, _} = socket |> event("toggle_entry", %{"id" => "19", "row" => "g-19"}) |> render()
+
+    refute html =~ "mod=null"
+    refute html =~ "proc-link"
+    assert html =~ "a free text"
+    assert html =~ "<pre>5</pre>"
+    assert html =~ "1234"
+  end
+
   test "a plain message's embedded terms are pretty-printed", ctx do
     {_, socket} = ctx |> mount() |> render()
     socket = info(socket, {:beamdash_logs, {:entries, [new_entry(13, "got {ok,[1,2]}")]}})

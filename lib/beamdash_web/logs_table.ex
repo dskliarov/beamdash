@@ -275,9 +275,9 @@ defmodule BeamdashWeb.LogsTable do
       <%= if @json_rows do %>
         <table class="logs-json" aria-label="JSON message fields">
           <tbody>
-            <tr :for={{key, value} <- @json_rows}>
+            <tr :for={{key, value, string?} <- @json_rows}>
               <th scope="row">{key}</th>
-              <td><.json_cell key={key} value={value} node={@node} /></td>
+              <td><.json_cell key={key} value={value} string?={string?} node={@node} /></td>
             </tr>
           </tbody>
         </table>
@@ -323,12 +323,12 @@ defmodule BeamdashWeb.LogsTable do
       {:ok, value} when is_map(value) ->
         value
         |> Enum.sort_by(&elem(&1, 0))
-        |> Enum.map(fn {key, val} -> {key, json_value(val)} end)
+        |> Enum.map(fn {key, val} -> {key, json_value(val), is_binary(val)} end)
 
       {:ok, value} when is_list(value) ->
         value
         |> Enum.with_index()
-        |> Enum.map(fn {val, index} -> {"[#{index}]", json_value(val)} end)
+        |> Enum.map(fn {val, index} -> {"[#{index}]", json_value(val), is_binary(val)} end)
 
       # a bare number, string, true or null is text, not JSON fields
       _ ->
@@ -420,7 +420,7 @@ defmodule BeamdashWeb.LogsTable do
 
   defp json_cell(%{key: "pid"} = assigns), do: ~H|<.pid pid={@value} node={@node} />|
 
-  defp json_cell(%{key: key} = assigns) when key in @where_keys do
+  defp json_cell(%{key: key, string?: true} = assigns) when key in @where_keys do
     ~H"""
     <pre>{@value}</pre>
     <.where_links where={@value} />
