@@ -51,8 +51,36 @@ defmodule Beamdash.LogsPrettyTest do
   end
 
   test "messages over the size cap are not parsed" do
-    text = String.duplicate("a {ok, 1} ", 1_000)
+    text = String.duplicate("a {ok, 1} ", 7_000)
     assert Pretty.segments(text) == [{:text, text}]
+  end
+
+  test "opaque references inside a tuple keep the tuple formatted" do
+    assert Pretty.segments(~S|{error,#Ref<0.1.2.3>}|) == [{:term, "{error, #Ref<0.1.2.3>}"}]
+    assert Pretty.segments(~S|{pid,<0.86.0>,ok}|) == [{:term, "{pid, <0.86.0>, ok}"}]
+    assert Pretty.segments(~S|{fun,#Fun<erl_eval.6.1>}|) == [{:term, "{fun, #Fun<erl_eval.6.1>}"}]
+  end
+
+  test "binaries are formatted as containers" do
+    assert Pretty.segments(~S|reply {bin,<<"ab">>}|) ==
+             [{:text, "reply "}, {:term, ~S|{bin, <<"ab">>}|}]
+  end
+
+  test "a crash reason with nested binaries is one term" do
+    text = ~S|{badarg,[{erlang,binary_to_atom,[<<"x">>,utf8],[]}]}|
+
+    assert Pretty.segments(text) ==
+             [{:term, ~S|{badarg, [{erlang, binary_to_atom, [<<"x">>, utf8], []}]}|}]
+  end
+
+  test "records print with their field names" do
+    assert Pretty.segments("state #st{count = 1,name = fixture}") ==
+             [{:text, "state "}, {:term, "#st{count = 1, name = fixture}"}]
+  end
+
+  test "a term over 8 KB is formatted" do
+    text = "{data," <> Enum.map_join(1..2_000, ",", &Integer.to_string/1) <> "}"
+    assert [{:term, _}] = Pretty.segments(text)
   end
 
   test "deep nesting does not crash" do

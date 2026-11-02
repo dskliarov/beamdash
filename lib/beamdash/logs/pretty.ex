@@ -1,21 +1,25 @@
 defmodule Beamdash.Logs.Pretty do
   @moduledoc """
   Pretty-prints the Erlang and Elixir literal terms written inside a log
-  message: tuples, lists, maps and structs, with strings, atoms and numbers.
-  The text is read as syntax only. Nothing is evaluated and no atom is
-  created, so log text is safe to read. Anything that is not a complete
-  literal is left as it was.
+  message: tuples, lists, binaries, maps, records and structs, with strings,
+  atoms, numbers and the opaque references (pids, refs, funs, ports) that
+  Erlang prints. The text is read as syntax only. Nothing is evaluated and
+  no atom is created, so log text is safe to read. Anything that is not a
+  complete literal is left as it was.
   """
 
-  @max_bytes 8_192
+  @max_bytes 65_536
   @max_candidates 64
   @max_depth 32
   @width 80
 
-  @candidate ~r/[\{\[]|\#\{|%(?:[A-Z]\w*(?:\.[A-Z]\w*)*)?\{/
+  @candidate ~r/[\{\[]|<<|\#\{|\#[a-z]\w*\{|%(?:[A-Z]\w*(?:\.[A-Z]\w*)*)?\{/
   @struct_head ~r/\A%([A-Z]\w*(?:\.[A-Z]\w*)*)\{/
+  @record_head ~r/\A#([a-z]\w*)\{/
   @number ~r/\A-?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?/
   @word ~r/\A[A-Za-z_][\w@]*(?:\.[A-Za-z_]\w*)*/
+  @pid ~r/\A<\d+\.\d+\.\d+>/
+  @opaque_ref ~r/\A#(?:Ref|Fun|PID|Port)<[^>]*>/
 
   @doc "Splits `text` into `{:text, string}` and `{:term, pretty}` pieces."
   def segments(text) when byte_size(text) > @max_bytes, do: [{:text, text}]
@@ -54,9 +58,10 @@ defmodule Beamdash.Logs.Pretty do
     i = skip_ws(text, i)
 
     case peek(text, i) do
-      ?{ -> container(text, i + 1, depth, ?}, :tuple)
-      ?[ -> container(text, i + 1, depth, ?], :list)
-      ?# -> if peek(text, i + 1) == ?{, do: map(text, i + 2, "#", depth), else: :error
+      ?{ -> container(text, i + 1, depth, "}", :tuple)
+      ?[ -> container(text, i + 1, depth, "]", :list)
+      ?< -> angle(text, i, depth)
+      ?# -> hash(text, i, depth)
       ?% -> percent(text, i, depth)
       ?" -> quoted(text, i)
       ?' -> quoted(text, i)
@@ -64,6 +69,24 @@ defmodule Beamdash.Logs.Pretty do
       c when c in ?0..?9 or c == ?- -> token(text, i, @number)
       c when c in ?A..?Z or c in ?a..?z or c == ?_ -> token(text, i, @word)
       _ -> :error
+    end
+  end
+
+  defp angle(text, i, depth) do
+    if peek(text, i + 1) == ?<,
+      do: container(text, i + 2, depth, ">>", :bin),
+      else: token(text, i, @pid)
+  end
+
+  defp hash(text, i, depth) do
+    case Regex.run(@record_head, rest(text, i)) do
+      [head, name] ->
+        map(text, i + byte_size(head), "#" <> name, depth)
+
+      nil ->
+        if peek(text, i + 1) == ?{,
+          do: map(text, i + 2, "#", depth),
+          else: token(text, i, @opaque_ref)
     end
   end
 
@@ -81,7 +104,7 @@ defmodule Beamdash.Logs.Pretty do
   end
 
   defp map(text, i, prefix, depth) do
-    with {:ok, entries, stop} <- collect(text, i, ?}, depth, &entry/3, []) do
+    with {:ok, entries, stop} <- collect(text, i, "}", depth, &entry/3, []) do
       {:ok, {:map, prefix, entries}, stop}
     end
   end
@@ -100,6 +123,9 @@ defmodule Beamdash.Logs.Pretty do
       starts?(text, i, "=>") ->
         {:ok, "=>", i + 2}
 
+      starts?(text, i, "=") ->
+        {:ok, "=", i + 1}
+
       peek(text, i) == ?: and peek(text, i + 1) != ?: and match?({:leaf, _}, key) ->
         {:ok, ":", i + 1}
 
@@ -111,16 +137,16 @@ defmodule Beamdash.Logs.Pretty do
   defp collect(text, i, close, depth, item, acc) do
     i = skip_ws(text, i)
 
-    if peek(text, i) == close do
-      {:ok, Enum.reverse(acc), i + 1}
+    if starts?(text, i, close) do
+      {:ok, Enum.reverse(acc), i + byte_size(close)}
     else
       with {:ok, x, i} <- item.(text, i, depth + 1) do
         i = skip_ws(text, i)
 
-        case peek(text, i) do
-          ?, -> collect(text, i + 1, close, depth, item, [x | acc])
-          ^close -> {:ok, Enum.reverse([x | acc]), i + 1}
-          _ -> :error
+        cond do
+          starts?(text, i, ",") -> collect(text, i + 1, close, depth, item, [x | acc])
+          starts?(text, i, close) -> {:ok, Enum.reverse([x | acc]), i + byte_size(close)}
+          true -> :error
         end
       end
     end
@@ -181,16 +207,20 @@ defmodule Beamdash.Logs.Pretty do
   defp unbreakable?(_), do: false
 
   defp flat({:leaf, text}), do: text
-  defp flat({:tuple, items}), do: "{" <> Enum.map_join(items, ", ", &flat/1) <> "}"
-  defp flat({:list, items}), do: "[" <> Enum.map_join(items, ", ", &flat/1) <> "]"
+  defp flat({:tuple, items}), do: "{" <> join(items) <> "}"
+  defp flat({:list, items}), do: "[" <> join(items) <> "]"
+  defp flat({:bin, items}), do: "<<" <> join(items) <> ">>"
 
   defp flat({:map, prefix, entries}) do
     body = Enum.map_join(entries, ", ", fn {k, sep, v} -> entry_key(k, sep) <> flat(v) end)
     prefix <> "{" <> body <> "}"
   end
 
+  defp join(items), do: Enum.map_join(items, ", ", &flat/1)
+
   defp broken({:tuple, items}, col), do: block("{", "}", Enum.map(items, &{"", &1}), col)
   defp broken({:list, items}, col), do: block("[", "]", Enum.map(items, &{"", &1}), col)
+  defp broken({:bin, items}, col), do: block("<<", ">>", Enum.map(items, &{"", &1}), col)
 
   defp broken({:map, prefix, entries}, col) do
     children = Enum.map(entries, fn {k, sep, v} -> {entry_key(k, sep), v} end)
@@ -208,6 +238,7 @@ defmodule Beamdash.Logs.Pretty do
   end
 
   defp entry_key(key, "=>"), do: flat(key) <> " => "
+  defp entry_key(key, "="), do: flat(key) <> " = "
   defp entry_key(key, ":"), do: flat(key) <> ": "
 
   defp column(text, start) do
