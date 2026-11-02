@@ -226,7 +226,11 @@ defmodule BeamdashWeb.LogsTable do
               <% end %>
             </span>
           </div>
-          <.details :if={row.count == 1 and open?(row)} entry={row.entry} node={@node} />
+          <.details
+            :if={row.count == 1 and open?(row)}
+            entry={row.entry}
+            node={@node}
+          />
           <div :if={row.expanded?} class="logs-lines" role="rowgroup">
             <div :for={{e, spans} <- row.lines} class={["logs-line", e.id in row.open && "open"]}>
               <div
@@ -266,51 +270,117 @@ defmodule BeamdashWeb.LogsTable do
     # the line's own JSON fields are listed above, so the props below would repeat them
     own_json? = assigns.entry.json_line? and is_list(json_rows)
     json_time? = own_json? and Enum.any?(@json_time_keys, &List.keymember?(json_rows, &1, 0))
+    pairs = Pretty.fields(assigns.entry.message)
 
     assigns =
-      assign(assigns, json_rows: json_rows, props?: not own_json?, time?: not json_time?)
+      assign(assigns,
+        json_rows: json_rows,
+        props?: not own_json?,
+        time?: not json_time?,
+        pairs: pairs,
+        pair_map: Map.new(pairs),
+        plain_pairs: if(json_rows == nil, do: pairs, else: []),
+        struct_rows:
+          for(
+            {key, value, true} <- json_rows || [],
+            fields = Pretty.fields(value),
+            fields != [],
+            into: %{},
+            do: {key, fields}
+          )
+      )
 
     ~H"""
     <div class="detail log-detail" role="region">
-      <%= if @json_rows do %>
-        <table class="logs-json" aria-label="JSON message fields">
-          <tbody>
-            <tr :for={{key, value, string?} <- @json_rows}>
-              <th scope="row">{key}</th>
-              <td><.json_cell key={key} value={value} string?={string?} node={@node} /></td>
-            </tr>
-          </tbody>
+      <form phx-submit="field_filter" class="logs-field-form">
+        <%= if @json_rows do %>
+          <table class="logs-json" aria-label="JSON message fields">
+            <tbody>
+              <tr :for={{key, value, string?} <- @json_rows}>
+                <th scope="row">
+                  <.field_pick
+                    :if={Map.has_key?(@pair_map, key)}
+                    name={key}
+                    value={@pair_map[key]}
+                  />
+                  <span :if={!Map.has_key?(@pair_map, key)}>{key}</span>
+                </th>
+                <td>
+                  <.json_cell key={key} value={value} string?={string?} node={@node} />
+                  <table
+                    :if={Map.has_key?(@struct_rows, key)}
+                    class="logs-json logs-struct"
+                    aria-label={"Fields in #{key}"}
+                  >
+                    <tbody>
+                      <tr :for={{k, v} <- @struct_rows[key]}>
+                        <th scope="row"><.field_pick name={k} value={v} /></th>
+                        <td class="mono">{v}</td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+          <p :if={@json_rows == []} class="muted small">Empty JSON object or array.</p>
+          <details class="logs-json-original">
+            <summary>Original message</summary><pre>{@entry.message}</pre>
+          </details>
+        <% else %>
+          <pre>{pretty_message(@entry.message)}</pre>
+          <table
+            :if={@plain_pairs != []}
+            class="logs-json logs-struct"
+            aria-label="Fields in this message"
+          >
+            <tbody>
+              <tr :for={{key, value} <- @plain_pairs}>
+                <th scope="row"><.field_pick name={key} value={value} /></th>
+                <td class="mono">{value}</td>
+              </tr>
+            </tbody>
+          </table>
+        <% end %>
+        <table class="props">
+          <tr :if={@time?}>
+            <th>time</th>
+            <td class="mono">{if @entry.at, do: DateTime.to_iso8601(@entry.at), else: "—"}</td>
+          </tr>
+          <tr :if={@props? and @entry.level}>
+            <th>level</th>
+            <td><.level level={@entry.level} /></td>
+          </tr>
+          <tr :if={@props? and @entry.pid}>
+            <th>pid</th>
+            <td class="mono"><.pid pid={@entry.pid} node={@node} /></td>
+          </tr>
+          <tr :if={@props? and @entry.where}>
+            <th>where</th>
+            <td class="mono">{@entry.where} <.where_links where={@entry.where} /></td>
+          </tr>
+          <tr :for={{k, v} <- if(@props?, do: @entry.meta, else: [])}>
+            <th>{k}</th>
+            <td class="mono"><pre>{v}</pre></td>
+          </tr>
         </table>
-        <p :if={@json_rows == []} class="muted small">Empty JSON object or array.</p>
-        <details class="logs-json-original">
-          <summary>Original message</summary><pre>{@entry.message}</pre>
-        </details>
-      <% else %>
-        <pre>{pretty_message(@entry.message)}</pre>
-      <% end %>
-      <table class="props">
-        <tr :if={@time?}>
-          <th>time</th>
-          <td class="mono">{if @entry.at, do: DateTime.to_iso8601(@entry.at), else: "—"}</td>
-        </tr>
-        <tr :if={@props? and @entry.level}>
-          <th>level</th>
-          <td><.level level={@entry.level} /></td>
-        </tr>
-        <tr :if={@props? and @entry.pid}>
-          <th>pid</th>
-          <td class="mono"><.pid pid={@entry.pid} node={@node} /></td>
-        </tr>
-        <tr :if={@props? and @entry.where}>
-          <th>where</th>
-          <td class="mono">{@entry.where} <.where_links where={@entry.where} /></td>
-        </tr>
-        <tr :for={{k, v} <- if(@props?, do: @entry.meta, else: [])}>
-          <th>{k}</th>
-          <td class="mono"><pre>{v}</pre></td>
-        </tr>
-      </table>
+        <button :if={@pairs != []} type="submit" class="secondary small-btn">
+          Filter by checked fields
+        </button>
+      </form>
     </div>
+    """
+  end
+
+  attr :name, :string, required: true
+  attr :value, :string, required: true
+
+  defp field_pick(assigns) do
+    ~H"""
+    <label class="field-pick">
+      <input type="checkbox" name="pairs[]" value={"#{@name}=#{@value}"} />
+      {@name}
+    </label>
     """
   end
 

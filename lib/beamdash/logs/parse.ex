@@ -18,6 +18,8 @@ defmodule Beamdash.Logs.Parse do
   or else plain text with no level.
   """
 
+  alias Beamdash.Logs.Pretty
+
   @timestamp ~r/^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})) /
   @ansi ~r/\e\[[0-9;]*m/
   # `[$date ]$time $metadata[$level] $message`: Phoenix's default puts
@@ -54,7 +56,8 @@ defmodule Beamdash.Logs.Parse do
       raw: text
     }
 
-    Map.merge(base, parse_body(rest))
+    entry = Map.merge(base, parse_body(rest))
+    Map.put(entry, :fields, Pretty.all_fields(entry.message))
   end
 
   @doc "True for a stack-trace or multi-line continuation (indented after the timestamp)."

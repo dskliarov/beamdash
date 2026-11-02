@@ -146,6 +146,20 @@ defmodule BeamdashWeb.LogsLive do
     {:noreply, socket |> assign(min_level: min_level) |> reset_rows()}
   end
 
+  # the checked key=value pairs of a details panel join the filter text
+  defp event("field_filter", params, socket) do
+    text =
+      params
+      |> Map.get("pairs", [])
+      |> Enum.map(&Filter.pair_term/1)
+      |> Enum.reject(&String.contains?(socket.assigns.filter_text, &1))
+      |> Enum.reduce(socket.assigns.filter_text, fn term, text ->
+        String.trim(text <> " " <> term)
+      end)
+
+    {:noreply, socket |> assign(filter_text: text, filter: Filter.parse(text)) |> reset_rows()}
+  end
+
   defp event("clear_filter", _params, socket) do
     {:noreply,
      socket

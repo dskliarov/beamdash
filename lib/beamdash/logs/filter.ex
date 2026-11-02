@@ -4,13 +4,15 @@ defmodule Beamdash.Logs.Filter do
   minimum level.
   """
 
-  @term ~r/(-?)(?:"([^"]*)"|(\S+))/
+  alias Beamdash.Logs.Pretty
+
+  @term ~r/(-?)(?:"((?:[^"\\]|\\.)*)"|(\S+))/
 
   @doc "Parses a query into lowercased `%{include: [...], exclude: [...]}` terms."
   def parse(text) do
     terms =
-      for [_, sign | words] <- Regex.scan(@term, text),
-          term = words |> Enum.join() |> String.trim() |> String.downcase(),
+      for [_, sign | groups] <- Regex.scan(@term, text),
+          term = groups |> term_text() |> String.trim() |> String.downcase(),
           term not in ["", "-"] do
         {sign == "-", term}
       end
@@ -21,12 +23,59 @@ defmodule Beamdash.Logs.Filter do
     }
   end
 
-  @doc "True when every include term and no exclude term is in the entry's text."
+  @doc """
+  True when every include term and no exclude term is in the entry's text.
+  A `key=value` term is also in the entry when one of its fields is that pair.
+  """
   def match?(%{include: include, exclude: exclude}, entry) do
     haystack = haystack(entry)
+    pairs = pairs(include ++ exclude, entry)
 
-    Enum.all?(include, &String.contains?(haystack, &1)) and
-      not Enum.any?(exclude, &String.contains?(haystack, &1))
+    Enum.all?(include, &term?(&1, haystack, pairs)) and
+      not Enum.any?(exclude, &term?(&1, haystack, pairs))
+  end
+
+  @doc "The filter text for a `key=value` pair, quoted when it has spaces or quotes."
+  def pair_term(pair) do
+    if String.contains?(pair, [" ", "\t", "\""]), do: ~s("#{escape(pair)}"), else: pair
+  end
+
+  defp escape(text), do: text |> String.replace("\\", "\\\\") |> String.replace("\"", "\\\"")
+
+  defp unescape(text), do: Regex.replace(~r/\\(.)/, text, "\\1")
+
+  # Regex.scan leaves out trailing groups that did not match, so a bare word
+  # comes back as [quoted_empty, word] and a phrase as [phrase]
+  defp term_text([quoted]), do: unescape(quoted)
+  defp term_text([quoted, bare]), do: if(bare == "", do: unescape(quoted), else: bare)
+  defp term_text([]), do: ""
+
+  # the entry's fields, parsed once per match and only when a term is a key=value
+  defp pairs(terms, entry) do
+    if Enum.any?(terms, &String.contains?(&1, "=")) do
+      for {k, v} <- entry_fields(entry),
+          into: MapSet.new(),
+          do: {String.downcase(k), String.downcase(v)}
+    else
+      MapSet.new()
+    end
+  end
+
+  # entries from the log server carry their fields; others are parsed here
+  defp entry_fields(entry), do: entry[:fields] || Pretty.all_fields(entry[:message] || "")
+
+  defp term?(term, haystack, pairs) do
+    String.contains?(haystack, term) or field?(term, pairs)
+  end
+
+  defp field?(term, pairs) do
+    case String.split(term, "=", parts: 2) do
+      [key, value] when key != "" and value != "" ->
+        MapSet.member?(pairs, {key, String.trim(value)})
+
+      _ ->
+        false
+    end
   end
 
   defp haystack(entry) do

@@ -103,6 +103,10 @@ defmodule Beamdash.LogsLiveTest do
   # the streamed rows' DOM ids, in order
   defp row_ids(html), do: Regex.scan(~r/id="rows-([^"]+)"/, html) |> Enum.map(&List.last/1)
 
+  # a details header cell whose key is the label, with or without its checkbox
+  defp th_key(key),
+    do: ~r/<th[^>]*>(?:(?!<\/th>)[\s\S])*?\b#{key}\s*(?:<\/label>|<\/span>)?\s*<\/th>/
+
   # the text of each row's Message column, in order
   defp messages(html) do
     Regex.scan(~r/<span class="logs-msg"[^>]*>(.*?)<\/span>/s, html)
@@ -376,6 +380,99 @@ defmodule Beamdash.LogsLiveTest do
     assert html =~ "1234"
   end
 
+  test "selecting a field of an Erlang term filters the lines to that field's value", ctx do
+    {_, socket} = ctx |> mount() |> render()
+
+    socket =
+      info(
+        socket,
+        {:beamdash_logs,
+         {:entries,
+          [
+            new_entry(30, "state #st{count = 3,name = fixture}"),
+            new_entry(31, "state #st{count = 4,name = other}")
+          ]}}
+      )
+
+    {_, socket} = render(socket)
+    {html, socket} = socket |> event("toggle_entry", %{"id" => "30", "row" => "g-30"}) |> render()
+    assert html =~ ~s(name="pairs[]" value="count=3")
+
+    {html, socket} =
+      socket |> event("field_filter", %{"pairs" => ["count=3"]}) |> render()
+
+    assert socket.assigns.filter_text == "count=3"
+    assert "state #st{count = 3,name = fixture}" in messages(html)
+    refute "state #st{count = 4,name = other}" in messages(html)
+  end
+
+  test "checked fields join the text filter and keep the terms already typed", ctx do
+    {_, socket} = ctx |> mount() |> render()
+
+    socket =
+      info(
+        socket,
+        {:beamdash_logs,
+         {:entries,
+          [
+            new_entry(34, "state #st{count = 3,name = fixture}"),
+            new_entry(35, "state #st{count = 4,name = other}")
+          ]}}
+      )
+
+    {_, socket} = render(socket)
+    {_, socket} = socket |> event("filter", %{"q" => "state"}) |> render()
+    {html, socket} = socket |> event("field_filter", %{"pairs" => ["name=other"]}) |> render()
+
+    assert socket.assigns.filter_text == "state name=other"
+    assert "state #st{count = 4,name = other}" in messages(html)
+    refute "state #st{count = 3,name = fixture}" in messages(html)
+  end
+
+  test "a JSON line's fields filter the lines the same way", ctx do
+    {_, socket} = ctx |> mount() |> render()
+
+    socket =
+      info(
+        socket,
+        {:beamdash_logs,
+         {:entries,
+          [
+            %{new_entry(32, ~S|{"count":3,"name":"fixture"}|) | json_line?: true},
+            %{new_entry(33, ~S|{"count":4,"name":"other"}|) | json_line?: true}
+          ]}}
+      )
+
+    {_, socket} = render(socket)
+    {html, socket} = socket |> event("toggle_entry", %{"id" => "32", "row" => "g-32"}) |> render()
+    assert html =~ ~s(name="pairs[]" value="count=3")
+
+    {html, _} = socket |> event("field_filter", %{"pairs" => ["count=3"]}) |> render()
+
+    assert "{&quot;count&quot;:3,&quot;name&quot;:&quot;fixture&quot;}" in messages(html)
+    refute "{&quot;count&quot;:4,&quot;name&quot;:&quot;other&quot;}" in messages(html)
+  end
+
+  test "a struct in a JSON text value gets its items in the details under that value", ctx do
+    {_, socket} = ctx |> mount() |> render()
+
+    struct = ~S|%{"campaign_id" => "298821", "event" => "impression"}|
+    message = Jason.encode!(%{"level" => "info", "text" => "bid " <> struct})
+
+    socket =
+      info(socket, {:beamdash_logs, {:entries, [%{new_entry(40, message) | json_line?: true}]}})
+
+    {_, socket} = render(socket)
+    {html, socket} = socket |> event("toggle_entry", %{"id" => "40", "row" => "g-40"}) |> render()
+
+    assert html =~ ~s(aria-label="Fields in text")
+    assert html =~ ~s(name="pairs[]" value="campaign_id=298821")
+
+    {html, _} = socket |> event("field_filter", %{"pairs" => ["campaign_id=298821"]}) |> render()
+    escaped = message |> Phoenix.HTML.html_escape() |> Phoenix.HTML.safe_to_string()
+    assert escaped in messages(html)
+  end
+
   test "a plain message's embedded terms are pretty-printed", ctx do
     {_, socket} = ctx |> mount() |> render()
     socket = info(socket, {:beamdash_logs, {:entries, [new_entry(13, "got {ok,[1,2]}")]}})
@@ -432,7 +529,7 @@ defmodule Beamdash.LogsLiveTest do
     {html, _} = socket |> event("toggle_entry", %{"id" => "9", "row" => "g-9"}) |> render()
 
     for key <- ~w(level module count) do
-      assert length(Regex.scan(~r/<th[^>]*>#{key}<\/th>/, html)) == 1
+      assert length(Regex.scan(th_key(key), html)) == 1
     end
   end
 
@@ -445,7 +542,7 @@ defmodule Beamdash.LogsLiveTest do
     {_, socket} = render(socket)
     {html, _} = socket |> event("toggle_entry", %{"id" => "10", "row" => "g-10"}) |> render()
 
-    assert length(Regex.scan(~r/<th[^>]*>time<\/th>/, html)) == 1
+    assert length(Regex.scan(th_key("time"), html)) == 1
   end
 
   test "non-JSON messages remain plain text in details", ctx do

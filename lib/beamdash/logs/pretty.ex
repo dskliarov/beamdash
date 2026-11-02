@@ -1,46 +1,34 @@
 defmodule Beamdash.Logs.Pretty do
   @moduledoc """
   Pretty-prints the Erlang and Elixir literal terms written inside a log
-  message: tuples, lists, maps and structs, with strings, atoms and numbers.
-  The text is read as syntax only. Nothing is evaluated and no atom is
-  created, so log text is safe to read. Anything that is not a complete
-  literal is left as it was.
+  message: tuples, lists, binaries, maps, records and structs, with strings,
+  atoms, numbers and the opaque references (pids, refs, funs, ports) that
+  Erlang prints. The text is read as syntax only. Nothing is evaluated and
+  no atom is created, so log text is safe to read. Anything that is not a
+  complete literal is left as it was.
   """
 
-  @max_bytes 8_192
+  @max_bytes 65_536
   @max_candidates 64
   @max_depth 32
   @width 80
 
-  @candidate ~r/[\{\[]|\#\{|%(?:[A-Z]\w*(?:\.[A-Z]\w*)*)?\{/
+  @candidate ~r/[\{\[]|<<|\#\{|\#[a-z]\w*\{|%(?:[A-Z]\w*(?:\.[A-Z]\w*)*)?\{/
   @struct_head ~r/\A%([A-Z]\w*(?:\.[A-Z]\w*)*)\{/
+  @record_head ~r/\A#([a-z]\w*)\{/
   @number ~r/\A-?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?/
   @word ~r/\A[A-Za-z_][\w@]*(?:\.[A-Za-z_]\w*)*/
+  @pid ~r/\A<\d+\.\d+\.\d+>/
+  @opaque_ref ~r/\A#(?:Ref|Fun|PID|Port)<[^>]*>/
 
   @doc "Splits `text` into `{:text, string}` and `{:term, pretty}` pieces."
   def segments(text) when byte_size(text) > @max_bytes, do: [{:text, text}]
 
   def segments(text) do
-    starts =
-      @candidate
-      |> Regex.scan(text, return: :index)
-      |> Enum.map(fn [{start, _} | _] -> start end)
-      |> Enum.take(@max_candidates)
-
     {pieces, cursor} =
-      Enum.reduce(starts, {[], 0}, fn start, {acc, cursor} ->
-        if start < cursor do
-          {acc, cursor}
-        else
-          case value(text, start, 0) do
-            {:ok, node, stop} ->
-              term = {:term, render(node, column(text, start))}
-              {[term, {:text, slice(text, cursor, start)} | acc], stop}
-
-            :error ->
-              {acc, cursor}
-          end
-        end
+      Enum.reduce(terms(text), {[], 0}, fn {start, node, stop}, {acc, cursor} ->
+        term = {:term, render(node, column(text, start))}
+        {[term, {:text, slice(text, cursor, start)} | acc], stop}
       end)
 
     [{:text, slice(text, cursor, byte_size(text))} | pieces]
@@ -48,15 +36,115 @@ defmodule Beamdash.Logs.Pretty do
     |> Enum.reject(&match?({:text, ""}, &1))
   end
 
+  @doc """
+  The `{key, value}` pairs of `text`: the top-level keys of a JSON object
+  (values as text, non-strings encoded), else the map entries and
+  `{key, value}` tuples of its Erlang or Elixir terms, as printed.
+  """
+  def fields(text) when byte_size(text) <= 262_144 do
+    case json_objects(text) do
+      {:ok, maps} ->
+        maps
+        |> Enum.flat_map(&Enum.sort/1)
+        |> Enum.map(fn {key, value} -> {key, json_text(value)} end)
+        |> Enum.uniq()
+
+      :error ->
+        text
+        |> terms()
+        |> Enum.flat_map(fn {_start, node, _stop} -> node |> pairs([]) |> Enum.reverse() end)
+        |> Enum.uniq()
+    end
+  end
+
+  def fields(_text), do: []
+
+  # the objects of a JSON object or of a JSON array's elements
+  defp json_objects("{" <> _ = text), do: json_objects_of(text)
+  defp json_objects("[" <> _ = text), do: json_objects_of(text)
+  defp json_objects(_text), do: :error
+
+  defp json_objects_of(text) do
+    case Jason.decode(text) do
+      {:ok, %{} = map} -> {:ok, [map]}
+      {:ok, list} when is_list(list) -> {:ok, for(%{} = map <- list, do: map)}
+      _ -> :error
+    end
+  end
+
+  defp json_text(value) when is_binary(value), do: value
+  defp json_text(value), do: Jason.encode!(value)
+
+  defp field_text(node), do: node |> flat() |> unquote_text()
+
+  defp unquote_text(<<q, _::binary>> = text) when q in [?", ?'] and byte_size(text) >= 2 do
+    if String.ends_with?(text, <<q>>), do: binary_part(text, 1, byte_size(text) - 2), else: text
+  end
+
+  defp unquote_text(text), do: text
+
+  @doc "The fields of `text`, and of the terms inside a JSON object's string values."
+  def all_fields(text) when byte_size(text) <= 262_144 do
+    case json_objects(text) do
+      {:ok, maps} ->
+        inner =
+          for map <- maps, {_k, value} <- map, is_binary(value), pair <- fields(value), do: pair
+
+        Enum.uniq(fields(text) ++ inner)
+
+      :error ->
+        fields(text)
+    end
+  end
+
+  def all_fields(_text), do: []
+
+  defp terms(text) do
+    starts =
+      @candidate
+      |> Regex.scan(text, return: :index)
+      |> Enum.map(fn [{start, _} | _] -> start end)
+      |> Enum.take(@max_candidates)
+
+    {found, _cursor} =
+      Enum.reduce(starts, {[], 0}, fn start, {acc, cursor} ->
+        if start < cursor do
+          {acc, cursor}
+        else
+          case value(text, start, 0) do
+            {:ok, node, stop} -> {[{start, node, stop} | acc], stop}
+            :error -> {acc, cursor}
+          end
+        end
+      end)
+
+    Enum.reverse(found)
+  end
+
+  defp pairs({:tuple, [{:leaf, key}, value]}, acc),
+    do: pairs(value, [{unquote_text(key), field_text(value)} | acc])
+
+  defp pairs({:map, _prefix, entries}, acc),
+    do:
+      Enum.reduce(entries, acc, fn {key, _sep, value}, acc ->
+        pairs(value, [{field_text(key), field_text(value)} | acc])
+      end)
+
+  defp pairs({kind, items}, acc) when kind in [:tuple, :list],
+    do: Enum.reduce(items, acc, &pairs/2)
+
+  defp pairs(_leaf_or_binary, acc), do: acc
+
   defp value(_text, _i, depth) when depth > @max_depth, do: :error
 
   defp value(text, i, depth) do
     i = skip_ws(text, i)
 
     case peek(text, i) do
-      ?{ -> container(text, i + 1, depth, ?}, :tuple)
-      ?[ -> container(text, i + 1, depth, ?], :list)
-      ?# -> if peek(text, i + 1) == ?{, do: map(text, i + 2, "#", depth), else: :error
+      ?{ -> container(text, i + 1, depth, "}", :tuple)
+      ?[ -> container(text, i + 1, depth, "]", :list)
+      ?< -> angle(text, i, depth)
+      ?# -> hash(text, i, depth)
       ?% -> percent(text, i, depth)
       ?" -> quoted(text, i)
       ?' -> quoted(text, i)
@@ -64,6 +152,24 @@ defmodule Beamdash.Logs.Pretty do
       c when c in ?0..?9 or c == ?- -> token(text, i, @number)
       c when c in ?A..?Z or c in ?a..?z or c == ?_ -> token(text, i, @word)
       _ -> :error
+    end
+  end
+
+  defp angle(text, i, depth) do
+    if peek(text, i + 1) == ?<,
+      do: container(text, i + 2, depth, ">>", :bin),
+      else: token(text, i, @pid)
+  end
+
+  defp hash(text, i, depth) do
+    case Regex.run(@record_head, rest(text, i)) do
+      [head, name] ->
+        map(text, i + byte_size(head), "#" <> name, depth)
+
+      nil ->
+        if peek(text, i + 1) == ?{,
+          do: map(text, i + 2, "#", depth),
+          else: token(text, i, @opaque_ref)
     end
   end
 
@@ -81,7 +187,7 @@ defmodule Beamdash.Logs.Pretty do
   end
 
   defp map(text, i, prefix, depth) do
-    with {:ok, entries, stop} <- collect(text, i, ?}, depth, &entry/3, []) do
+    with {:ok, entries, stop} <- collect(text, i, "}", depth, &entry/3, []) do
       {:ok, {:map, prefix, entries}, stop}
     end
   end
@@ -100,6 +206,9 @@ defmodule Beamdash.Logs.Pretty do
       starts?(text, i, "=>") ->
         {:ok, "=>", i + 2}
 
+      starts?(text, i, "=") ->
+        {:ok, "=", i + 1}
+
       peek(text, i) == ?: and peek(text, i + 1) != ?: and match?({:leaf, _}, key) ->
         {:ok, ":", i + 1}
 
@@ -111,16 +220,16 @@ defmodule Beamdash.Logs.Pretty do
   defp collect(text, i, close, depth, item, acc) do
     i = skip_ws(text, i)
 
-    if peek(text, i) == close do
-      {:ok, Enum.reverse(acc), i + 1}
+    if starts?(text, i, close) do
+      {:ok, Enum.reverse(acc), i + byte_size(close)}
     else
       with {:ok, x, i} <- item.(text, i, depth + 1) do
         i = skip_ws(text, i)
 
-        case peek(text, i) do
-          ?, -> collect(text, i + 1, close, depth, item, [x | acc])
-          ^close -> {:ok, Enum.reverse([x | acc]), i + 1}
-          _ -> :error
+        cond do
+          starts?(text, i, ",") -> collect(text, i + 1, close, depth, item, [x | acc])
+          starts?(text, i, close) -> {:ok, Enum.reverse([x | acc]), i + byte_size(close)}
+          true -> :error
         end
       end
     end
@@ -181,16 +290,20 @@ defmodule Beamdash.Logs.Pretty do
   defp unbreakable?(_), do: false
 
   defp flat({:leaf, text}), do: text
-  defp flat({:tuple, items}), do: "{" <> Enum.map_join(items, ", ", &flat/1) <> "}"
-  defp flat({:list, items}), do: "[" <> Enum.map_join(items, ", ", &flat/1) <> "]"
+  defp flat({:tuple, items}), do: "{" <> join(items) <> "}"
+  defp flat({:list, items}), do: "[" <> join(items) <> "]"
+  defp flat({:bin, items}), do: "<<" <> join(items) <> ">>"
 
   defp flat({:map, prefix, entries}) do
     body = Enum.map_join(entries, ", ", fn {k, sep, v} -> entry_key(k, sep) <> flat(v) end)
     prefix <> "{" <> body <> "}"
   end
 
+  defp join(items), do: Enum.map_join(items, ", ", &flat/1)
+
   defp broken({:tuple, items}, col), do: block("{", "}", Enum.map(items, &{"", &1}), col)
   defp broken({:list, items}, col), do: block("[", "]", Enum.map(items, &{"", &1}), col)
+  defp broken({:bin, items}, col), do: block("<<", ">>", Enum.map(items, &{"", &1}), col)
 
   defp broken({:map, prefix, entries}, col) do
     children = Enum.map(entries, fn {k, sep, v} -> {entry_key(k, sep), v} end)
@@ -208,6 +321,7 @@ defmodule Beamdash.Logs.Pretty do
   end
 
   defp entry_key(key, "=>"), do: flat(key) <> " => "
+  defp entry_key(key, "="), do: flat(key) <> " = "
   defp entry_key(key, ":"), do: flat(key) <> ": "
 
   defp column(text, start) do
