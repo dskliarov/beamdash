@@ -137,6 +137,11 @@ defmodule Beamdash.LogsParseTest do
     assert e.meta == [{"request_id", "Q"}]
   end
 
+  test "a parsed line carries the fields of its message" do
+    e = Parse.line("2026-10-23T12:00:01Z [info] state #st{count = 3}")
+    assert {"count", "3"} in e.fields
+  end
+
   test "json module and pid must be strings, other values become nil" do
     e = Parse.line(~s({"msg":"m","module":false,"pid":3}))
     assert e.where == nil

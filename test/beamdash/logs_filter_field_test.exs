@@ -5,6 +5,11 @@ defmodule Beamdash.LogsFilterFieldTest do
 
   defp entry(message), do: %{message: message, where: nil, pid: nil, meta: []}
 
+  test "a key=value term uses the fields already on the entry" do
+    e = %{message: "no pair here", where: nil, pid: nil, meta: [], fields: [{"count", "3"}]}
+    assert Filter.match?(Filter.parse("count=3"), e)
+  end
+
   test "a key=value term matches a field of an Erlang term" do
     f = Filter.parse("count=3")
     assert Filter.match?(f, entry("state #st{count = 3,name = fixture}"))

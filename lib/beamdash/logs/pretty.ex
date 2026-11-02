@@ -42,9 +42,12 @@ defmodule Beamdash.Logs.Pretty do
   `{key, value}` tuples of its Erlang or Elixir terms, as printed.
   """
   def fields(text) when byte_size(text) <= 262_144 do
-    case json_object(text) do
-      {:ok, map} ->
-        for {key, value} <- Enum.sort(map), do: {key, json_text(value)}
+    case json_objects(text) do
+      {:ok, maps} ->
+        maps
+        |> Enum.flat_map(&Enum.sort/1)
+        |> Enum.map(fn {key, value} -> {key, json_text(value)} end)
+        |> Enum.uniq()
 
       :error ->
         text
@@ -56,31 +59,37 @@ defmodule Beamdash.Logs.Pretty do
 
   def fields(_text), do: []
 
-  defp json_object("{" <> _ = text) do
+  # the objects of a JSON object or of a JSON array's elements
+  defp json_objects("{" <> _ = text), do: json_objects_of(text)
+  defp json_objects("[" <> _ = text), do: json_objects_of(text)
+  defp json_objects(_text), do: :error
+
+  defp json_objects_of(text) do
     case Jason.decode(text) do
-      {:ok, %{} = map} -> {:ok, map}
+      {:ok, %{} = map} -> {:ok, [map]}
+      {:ok, list} when is_list(list) -> {:ok, for(%{} = map <- list, do: map)}
       _ -> :error
     end
   end
-
-  defp json_object(_text), do: :error
 
   defp json_text(value) when is_binary(value), do: value
   defp json_text(value), do: Jason.encode!(value)
 
   defp field_text(node), do: node |> flat() |> unquote_text()
 
-  defp unquote_text(<<?", _::binary>> = text) when byte_size(text) >= 2 do
-    if String.ends_with?(text, "\""), do: binary_part(text, 1, byte_size(text) - 2), else: text
+  defp unquote_text(<<q, _::binary>> = text) when q in [?", ?'] and byte_size(text) >= 2 do
+    if String.ends_with?(text, <<q>>), do: binary_part(text, 1, byte_size(text) - 2), else: text
   end
 
   defp unquote_text(text), do: text
 
   @doc "The fields of `text`, and of the terms inside a JSON object's string values."
   def all_fields(text) when byte_size(text) <= 262_144 do
-    case json_object(text) do
-      {:ok, map} ->
-        inner = for value <- Map.values(map), is_binary(value), pair <- fields(value), do: pair
+    case json_objects(text) do
+      {:ok, maps} ->
+        inner =
+          for map <- maps, {_k, value} <- map, is_binary(value), pair <- fields(value), do: pair
+
         Enum.uniq(fields(text) ++ inner)
 
       :error ->

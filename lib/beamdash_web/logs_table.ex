@@ -298,10 +298,11 @@ defmodule BeamdashWeb.LogsTable do
             <tbody>
               <tr :for={{key, value, string?} <- @json_rows}>
                 <th scope="row">
-                  <label :if={Map.has_key?(@pair_map, key)} class="field-pick">
-                    <input type="checkbox" name="pairs[]" value={"#{key}=#{@pair_map[key]}"} />
-                    {key}
-                  </label>
+                  <.field_pick
+                    :if={Map.has_key?(@pair_map, key)}
+                    name={key}
+                    value={@pair_map[key]}
+                  />
                   <span :if={!Map.has_key?(@pair_map, key)}>{key}</span>
                 </th>
                 <td>
@@ -313,12 +314,7 @@ defmodule BeamdashWeb.LogsTable do
                   >
                     <tbody>
                       <tr :for={{k, v} <- @struct_rows[key]}>
-                        <th scope="row">
-                          <label class="field-pick">
-                            <input type="checkbox" name="pairs[]" value={"#{k}=#{v}"} />
-                            {k}
-                          </label>
-                        </th>
+                        <th scope="row"><.field_pick name={k} value={v} /></th>
                         <td class="mono">{v}</td>
                       </tr>
                     </tbody>
@@ -340,12 +336,7 @@ defmodule BeamdashWeb.LogsTable do
           >
             <tbody>
               <tr :for={{key, value} <- @plain_pairs}>
-                <th scope="row">
-                  <label class="field-pick">
-                    <input type="checkbox" name="pairs[]" value={"#{key}=#{value}"} />
-                    {key}
-                  </label>
-                </th>
+                <th scope="row"><.field_pick name={key} value={value} /></th>
                 <td class="mono">{value}</td>
               </tr>
             </tbody>
@@ -378,6 +369,18 @@ defmodule BeamdashWeb.LogsTable do
         </button>
       </form>
     </div>
+    """
+  end
+
+  attr :name, :string, required: true
+  attr :value, :string, required: true
+
+  defp field_pick(assigns) do
+    ~H"""
+    <label class="field-pick">
+      <input type="checkbox" name="pairs[]" value={"#{@name}=#{@value}"} />
+      {@name}
+    </label>
     """
   end
 

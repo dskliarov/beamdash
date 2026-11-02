@@ -125,6 +125,15 @@ defmodule Beamdash.LogsPrettyTest do
     assert Pretty.fields("{1,2,3}") == []
   end
 
+  test "a single-quoted atom key is unquoted" do
+    assert Pretty.fields("{'My Atom', 3}") == [{"My Atom", "3"}]
+  end
+
+  test "a top-level JSON array gives the fields of its objects" do
+    assert Pretty.fields(~S|[{"a":1},{"b":2}]|) == [{"a", "1"}, {"b", "2"}]
+    assert Pretty.fields(~S|[1,2]|) == []
+  end
+
   test "deep nesting does not crash" do
     text = String.duplicate("[", 100) <> String.duplicate("]", 100)
     assert [_ | _] = Pretty.segments(text)

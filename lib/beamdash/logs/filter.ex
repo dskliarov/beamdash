@@ -53,13 +53,16 @@ defmodule Beamdash.Logs.Filter do
   # the entry's fields, parsed once per match and only when a term is a key=value
   defp pairs(terms, entry) do
     if Enum.any?(terms, &String.contains?(&1, "=")) do
-      for {k, v} <- Pretty.all_fields(entry[:message] || ""),
+      for {k, v} <- entry_fields(entry),
           into: MapSet.new(),
           do: {String.downcase(k), String.downcase(v)}
     else
       MapSet.new()
     end
   end
+
+  # entries from the log server carry their fields; others are parsed here
+  defp entry_fields(entry), do: entry[:fields] || Pretty.all_fields(entry[:message] || "")
 
   defp term?(term, haystack, pairs) do
     String.contains?(haystack, term) or field?(term, pairs)

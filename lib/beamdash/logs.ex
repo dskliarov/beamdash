@@ -32,7 +32,7 @@ defmodule Beamdash.Logs do
   use GenServer
 
   alias Beamdash.{Kubectl, Target}
-  alias Beamdash.Logs.Parse
+  alias Beamdash.Logs.{Parse, Pretty}
 
   @max_entries 2_000
   @flush_ms 100
@@ -545,9 +545,12 @@ defmodule Beamdash.Logs do
   end
 
   defp append(entry, line) do
+    message = entry.message <> "\n" <> Parse.line(line).message
+
     %{
       entry
-      | message: entry.message <> "\n" <> Parse.line(line).message,
+      | message: message,
+        fields: Pretty.all_fields(message),
         raw: entry.raw <> "\n" <> line
     }
   end
@@ -598,6 +601,7 @@ defmodule Beamdash.Logs do
       pid: pid_text(m[:pid]),
       where: where,
       message: message,
+      fields: Pretty.all_fields(message),
       json_line?: false,
       meta: meta(m[:meta]),
       raw: raw
