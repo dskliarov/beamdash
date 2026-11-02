@@ -14,7 +14,7 @@ defmodule BeamdashWeb.LogsTable do
   use Phoenix.Component
 
   alias Beamdash.Format
-  alias Beamdash.Logs.{Filter, Pretty}
+  alias Beamdash.Logs.{Filter, Parse, Pretty}
   alias Beamdash.Target
 
   attr :info, :map, required: true, doc: "`Beamdash.Logs.info/1`"
@@ -401,10 +401,13 @@ defmodule BeamdashWeb.LogsTable do
 
   defp process_href(_pid, _node), do: nil
 
-  @log_levels ~w(emergency alert critical error warning notice info debug)
+  # the keys Beamdash.Logs.Parse reads as level, where and message
+  @level_keys ~w(level severity lvl log.level)
+  @where_keys ~w(mfa module logger where)
+  @message_keys ~w(text msg message)
 
-  defp json_cell(%{key: "level", value: value} = assigns) do
-    assigns = assign(assigns, :level, log_level(value))
+  defp json_cell(%{key: key, value: value} = assigns) when key in @level_keys do
+    assigns = assign(assigns, :level, Parse.level_atom(value))
 
     ~H"""
     <%= if @level do %>
@@ -415,32 +418,21 @@ defmodule BeamdashWeb.LogsTable do
     """
   end
 
-  defp json_cell(%{key: "pid", value: value} = assigns) do
-    assigns = assign(assigns, :value, value)
-    ~H|<.pid pid={@value} node={@node} />|
-  end
+  defp json_cell(%{key: "pid"} = assigns), do: ~H|<.pid pid={@value} node={@node} />|
 
-  defp json_cell(%{key: key, value: value} = assigns) when key in ["mfa", "where"] do
-    assigns = assign(assigns, :value, value)
-
+  defp json_cell(%{key: key} = assigns) when key in @where_keys do
     ~H"""
     <pre>{@value}</pre>
     <.where_links where={@value} />
     """
   end
 
-  defp json_cell(%{key: key, value: value} = assigns) when key in ["text", "msg", "message"] do
+  defp json_cell(%{key: key, value: value} = assigns) when key in @message_keys do
     assigns = assign(assigns, :segments, pretty_message(value))
     ~H|<pre>{@segments}</pre>|
   end
 
   defp json_cell(assigns), do: ~H|<pre>{@value}</pre>|
-
-  defp log_level(value) do
-    name = String.downcase(value)
-    name = %{"warn" => "warning", "err" => "error"}[name] || name
-    if name in @log_levels, do: String.to_existing_atom(name)
-  end
 
   attr :level, :atom, default: nil
 

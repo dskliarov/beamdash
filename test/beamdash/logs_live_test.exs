@@ -335,6 +335,31 @@ defmodule Beamdash.LogsLiveTest do
     assert html =~ "got {ok, [1, 2]}"
   end
 
+  test "a JSON line's aliased level and module keys are formatted like their canonical keys",
+       ctx do
+    {_, socket} = ctx |> mount() |> render()
+    message = ~S|{"severity":"warn","module":"Beamdash.Worker"}|
+    entry = %{new_entry(17, message) | json_line?: true}
+
+    socket = info(socket, {:beamdash_logs, {:entries, [entry]}})
+    {_, socket} = render(socket)
+    {html, _} = socket |> event("toggle_entry", %{"id" => "17", "row" => "g-17"}) |> render()
+
+    assert html =~ ~s(<span class="lvl lvl-warning">warning</span>)
+    assert html =~ "mod=Elixir.Beamdash.Worker"
+  end
+
+  test "a JSON line's pid links to its process when a node is attached", ctx do
+    {_, socket} = ctx |> mount() |> render()
+    entry = %{new_entry(18, ~S|{"pid":"<0.1.0>"}|) | json_line?: true}
+
+    socket = info(socket, {:beamdash_logs, {:entries, [entry]}})
+    {_, socket} = render(socket)
+    {html, _} = socket |> event("toggle_entry", %{"id" => "18", "row" => "g-18"}) |> render()
+
+    assert html =~ ~s(class="proc-link")
+  end
+
   test "a plain message's embedded terms are pretty-printed", ctx do
     {_, socket} = ctx |> mount() |> render()
     socket = info(socket, {:beamdash_logs, {:entries, [new_entry(13, "got {ok,[1,2]}")]}})

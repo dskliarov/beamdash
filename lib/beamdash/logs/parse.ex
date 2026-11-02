@@ -209,9 +209,10 @@ defmodule Beamdash.Logs.Parse do
   defp to_text(value) when is_binary(value), do: value
   defp to_text(value), do: Jason.encode!(value)
 
-  defp level_atom(level) when is_binary(level) do
+  @doc "The level atom for a level name or alias, or nil."
+  def level_atom(level) when is_binary(level) do
     Map.get(@levels, String.downcase(level))
   end
 
-  defp level_atom(_), do: nil
+  def level_atom(_), do: nil
 end
