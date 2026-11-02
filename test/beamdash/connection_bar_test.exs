@@ -51,6 +51,25 @@ defmodule Beamdash.ConnectionBarTest do
     assigns |> BeamdashWeb.Layouts.header() |> rendered_to_string()
   end
 
+  test "a Kubernetes connection shows its cluster, namespace and pod above the node" do
+    html =
+      bar(%{
+        assigns: %{
+          conn: %{
+            status: :connected,
+            node: :"app@app-1",
+            info: nil,
+            node_input: "app@app-1",
+            error: nil,
+            kube_target: %{cluster: "prod", namespace: "shop", pod: "app-1"}
+          }
+        }
+      })
+
+    assert html =~ "prod · shop · app-1"
+    assert :binary.match(html, "prod · shop") < :binary.match(html, "app@app-1")
+  end
+
   test "Connect, node info, then Disconnect, as the bar shows them", %{node: node} do
     :ok = Target.subscribe()
 

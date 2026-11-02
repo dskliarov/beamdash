@@ -67,6 +67,7 @@ defmodule BeamdashWeb.Connection do
           kube_pod: "",
           kube_pods: nil,
           kube_pods_listing: false,
+          kube_target: nil,
           kube_restore_ref: nil,
           kube_containers: nil,
           kube_container: nil,
@@ -112,7 +113,8 @@ defmodule BeamdashWeb.Connection do
            node: info.node,
            info: info,
            error: nil,
-           cookie_input: cookie
+           cookie_input: cookie,
+           kube_target: nil
          )
          |> to_system()}
 
@@ -126,7 +128,15 @@ defmodule BeamdashWeb.Connection do
     :ok = Target.disconnect()
 
     {:halt,
-     socket |> update(status: :disconnected, node: nil, info: nil, reconnecting: nil) |> to_root()}
+     socket
+     |> update(
+       status: :disconnected,
+       node: nil,
+       info: nil,
+       kube_target: nil,
+       reconnecting: nil
+     )
+     |> to_root()}
   end
 
   def handle_event("stop_reconnect", _params, socket) do
@@ -302,7 +312,8 @@ defmodule BeamdashWeb.Connection do
            kube_namespace: namespace,
            kube_pod: pod,
            kube_container: container,
-           kube_binary: binary
+           kube_binary: binary,
+           kube_target: kube_target(socket.assigns.conn, cluster, namespace, pod)
          )
          |> to_system()}
 
@@ -356,6 +367,7 @@ defmodule BeamdashWeb.Connection do
        status: :disconnected,
        node: nil,
        info: nil,
+       kube_target: nil,
        error: error,
        reconnecting: Target.reconnecting()
      )
@@ -457,6 +469,15 @@ defmodule BeamdashWeb.Connection do
     Beamdash.Plugins.active()
   catch
     :exit, _ -> []
+  end
+
+  defp kube_target(conn, cluster, namespace, pod) do
+    name =
+      Enum.find_value(conn.kube_clusters, Path.basename(cluster), fn entry ->
+        entry.path == cluster && entry.name
+      end)
+
+    %{cluster: name, namespace: namespace, pod: pod}
   end
 
   defp refresh(%{assigns: %{conn: %{status: :connected}}} = socket) do
