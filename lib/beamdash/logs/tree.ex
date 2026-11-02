@@ -1,18 +1,19 @@
 defmodule Beamdash.Logs.Tree do
   @moduledoc """
   The Logs tab's Tree: the log lines arranged by where they came from,
-  application → module → line template, so the part of the system that is
-  noisy or failing shows at a glance.
+  application → module → function → line template, so the part of the
+  system that is noisy or failing shows at a glance.
 
     * The module comes from the line's source (`where`: `Module:fun/arity`
-      from the logger handler, or a JSON line's `module`/`logger`), its
+      from the logger handler, or a JSON line's `module`/`logger`/`mfa`), its
       application from the node (`apps`: module name to application, from
       `apps_map/1` of `Beamdash.Target.module_apps/1`). Lines without a
       source (most `kubectl logs` text) go under "#{"no source"}", modules
       the node doesn't list under "#{"application unknown"}".
-    * A template is the message with its variable parts masked
-      (`Beamdash.Logs.Group.key/1`), over every level and function of the
-      module.
+    * A line whose source names a function goes under a function branch
+      (`fun/arity`) of its module; a template is the message with its
+      variable parts masked (`Beamdash.Logs.Group.key/1`), within one
+      function, so the same message under two functions is two templates.
 
   Every node counts its lines, problems (error and above) and warnings,
   when it first and last logged, and its lines over the window
