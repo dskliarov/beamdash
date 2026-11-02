@@ -1523,3 +1523,27 @@ button.danger { background: var(--error); border-color: var(--error); color: #ff
 .forecast-growing td:first-child { box-shadow: inset 4px 0 0 var(--statem); }
 .forecast-growing-badge { display: inline-block; margin-left: 6px; padding: 1px 6px; border: 1px solid var(--statem); border-radius: 4px; color: var(--statem); font-size: 11px; font-weight: 700; }
 .graph-hub { margin-right: 12px; }
+
+/* Logs: Lines | Tree */
+.logs-tabs { margin: 10px 0 4px; }
+.logs-tree { margin-top: 10px; }
+.logs-tree-actions { display: inline-flex; gap: 6px; }
+.logs-tree-table { width: 100%; margin-top: 8px; }
+.logs-tree-table td { vertical-align: top; }
+.logs-tree-row.has-problems.logs-tree-app td:first-child,
+.logs-tree-row.has-problems.logs-tree-module td:first-child { box-shadow: inset 3px 0 0 var(--error); }
+.logs-tree-app .tree-label { font-weight: 600; }
+.tree-toggle { background: none; border: 0; padding: 0; color: inherit; font: inherit; cursor: pointer; display: inline-flex; gap: 6px; align-items: baseline; text-align: left; }
+.tree-toggle:hover .tree-label { text-decoration: underline; }
+.tree-leaf { margin-left: 18px; word-break: break-word; }
+.logs-tree .spark { white-space: pre; letter-spacing: -1px; color: var(--accent); }
+.badge-new { background: var(--traced-bg-strong); color: var(--fg); }
+.sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+.logs-tree { overflow-x: auto; }
+.cascade-title { font-size: 14px; font-weight: 600; }
+.cascade-outcome { margin: 6px 0 0; }
+.badge-gave-up { background: var(--status-exiting-bg); color: var(--status-exiting-fg); }
+.cascade-chain { list-style: none; margin: 8px 0 0; padding: 0; }
+.cascade-node { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px; padding: 3px 0; }
+.cascade-sup { font-weight: 600; }
+.cascade-reason { background: var(--row-alt); padding: 0 6px; border-radius: 4px; word-break: break-word; }

@@ -66,6 +66,27 @@ happening inside it.
   it is large. Click a process to select it;
   **Process info** opens it on the Processes tab. The latest started
   application is selected first, as in Observer; refreshed every 5 s.
+- **Logs:** the node's log lines (a logger handler on the node, or
+  `kubectl logs` for a pod), the last 2,000, with a level and a text
+  filter. **Lines** shows them newest first with repeats grouped; **Tree**
+  arranges them by where they came from: application → module → kind of
+  line (the message with numbers, ids and pids masked), with lines, errors,
+  warnings, an activity sparkline and the last time for each, the most
+  errors first. Kinds of line first seen after the Tree was opened are
+  marked new. **Lines** on a tree row shows just that row's lines. The
+  module comes from the logger handler's source (`Module:fun/arity`), its
+  application from the node; `kubectl logs` text names no module, so those
+  lines are under *no source*.
+  **Crashes** groups the crashes in the lines into incidents (crashes less
+  than 10 s apart) and draws each as the supervision chain it ran through:
+  which processes crashed and how often (with how many pids), under which
+  supervisor, which supervisor gave up (reached its restart intensity) and
+  which application exited, with **Lines** for an incident (2 s around it)
+  or one process's crash lines. It reads OTP's crash and supervisor
+  reports and Elixir's "terminating" lines; Elixir's Logger drops
+  supervisor reports unless `handle_sasl_reports` is set, so there the
+  supervisors are read from the node (`$ancestors`) for the processes
+  running now.
 - **Processes:** connect as a hidden node and browse a live process table
   (sort, filter, auto-refresh every 2 s), including reductions per second,
   so what is busy *now* sorts to the top. gen_servers, gen_statems and

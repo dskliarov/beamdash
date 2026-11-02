@@ -29,6 +29,18 @@ defmodule BeamdashWeb.LogsLive do
   snapshot. A snapshot is also found by its newest entry id, so a row
   whose id changed (a rebuild after evictions) stays expanded.
 
+  The Tree tab (`@tab`) shows the same lines, through the level and text
+  filters, as `Beamdash.Logs.Tree` (application → module → kind of line),
+  rebuilt at most every second while lines arrive; the node's module →
+  application map (`@tree_apps`) is read once per connection. A node's
+  Lines button scopes the Lines tab to its lines (`@scope`, a chip like
+  the pattern's). The Crashes tab shows `Beamdash.Logs.Cascade`'s
+  incidents the same way, asking the node once per connection for the
+  supervisors of crashed names no line gave (`@cascade_known`); its Lines
+  buttons scope Lines to an incident's time window or a process's crash
+  lines. Neither renders the table, so going back to Lines rebuilds the
+  stream.
+
   The page keeps the live entries it has shown (`@entries`, newest first)
   and the Previous container's separately (`@previous`). `mount` reads
   `session["logs_server"]` and `session["target"]` (tests) or uses
@@ -37,10 +49,14 @@ defmodule BeamdashWeb.LogsLive do
   use Phoenix.LiveView
 
   alias Beamdash.{Format, Logs, Target}
-  alias Beamdash.Logs.{Filter, Group}
+  alias Beamdash.Logs.{Cascade, Filter, Group, Tree}
 
   @max_rows 1_000
   @max_entries 2_000
+  # the Tree and Crashes are rebuilt at most this often while lines arrive
+  @tree_ms 1_000
+  # Lines of a crash incident: its lines and this much around them
+  @around_us 2_000_000
   @levels ~w(debug info notice warning error)
   # what an application's level can be set to, most verbose first
   @app_levels ~w(default all debug info notice warning error critical alert emergency none)
@@ -87,7 +103,21 @@ defmodule BeamdashWeb.LogsLive do
         app_levels: nil,
         app_levels_loading?: false,
         app_levels_error: nil,
-        app_level_note: nil
+        app_level_note: nil,
+        tab: :lines,
+        tree: nil,
+        tree_open: nil,
+        tree_apps: %{},
+        tree_apps_node: nil,
+        tree_apps_error: nil,
+        tree_since: nil,
+        tree_timer: nil,
+        cascades: nil,
+        cascade_known: %{},
+        tree_cache: %{},
+        cascade_cache: %{},
+        cascade_asking?: false,
+        scope: nil
       )
       |> stream(:rows, [])
 
@@ -119,9 +149,73 @@ defmodule BeamdashWeb.LogsLive do
   defp event("clear_filter", _params, socket) do
     {:noreply,
      socket
-     |> assign(filter_text: "", filter: Filter.parse(""), min_level: nil, pattern: nil)
+     |> assign(
+       filter_text: "",
+       filter: Filter.parse(""),
+       min_level: nil,
+       pattern: nil,
+       scope: nil
+     )
      |> reset_rows()}
   end
+
+  defp event("tab", %{"tab" => "tree"}, socket) do
+    socket =
+      socket
+      |> assign(tab: :tree, tree_since: socket.assigns.tree_since || DateTime.utc_now())
+      |> load_tree_apps()
+
+    {:noreply, refresh_tree(socket)}
+  end
+
+  defp event("tab", %{"tab" => "crashes"}, socket),
+    do: {:noreply, socket |> assign(tab: :crashes) |> refresh_tree()}
+
+  defp event("tab", %{"tab" => "lines"}, socket),
+    do: {:noreply, socket |> assign(tab: :lines) |> reset_rows()}
+
+  defp event("tree_toggle", %{"id" => id}, socket) do
+    {:noreply, assign(socket, tree_open: toggle(tree_open(socket.assigns), id))}
+  end
+
+  defp event("tree_expand_all", _params, %{assigns: %{tree: %{nodes: nodes}}} = socket),
+    do: {:noreply, assign(socket, tree_open: MapSet.new(Tree.parent_ids(nodes)))}
+
+  defp event("tree_collapse_all", _params, socket),
+    do: {:noreply, assign(socket, tree_open: MapSet.new())}
+
+  # "Show lines": the Lines tab, scoped to the node's lines
+  defp event("tree_show", %{"id" => id}, %{assigns: %{tree: %{nodes: nodes}}} = socket) do
+    case Tree.find(nodes, id) do
+      nil -> {:noreply, socket}
+      node -> {:noreply, socket |> assign(tab: :lines, scope: node.scope) |> reset_rows()}
+    end
+  end
+
+  # an incident's Lines: the lines around it; a node's: its own lines
+  defp event("crash_lines", %{"id" => id} = params, %{assigns: %{cascades: [_ | _]}} = socket) do
+    case Enum.find(socket.assigns.cascades, &(&1.id == id)) do
+      nil ->
+        {:noreply, socket}
+
+      incident ->
+        scope =
+          case params["name"] && Enum.find(incident.rows, &(&1.node.name == params["name"])) do
+            %{node: node} ->
+              {:ids, "crashes of #{node.name}", MapSet.new(node.entry_ids)}
+
+            _ ->
+              {:window, "crashes #{clock(incident.from)}–#{clock(incident.to)}",
+               DateTime.add(incident.from, -@around_us, :microsecond),
+               DateTime.add(incident.to, @around_us, :microsecond)}
+          end
+
+        {:noreply, socket |> assign(tab: :lines, scope: scope) |> reset_rows()}
+    end
+  end
+
+  defp event("clear_scope", _params, socket),
+    do: {:noreply, socket |> assign(scope: nil) |> reset_rows()}
 
   defp event("toggle_group", _params, socket) do
     {:noreply, socket |> assign(group?: not socket.assigns.group?) |> reset_rows()}
@@ -319,6 +413,10 @@ defmodule BeamdashWeb.LogsLive do
   defp event("export_done", _params, socket),
     do: {:noreply, assign(socket, export_note: {:error, "Copy failed"})}
 
+  defp event(name, _params, socket)
+       when name in ["tab", "tree_expand_all", "tree_show", "crash_lines"],
+       do: {:noreply, socket}
+
   ## Background load of the Previous container
 
   @impl true
@@ -415,6 +513,45 @@ defmodule BeamdashWeb.LogsLive do
      |> load_app_levels()}
   end
 
+  # (a Lines scope from the tree places lines with the map too)
+  def handle_async(:tree_apps, {:ok, {node, {:ok, list}}}, socket)
+      when is_list(list) and node == socket.assigns.node do
+    socket = assign(socket, tree_apps: Tree.apps_map(list), tree_apps_node: node)
+
+    {:noreply,
+     if(tree_scope?(socket.assigns.scope), do: reset_rows(socket), else: refresh_tree(socket))}
+  end
+
+  def handle_async(:tree_apps, {:ok, {node, _}}, socket) when node != socket.assigns.node,
+    do: {:noreply, socket}
+
+  def handle_async(:tree_apps, result, socket) do
+    reason =
+      case result do
+        {:ok, {_node, other}} -> async_error({:ok, other})
+        other -> async_error(other)
+      end
+
+    {:noreply,
+     assign(socket, tree_apps_error: "Could not read the node's applications: #{reason}")}
+  end
+
+  # names the node didn't list (not registered now) stay known as [], so
+  # they are asked once per connection; an answer from an earlier node, or
+  # an error, records nothing
+  def handle_async(:cascade_ancestors, {:ok, {node, names, {:ok, list}}}, socket)
+      when is_list(list) and node == socket.assigns.node do
+    found = Map.new(list)
+
+    known =
+      Enum.reduce(names, socket.assigns.cascade_known, &Map.put(&2, &1, Map.get(found, &1, [])))
+
+    {:noreply, socket |> assign(cascade_known: known, cascade_asking?: false) |> refresh_tree()}
+  end
+
+  def handle_async(:cascade_ancestors, _result, socket),
+    do: {:noreply, assign(socket, cascade_asking?: false)}
+
   defp async_error({:ok, {:error, reason}}), do: Format.error(reason)
   defp async_error({:ok, other}), do: inspect(other)
   defp async_error({:exit, reason}), do: Format.error(reason)
@@ -459,7 +596,8 @@ defmodule BeamdashWeb.LogsLive do
        previous_error: nil,
        paused?: false,
        pending: 0,
-       source_error: nil
+       source_error: nil,
+       scope: lines_scope(socket.assigns.scope)
      )
      |> reset_rows()}
   end
@@ -499,12 +637,29 @@ defmodule BeamdashWeb.LogsLive do
   end
 
   def handle_info({:beamdash_target, {:connected, node}}, socket) do
-    socket = assign(socket, status: :connected, node: node, app_level_note: nil)
-    {:noreply, if(socket.assigns.app_levels_open?, do: load_app_levels(socket), else: socket)}
+    # a new connection may be a restarted node: its applications and
+    # processes are read again
+    socket =
+      assign(socket,
+        status: :connected,
+        node: node,
+        app_level_note: nil,
+        cascade_known: %{},
+        tree_apps_node: nil
+      )
+
+    socket = if socket.assigns.app_levels_open?, do: load_app_levels(socket), else: socket
+    a = socket.assigns
+
+    {:noreply,
+     if(a.tab == :tree or tree_scope?(a.scope), do: load_tree_apps(socket), else: socket)}
   end
 
   def handle_info({:beamdash_target, {:disconnected, _}}, socket),
     do: {:noreply, assign(socket, status: :disconnected, app_levels: nil, app_level_note: nil)}
+
+  def handle_info(:rebuild_tree, socket),
+    do: {:noreply, socket |> assign(tree_timer: nil) |> refresh_tree()}
 
   def handle_info(_message, socket), do: {:noreply, socket}
 
@@ -519,7 +674,14 @@ defmodule BeamdashWeb.LogsLive do
   end
 
   defp cleared(socket) do
-    socket = assign(socket, entries: [], expanded: %{}, open: MapSet.new())
+    socket =
+      assign(socket,
+        entries: [],
+        expanded: %{},
+        open: MapSet.new(),
+        scope: lines_scope(socket.assigns.scope)
+      )
+
     if socket.assigns.view == :live, do: reset_rows(socket), else: socket
   end
 
@@ -528,16 +690,21 @@ defmodule BeamdashWeb.LogsLive do
     a = socket.assigns
     all = batch ++ a.entries
     entries = Enum.take(all, @max_entries)
-    socket = assign(socket, entries: entries, newest_id: max(a.newest_id, hd(batch).id))
+
+    socket =
+      socket
+      |> assign(entries: entries, newest_id: max(a.newest_id, hd(batch).id))
+      |> schedule_tree()
 
     if a.view == :live do
       evicted = Enum.drop(all, @max_entries)
       new = batch |> Enum.reverse() |> Enum.filter(&visible?(&1, a))
       shown = a.shown + length(new) - Enum.count(evicted, &visible?(&1, a))
+      socket = assign(socket, total: length(entries), shown: shown)
 
-      socket
-      |> assign(total: length(entries), shown: shown)
-      |> insert_rows(new, evicted)
+      # the table isn't rendered on Tree or Crashes, and going back to
+      # Lines rebuilds it
+      if a.tab == :lines, do: insert_rows(socket, new, evicted), else: socket
     else
       socket
     end
@@ -691,6 +858,7 @@ defmodule BeamdashWeb.LogsLive do
       expanded: a.expanded
     )
     |> stream(:rows, rendered |> Enum.reverse() |> Enum.map(&item(&1, a)), reset: true)
+    |> refresh_tree()
   end
 
   defp resnapshot(%{expanded: expanded} = a, _rows) when expanded == %{}, do: a.expanded
@@ -712,8 +880,27 @@ defmodule BeamdashWeb.LogsLive do
 
   defp visible?(entry, a) do
     Filter.level_ok?(a.min_level, entry) and Filter.match?(a.filter, entry) and
-      (a.pattern == nil or Group.key(entry) == a.pattern)
+      (a.pattern == nil or Group.key(entry) == a.pattern) and
+      (a.scope == nil or in_scope?(a.scope, entry, a))
   end
+
+  defp in_scope?({:ids, _label, ids}, entry, _a), do: MapSet.member?(ids, entry.id)
+
+  defp in_scope?({:window, _label, from, to}, %{at: %DateTime{} = at}, _a),
+    do: DateTime.compare(at, from) != :lt and DateTime.compare(at, to) != :gt
+
+  defp in_scope?({:window, _, _, _}, _entry, _a), do: false
+  defp in_scope?(scope, entry, a), do: Tree.in_scope?(scope, entry, a.tree_apps)
+
+  # the lines a crash scope names are gone once the entries are replaced
+  defp lines_scope({:ids, _, _}), do: nil
+  defp lines_scope(scope), do: scope
+
+  defp tree_scope?(scope), do: is_tuple(scope) and elem(scope, 0) in [:app, :module, :template]
+
+  defp scope_label({:ids, label, _}), do: label
+  defp scope_label({:window, label, _, _}), do: label
+  defp scope_label(scope), do: "tree: " <> Tree.scope_label(scope)
 
   defp grouped?(a), do: a.group? and a.pattern == nil
 
@@ -824,6 +1011,79 @@ defmodule BeamdashWeb.LogsLive do
     "#{node}-#{Calendar.strftime(DateTime.utc_now(), "%Y%m%d-%H%M%S")}.log"
   end
 
+  ## Tree
+
+  # The Tree of the current view's lines that pass the level and text
+  # filters (not a pattern or a tree scope: the tree is where those come
+  # from). Only while the Tree tab shows.
+  defp refresh_tree(%{assigns: %{tab: :tree} = a} = socket) do
+    tree =
+      Tree.build(filtered(a),
+        apps: a.tree_apps,
+        since: a.tree_since,
+        template_cache: a.tree_cache
+      )
+
+    assign(socket, tree: tree, tree_cache: tree.template_cache)
+  end
+
+  # Crashes, the same way; then the node is asked for the supervisors of
+  # the crashed names no line gave
+  defp refresh_tree(%{assigns: %{tab: :crashes} = a} = socket) do
+    result = Cascade.analyze(filtered(a), a.cascade_known, a.cascade_cache)
+    socket = assign(socket, cascades: result.incidents, cascade_cache: result.cache)
+
+    case {a.status, a.cascade_asking?, result.unknown} do
+      {:connected, false, [_ | _] = names} ->
+        {target, node} = {a.target, a.node}
+
+        socket
+        |> assign(cascade_asking?: true)
+        |> start_async(:cascade_ancestors, fn ->
+          {node, names, Target.process_ancestors(names, target)}
+        end)
+
+      _ ->
+        socket
+    end
+  end
+
+  defp refresh_tree(socket), do: socket
+
+  defp filtered(a),
+    do:
+      Enum.filter(
+        current(a),
+        &(Filter.level_ok?(a.min_level, &1) and Filter.match?(a.filter, &1))
+      )
+
+  # new lines rebuild the Tree or Crashes at most every @tree_ms
+  defp schedule_tree(%{assigns: %{tab: tab, tree_timer: nil}} = socket)
+       when tab in [:tree, :crashes],
+       do: assign(socket, tree_timer: Process.send_after(self(), :rebuild_tree, @tree_ms))
+
+  defp schedule_tree(socket), do: socket
+
+  # The node's module → application map, once per connection.
+  defp load_tree_apps(%{assigns: %{status: :connected, node: node}} = socket) do
+    if socket.assigns.tree_apps_node == node do
+      socket
+    else
+      target = socket.assigns.target
+
+      socket
+      |> assign(tree_apps_error: nil)
+      |> start_async(:tree_apps, fn -> {node, Target.module_apps(target)} end)
+    end
+  end
+
+  defp load_tree_apps(socket), do: socket
+
+  # Until a node is opened or closed, the first application is open.
+  defp tree_open(%{tree_open: nil, tree: %{nodes: [first | _]}}), do: MapSet.new([first.id])
+  defp tree_open(%{tree_open: nil}), do: MapSet.new()
+  defp tree_open(%{tree_open: open}), do: open
+
   ## Rendering
 
   @impl true
@@ -851,6 +1111,21 @@ defmodule BeamdashWeb.LogsLive do
       />
 
       <p :if={@source_error} class="error" role="alert">{@source_error}</p>
+
+      <div class="seg logs-tabs" role="tablist" aria-label="Logs view">
+        <button
+          :for={{value, label} <- [{"lines", "Lines"}, {"tree", "Tree"}, {"crashes", "Crashes"}]}
+          type="button"
+          role="tab"
+          id={"logs-tab-#{value}"}
+          class={["seg-btn", Atom.to_string(@tab) == value && "active"]}
+          aria-selected={to_string(Atom.to_string(@tab) == value)}
+          phx-click="tab"
+          phx-value-tab={value}
+        >
+          {label}
+        </button>
+      </div>
 
       <div class="logs-controls">
         <form id="logs-level-form" phx-change="level">
@@ -896,7 +1171,17 @@ defmodule BeamdashWeb.LogsLive do
             ✕
           </button>
         </span>
-        <label class="logs-check" title={@pattern && "Off while a pattern is set"}>
+        <span :if={@scope} class="chip">
+          {scope_label(@scope)}
+          <button type="button" phx-click="clear_scope" aria-label="Remove tree filter" title="Remove">
+            ✕
+          </button>
+        </span>
+        <label
+          :if={@tab == :lines}
+          class="logs-check"
+          title={@pattern && "Off while a pattern is set"}
+        >
           <input
             type="checkbox"
             phx-click="toggle_group"
@@ -986,9 +1271,21 @@ defmodule BeamdashWeb.LogsLive do
       </p>
 
       <BeamdashWeb.LogsTable.table
+        :if={@tab == :lines}
         rows={@streams.rows}
         filter={@filter}
         node={if @status == :connected, do: @node}
+      />
+
+      <.crashes :if={@tab == :crashes} incidents={@cascades} />
+
+      <.tree
+        :if={@tab == :tree}
+        tree={@tree}
+        open={tree_open(assigns)}
+        apps_error={@tree_apps_error}
+        since={@tree_since}
+        source={@info.source}
       />
     </main>
     """
@@ -1082,9 +1379,240 @@ defmodule BeamdashWeb.LogsLive do
     """
   end
 
+  attr :tree, :map, required: true
+  attr :open, :any, required: true
+  attr :apps_error, :string, required: true
+  attr :since, :any, required: true
+  attr :source, :atom, required: true
+
+  defp tree(assigns) do
+    assigns =
+      assign(assigns,
+        rows: if(assigns.tree, do: Tree.rows(assigns.tree.nodes, assigns.open), else: [])
+      )
+
+    ~H"""
+    <section id="logs-tree" class="logs-tree" role="tabpanel" aria-labelledby="logs-tab-tree">
+      <div class="section-head">
+        <span :if={@tree} class="muted small" role="status">
+          {summary(@tree)}
+          <span :if={@tree.window}>
+            · {clock(elem(@tree.window, 0))}–{clock(elem(@tree.window, 1))} UTC
+          </span><span :if={@tree.new > 0}> · <span class="badge badge-new">{@tree.new} new</span>
+          since {clock(@since)}</span>
+        </span>
+        <span class="logs-tree-actions">
+          <button type="button" class="secondary small-btn" phx-click="tree_expand_all">
+            Expand all
+          </button>
+          <button type="button" class="secondary small-btn" phx-click="tree_collapse_all">
+            Collapse all
+          </button>
+        </span>
+      </div>
+      <p class="muted small">
+        The lines by where they came from: application, module, then each kind of line (the
+        message with its numbers, ids and pids masked), with the most errors first. Click a row
+        to open it, and <strong>Lines</strong>
+        to see its lines. A line's level and the filter above apply here too.
+        <span :if={@source == :kubectl}>
+          Lines read from <code>kubectl logs</code>
+          text name no module, so they are under <em>no source</em>.
+        </span>
+      </p>
+      <p :if={@apps_error} class="error">{@apps_error}</p>
+      <p :if={@tree && @tree.lines == 0} class="muted">No lines.</p>
+      <table :if={@rows != []} class="logs-tree-table" aria-label="Log tree">
+        <thead>
+          <tr>
+            <th>Source</th>
+            <th class="num">Lines</th>
+            <th class="num">Errors</th>
+            <th class="num">Warnings</th>
+            <th title="Lines over the time the buffer covers, oldest on the left">Activity</th>
+            <th>Last</th>
+            <th><span class="sr-only">Actions</span></th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr
+            :for={row <- @rows}
+            id={"tree-" <> row.node.id}
+            class={[
+              "logs-tree-row",
+              "logs-tree-#{row.node.kind}",
+              row.node.problems > 0 && "has-problems"
+            ]}
+          >
+            <td style={"padding-left: #{0.5 + row.depth * 1.25}rem"}>
+              <button
+                :if={row.node.children != []}
+                type="button"
+                class="tree-toggle"
+                phx-click="tree_toggle"
+                phx-value-id={row.node.id}
+                aria-expanded={to_string(row.open?)}
+              >
+                <span aria-hidden="true">{if row.open?, do: "▾", else: "▸"}</span>
+                <span class={["tree-label", row.node.kind != :app && "mono"]}>{row.node.label}</span>
+              </button>
+              <span
+                :if={row.node.children == []}
+                class="tree-label tree-leaf mono"
+                title={row.node.sample && row.node.sample.message}
+              >
+                {row.node.label}
+              </span>
+              <span :if={row.node.new > 0} class="badge badge-new">
+                {if row.node.kind == :template, do: "new", else: "#{row.node.new} new"}
+              </span>
+              <span :if={row.node.more > 0} class="muted small">
+                (showing {length(row.node.children)}, {row.node.more} more)
+              </span>
+            </td>
+            <td class="num">{row.node.count}</td>
+            <td class={["num", row.node.problems > 0 && "error"]}>{row.node.problems}</td>
+            <td class={["num", row.node.warnings > 0 && "lvl-warning"]}>{row.node.warnings}</td>
+            <td>
+              <span class="spark mono" aria-hidden="true">{Tree.spark_text(row.node.spark)}</span>
+            </td>
+            <td class="small muted">{row.node.last_at && clock(row.node.last_at)}</td>
+            <td>
+              <button
+                type="button"
+                class="secondary small-btn"
+                phx-click="tree_show"
+                phx-value-id={row.node.id}
+                title="Show these lines on the Lines tab"
+              >
+                Lines
+              </button>
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+    """
+  end
+
+  defp summary(tree) do
+    Enum.join(
+      [
+        count(tree.lines, "line", "lines"),
+        count(length(tree.nodes), "application", "applications"),
+        count(tree.modules, "module", "modules"),
+        count(tree.templates, "kind of line", "kinds of line")
+      ],
+      " · "
+    )
+  end
+
+  attr :incidents, :list, required: true
+
+  defp crashes(assigns) do
+    assigns =
+      assign(assigns,
+        shown: Enum.take(assigns.incidents || [], 20),
+        total: Enum.sum(Enum.map(assigns.incidents || [], & &1.crashes))
+      )
+
+    ~H"""
+    <section id="logs-crashes" class="logs-tree" role="tabpanel" aria-labelledby="logs-tab-crashes">
+      <p :if={@incidents} class="muted small" role="status">
+        {count(length(@incidents), "incident", "incidents")} · {count(@total, "crash", "crashes")}<span :if={
+          length(@incidents) > 20
+        }> · the newest 20 shown</span>
+      </p>
+      <p class="muted small">
+        The crashes in these lines, grouped into incidents (crashes less than 10 s apart), each
+        drawn as the supervision chain it ran through: which processes crashed and how often,
+        under which supervisor, which supervisor gave up and which application exited. Read from
+        OTP's crash and supervisor reports and Elixir's "terminating" lines. Elixir's Logger drops
+        supervisor reports unless <code>handle_sasl_reports</code>
+        is set; the supervisors are then read from the node, for the processes running now.
+      </p>
+      <p :if={@incidents == []} class="muted">No crashes in these lines.</p>
+      <article :for={inc <- @shown} id={"incident-" <> inc.id} class="insights-card cascade">
+        <div class="section-head">
+          <h3 class="cascade-title">
+            {clock(inc.from)}<span :if={inc.to != inc.from}>–{clock(inc.to)}</span>
+            UTC · {count(inc.crashes, "crash", "crashes")} of {count(
+              inc.processes,
+              "process",
+              "processes"
+            )}
+          </h3>
+          <button
+            type="button"
+            class="secondary small-btn"
+            phx-click="crash_lines"
+            phx-value-id={inc.id}
+            title="The lines from 2 s before to 2 s after, on the Lines tab"
+          >
+            Lines
+          </button>
+        </div>
+        <p :if={inc.gave_up != [] or inc.app_exits != []} class="cascade-outcome">
+          <span :for={sup <- inc.gave_up} class="badge badge-gave-up">{sup} gave up</span>
+          <span :for={{app, reason} <- inc.app_exits} class="badge badge-gave-up">
+            application {app} exited: {reason}
+          </span>
+        </p>
+        <ul class="cascade-chain">
+          <li
+            :for={row <- inc.rows}
+            class={["cascade-node", row.node.crashes > 0 && "crashed"]}
+            style={"padding-left: #{row.depth * 1.25}rem"}
+          >
+            <span :if={row.depth > 0} class="muted" aria-hidden="true">└</span>
+            <span class={["mono", "cascade-name", row.node.supervisor? && "cascade-sup"]}>
+              {row.node.name}
+            </span>
+            <span :if={row.node.supervisor?} class="muted small">supervisor</span>
+            <span :if={row.node.gave_up} class="error small">gave up: {row.node.gave_up}</span>
+            <span :if={row.node.crashes > 0} class="error small">
+              {if row.node.supervisor?, do: "exited", else: "crashed"} {row.node.crashes}×<span :if={
+                length(row.node.pids) > 1
+              }> ({length(row.node.pids)} pids)</span>
+            </span>
+            <span :if={row.node.start_errors > 0} class="error small">
+              failed to start {row.node.start_errors}×
+            </span>
+            <span
+              :for={{reason, n} <- Enum.take(row.node.reasons, 3)}
+              class="mono small cascade-reason"
+            >
+              {reason}<span :if={length(row.node.reasons) > 1} class="muted"> ×{n}</span>
+            </span>
+            <button
+              :if={row.node.entry_ids != []}
+              type="button"
+              class="secondary small-btn"
+              phx-click="crash_lines"
+              phx-value-id={inc.id}
+              phx-value-name={row.node.name}
+              title="These lines on the Lines tab"
+            >
+              Lines
+            </button>
+          </li>
+        </ul>
+      </article>
+    </section>
+    """
+  end
+
+  defp count(1, one, _many), do: "1 #{one}"
+  defp count(n, _one, many), do: "#{n} #{many}"
+
+  defp clock(nil), do: ""
+  defp clock(%DateTime{} = at), do: Calendar.strftime(at, "%H:%M:%S")
+
   defp level_value(nil), do: ""
   defp level_value(level), do: Atom.to_string(level)
 
   defp filtering?(a),
-    do: String.trim(a.filter_text) != "" or a.min_level != nil or a.pattern != nil
+    do:
+      String.trim(a.filter_text) != "" or a.min_level != nil or a.pattern != nil or
+        a.scope != nil
 end

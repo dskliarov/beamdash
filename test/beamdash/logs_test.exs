@@ -127,6 +127,8 @@ defmodule Beamdash.LogsTest do
       :ok = Target.disconnect(ctx.target)
       eventually(fn -> Logs.info(logs).source == nil end)
       assert %{status: :idle} = Logs.info(logs)
+      # Target detached it; Logs doesn't dial the dropped node again
+      refute ctx.node in Node.list(:connected)
       refute :beamdash_logs in :erpc.call(ctx.node, :logger, :get_handler_ids, [])
     end
 

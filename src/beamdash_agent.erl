@@ -13,7 +13,8 @@
 -export([process_details/2, garbage_collect/1]).
 -export([sys_trace/3, sys_trace_stop_all/0, sys_event/3]).
 -export([log_attach/1, log_detach/0, log/2, log_send/3]).
--export([log_levels/0, log_set_app_level/2, log_set_primary_level/1]).
+-export([log_levels/0, log_set_app_level/2, log_set_primary_level/1, module_apps/0,
+         process_ancestors/1]).
 -export([tprof_available/0, tprof_start/4, tprof_collect/1, tprof_stop/0]).
 -export([recon_available/0, memory_snapshot/0, top_processes/2, gc_all/0,
          binary_leaks/1, ets_tables/0, process_state/2]).
@@ -27,7 +28,7 @@
 %% dictionary key in the same process_info call as everything else.
 -define(INITIAL_CALL_KEY, {dictionary, '$initial_call'}).
 
-version() -> 21.
+version() -> 22.
 
 node_info() ->
     {WallClockMs, _} = erlang:statistics(wall_clock),
@@ -967,6 +968,61 @@ log_detach() ->
             receive {'DOWN', Ref, process, Collector, _} -> ok
             after ?LOG_TIMEOUT -> erlang:demonitor(Ref, [flush]), ok
             end
+    end.
+
+%% Each loaded application's modules, as [{App, [Module]}], so the Logs
+%% tree can put a line's module under its application.
+module_apps() ->
+    [{App, Mods} || {App, _, _} <- application:loaded_applications(),
+                    {ok, Mods} <- [application:get_key(App, modules)]].
+
+%% For the Logs tab's crash chains: the supervisors ('$ancestors', nearest
+%% first, by name; ancestors without a name left out) of each named
+%% process registered now, as [{Name, [Ancestor]}]. Names come as
+%% binaries (an Elixir module name without "Elixir.") and are only
+%% matched against atoms that already exist.
+process_ancestors(Names) when is_list(Names) ->
+    lists:append([ancestors_of(Name) || Name <- Names, is_binary(Name)]).
+
+ancestors_of(Name) ->
+    case name_pid([<<"Elixir.", Name/binary>>, Name]) of
+        undefined ->
+            [];
+        Pid ->
+            case erlang:process_info(Pid, dictionary) of
+                {dictionary, Dict} ->
+                    Ancestors = proplists:get_value('$ancestors', Dict, []),
+                    [{Name, [N || A <- Ancestors, N <- [ancestor_name(A)], N =/= undefined]}];
+                undefined ->
+                    []
+            end
+    end.
+
+name_pid([]) ->
+    undefined;
+name_pid([Bin | Rest]) ->
+    Pid = try whereis(binary_to_existing_atom(Bin, utf8))
+          catch error:badarg -> undefined
+          end,
+    case Pid of
+        undefined -> name_pid(Rest);
+        _ -> Pid
+    end.
+
+ancestor_name(A) when is_atom(A) ->
+    name_text(A);
+ancestor_name(P) when is_pid(P) ->
+    case erlang:process_info(P, registered_name) of
+        {registered_name, N} -> name_text(N);
+        _ -> undefined
+    end;
+ancestor_name(_) ->
+    undefined.
+
+name_text(A) ->
+    case atom_to_binary(A, utf8) of
+        <<"Elixir.", Rest/binary>> -> Rest;
+        Bin -> Bin
     end.
 
 %% The node's primary logger level, and for each running application the
