@@ -189,6 +189,20 @@ defmodule Beamdash.Target do
     do: call_agent(server, :log_set_app_level, [app, level])
 
   @doc """
+  Each loaded application's modules on the node, `{:ok, [{app,
+  [module]}]}` (see `beamdash_agent:module_apps/0`).
+  """
+  def module_apps(server \\ __MODULE__), do: call_agent(server, :module_apps, [])
+
+  @doc """
+  The supervisors of each named process registered on the node now,
+  nearest first: `{:ok, [{name, [ancestor]}]}`, names as text (see
+  `beamdash_agent:process_ancestors/1`).
+  """
+  def process_ancestors(names, server \\ __MODULE__) when is_list(names),
+    do: call_agent(server, :process_ancestors, [names])
+
+  @doc """
   Sets the node's primary logger level. `{:ok, :ok}`, or `{:ok, {:error,
   reason}}` from the node.
   """

@@ -31,7 +31,7 @@ defmodule Beamdash.TargetTest do
   test "connects as a hidden node, loads the agent and lists processes", ctx do
     assert {:ok, info} = Target.connect(Atom.to_string(ctx.node), @cookie, ctx.server)
     assert info.node == ctx.node
-    assert info.agent_version == 21
+    assert info.agent_version == 22
 
     assert ctx.node in Node.list(:hidden)
     refute ctx.node in Node.list(:visible)

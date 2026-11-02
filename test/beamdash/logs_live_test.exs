@@ -988,4 +988,158 @@ defmodule Beamdash.LogsLiveTest do
     {html, _} = socket |> event("toggle_app_levels") |> async_result(:app_levels) |> render()
     assert html =~ "Could not read the application levels"
   end
+
+  ## Tree
+
+  # the labels of the tree rows shown, in order
+  defp tree_labels(html) do
+    Regex.scan(~r/<span class="tree-label[^"]*"[^>]*>\s*(.*?)\s*<\/span>/s, html)
+    |> Enum.map(fn [_, label] -> label end)
+  end
+
+  defp tree_node(socket, label) do
+    find = fn find, nodes ->
+      Enum.find_value(nodes, fn n -> if n.label == label, do: n, else: find.(find, n.children) end)
+    end
+
+    find.(find, socket.assigns.tree.nodes)
+  end
+
+  test "the Tree tab arranges the lines by application, module and kind of line", ctx do
+    {html, socket} = ctx |> mount() |> render()
+    assert html =~ ~s(id="logs-tab-tree")
+    refute html =~ ~s(id="logs-tree")
+
+    socket = event(socket, "tab", %{"tab" => "tree"})
+
+    # a line from a module of the node's stdlib, as the logger handler sends it
+    line = %{
+      id: 100,
+      at: ~U[2026-10-23 12:00:09Z],
+      level: :error,
+      pid: nil,
+      where: "lists:seq/2",
+      message: "bad range 10",
+      meta: [],
+      raw: "bad range 10"
+    }
+
+    socket = socket |> info({:beamdash_logs, {:entries, [line]}}) |> async_result(:tree_apps)
+    {html, socket} = render(socket)
+
+    assert html =~ ~s(id="logs-tree")
+    refute html =~ ~s(id="rows-)
+    assert html =~ "8 lines · 2 applications · 1 module · 4 kinds of line"
+    # most problems first (no source: an error and 5 warnings), the first open
+    assert tree_labels(html) == [
+             "no source",
+             "boom",
+             "cache miss for key user:#",
+             "hello",
+             "stdlib"
+           ]
+
+    {html, socket} = socket |> event("tree_expand_all") |> render()
+    assert Enum.take(tree_labels(html), -3) == ["stdlib", "lists", "bad range #"]
+
+    {html, socket} = socket |> event("tree_collapse_all") |> render()
+    assert tree_labels(html) == ["no source", "stdlib"]
+
+    stdlib = tree_node(socket, "stdlib")
+    {html, socket} = socket |> event("tree_toggle", %{"id" => stdlib.id}) |> render()
+    assert tree_labels(html) == ["no source", "stdlib", "lists"]
+
+    # the level and text filters apply to the tree
+    {html, _} = socket |> event("filter", %{"q" => "boom"}) |> render()
+    assert tree_labels(html) == ["no source"]
+    assert html =~ "1 line · 1 application · 0 modules · 1 kind of line"
+  end
+
+  test "Lines on a tree row shows that row's lines on the Lines tab", ctx do
+    {_, socket} = ctx |> mount() |> render()
+    socket = socket |> event("tab", %{"tab" => "tree"}) |> async_result(:tree_apps)
+    node = tree_node(socket, "cache miss for key user:#")
+
+    {html, socket} = socket |> event("tree_show", %{"id" => node.id}) |> render()
+    refute html =~ ~s(id="logs-tree")
+    assert html =~ "tree: no source › cache miss for key user:#"
+    assert html =~ "5 of 7 lines"
+    assert messages(html) == ["cache miss for key user:5"]
+
+    {html, _} = socket |> event("clear_scope") |> render()
+    assert html =~ "7 of 7 lines"
+    refute html =~ "tree: "
+  end
+
+  test "the Tree tab says when the node's applications can't be read", ctx do
+    {_, socket} = ctx |> mount() |> render()
+    :ok = Target.disconnect(ctx.target)
+    socket = info(socket, {:beamdash_target, {:connected, ctx.node}})
+    socket = socket |> event("tab", %{"tab" => "tree"}) |> async_result(:tree_apps)
+    {html, _} = render(socket)
+    assert html =~ "Could not read the node&#39;s applications"
+    # the lines still show, by source
+    assert "no source" in tree_labels(html)
+  end
+
+  ## Crashes
+
+  test "the Crashes tab draws a crash's supervision chain, from the node", ctx do
+    {_, socket} = ctx |> mount() |> render()
+    {html, socket} = socket |> event("tab", %{"tab" => "crashes"}) |> render()
+    assert html =~ ~s(id="logs-crashes")
+    assert html =~ "No crashes in these lines."
+
+    # an Elixir-style crash of a process the peer runs under kernel_sup:
+    # the line names no supervisor, so the node is asked
+    crash = fn id, pid ->
+      %{
+        id: id,
+        at: ~U[2026-10-23 12:00:09Z],
+        level: :error,
+        pid: pid,
+        where: nil,
+        message: "GenServer logger_sup terminating\n** (RuntimeError) boom\nState: nil",
+        meta: [],
+        raw: "GenServer logger_sup terminating"
+      }
+    end
+
+    socket =
+      socket
+      |> info({:beamdash_logs, {:entries, [crash.(101, "<0.9.1>"), crash.(100, "<0.9.0>")]}})
+      |> info(:rebuild_tree)
+      |> async_result(:cascade_ancestors)
+
+    {html, socket} = render(socket)
+    assert html =~ "1 incident · 2 crashes"
+    assert html =~ "2 crashes of 1 process"
+
+    names =
+      Regex.scan(~r/<span class="mono cascade-name[^"]*">\s*(.*?)\s*<\/span>/s, html)
+      |> Enum.map(&List.last/1)
+
+    assert names == ["kernel_sup", "logger_sup"]
+    assert html =~ "crashed 2×"
+    assert html =~ "(2 pids)"
+    assert html =~ "(RuntimeError) boom"
+
+    # a process's Lines: its crash lines
+    [incident] = socket.assigns.cascades
+
+    {html, socket} =
+      socket
+      |> event("crash_lines", %{"id" => incident.id, "name" => "logger_sup"})
+      |> render()
+
+    assert html =~ "crashes of logger_sup"
+    assert html =~ "2 of 9 lines"
+
+    # the incident's Lines: everything from 2 s before to 2 s after
+    socket = event(socket, "tab", %{"tab" => "crashes"})
+    {html, _} = socket |> event("crash_lines", %{"id" => incident.id}) |> render()
+    assert html =~ "crashes 12:00:09–12:00:09"
+    # 12:00:07..12:00:11: the fixture's lines at 07 and the two crashes
+    assert html =~ "3 of 9 lines"
+  end
 end
