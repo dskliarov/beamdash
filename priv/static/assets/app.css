@@ -1540,6 +1540,8 @@ button.danger { background: var(--error); border-color: var(--error); color: #ff
 .logs-tree .tree-label { white-space: normal; overflow-wrap: anywhere; min-width: 0; }
 .logs-tree-table td:first-child { overflow-wrap: anywhere; }
 .logs-tree .tree-toggle { display: flex; width: 100%; max-width: 100%; }
+.tree-fields { margin: 4px 0 8px; padding: 0; list-style: none; display: grid; gap: 3px 18px; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); }
+.tree-field-key { color: var(--muted); }
 .logs-tree .spark { white-space: pre; letter-spacing: -1px; color: var(--accent); display: block; overflow: hidden; }
 .logs-tree-table th:nth-child(5), .logs-tree-table td:nth-child(5) { width: 200px; }
 .badge-new { background: var(--traced-bg-strong); color: var(--fg); }

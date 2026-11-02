@@ -1163,6 +1163,14 @@ defmodule Beamdash.LogsLiveTest do
     |> Enum.map(fn [_, label] -> label end)
   end
 
+  defp template_for(nodes, id) do
+    Enum.find_value(nodes, fn node ->
+      if (node.kind == :template and node.sample) && node.sample.id == id,
+        do: node,
+        else: template_for(node.children, id)
+    end)
+  end
+
   defp tree_node(socket, label) do
     find = fn find, nodes ->
       Enum.find_value(nodes, fn n -> if n.label == label, do: n, else: find.(find, n.children) end)
@@ -1219,6 +1227,31 @@ defmodule Beamdash.LogsLiveTest do
     {html, _} = socket |> event("filter", %{"q" => "boom"}) |> render()
     assert tree_labels(html) == ["no source"]
     assert html =~ "1 line · 1 application · 0 modules · 1 kind of line"
+  end
+
+  test "clicking a tree message lists its key=value fields, including a struct's", ctx do
+    {_, socket} = ctx |> mount() |> render()
+    socket = event(socket, "tab", %{"tab" => "tree"})
+
+    json = Jason.encode!(%{"level" => "info", "text" => ~S|bid %{"campaign_id" => "298821"}|})
+
+    lines = [
+      new_entry(60, "state #st{count = 3,name = fixture}"),
+      %{new_entry(61, json) | json_line?: true}
+    ]
+
+    socket = socket |> info({:beamdash_logs, {:entries, lines}}) |> async_result(:tree_apps)
+    {_, socket} = socket |> event("tree_expand_all") |> render()
+
+    node = tree_node(socket, "state #st{count = #,name = fixture}")
+    {html, socket} = socket |> event("tree_detail", %{"id" => node.id}) |> render()
+    assert html =~ ~s(<span class="tree-field-key">count</span> = <span class="mono">3</span>)
+    assert html =~ ~s(<span class="tree-field-key">name</span>)
+
+    json_node = template_for(socket.assigns.tree.nodes, 61)
+    {html, _} = socket |> event("tree_detail", %{"id" => json_node.id}) |> render()
+    assert html =~ ~s(<span class="tree-field-key">campaign_id</span>)
+    assert html =~ "298821"
   end
 
   test "Lines on a tree row shows that row's lines on the Lines tab", ctx do

@@ -49,7 +49,7 @@ defmodule BeamdashWeb.LogsLive do
   use Phoenix.LiveView
 
   alias Beamdash.{Format, Logs, Target}
-  alias Beamdash.Logs.{Cascade, Filter, Group, Tree}
+  alias Beamdash.Logs.{Cascade, Filter, Group, Pretty, Tree}
 
   @max_rows 1_000
   @max_entries 2_000
@@ -107,6 +107,7 @@ defmodule BeamdashWeb.LogsLive do
         tab: :lines,
         tree: nil,
         tree_open: nil,
+        tree_detail: MapSet.new(),
         tree_apps: %{},
         tree_apps_node: nil,
         tree_apps_error: nil,
@@ -190,6 +191,10 @@ defmodule BeamdashWeb.LogsLive do
 
   defp event("tree_toggle", %{"id" => id}, socket) do
     {:noreply, assign(socket, tree_open: toggle(tree_open(socket.assigns), id))}
+  end
+
+  defp event("tree_detail", %{"id" => id}, socket) do
+    {:noreply, assign(socket, tree_detail: toggle(socket.assigns.tree_detail, id))}
   end
 
   defp event("tree_expand_all", _params, %{assigns: %{tree: %{nodes: nodes}}} = socket),
@@ -1298,6 +1303,7 @@ defmodule BeamdashWeb.LogsLive do
         :if={@tab == :tree}
         tree={@tree}
         open={tree_open(assigns)}
+        detail={@tree_detail}
         apps_error={@tree_apps_error}
         since={@tree_since}
         source={@info.source}
@@ -1399,6 +1405,7 @@ defmodule BeamdashWeb.LogsLive do
   attr :apps_error, :string, required: true
   attr :since, :any, required: true
   attr :source, :atom, required: true
+  attr :detail, :any, required: true
 
   defp tree(assigns) do
     assigns =
@@ -1450,65 +1457,100 @@ defmodule BeamdashWeb.LogsLive do
           </tr>
         </thead>
         <tbody>
-          <tr
-            :for={row <- @rows}
-            id={"tree-" <> row.node.id}
-            class={[
-              "logs-tree-row",
-              "logs-tree-#{row.node.kind}",
-              row.node.problems > 0 && "has-problems"
-            ]}
-          >
-            <td style={"padding-left: #{0.5 + row.depth * 1.25}rem"}>
-              <button
-                :if={row.node.children != []}
-                type="button"
-                class="tree-toggle"
-                phx-click="tree_toggle"
-                phx-value-id={row.node.id}
-                aria-expanded={to_string(row.open?)}
-              >
-                <span aria-hidden="true">{if row.open?, do: "▾", else: "▸"}</span>
-                <span class={["tree-label", row.node.kind != :app && "mono"]}>{row.node.label}</span>
-              </button>
-              <span
-                :if={row.node.children == []}
-                class="tree-label tree-leaf mono"
-                title={row.node.sample && row.node.sample.message}
-              >
-                {row.node.label}
-              </span>
-              <span :if={row.node.new > 0} class="badge badge-new">
-                {if row.node.kind == :template, do: "new", else: "#{row.node.new} new"}
-              </span>
-              <span :if={row.node.more > 0} class="muted small">
-                (showing {length(row.node.children)}, {row.node.more} more)
-              </span>
-            </td>
-            <td class="num">{row.node.count}</td>
-            <td class={["num", row.node.problems > 0 && "error"]}>{row.node.problems}</td>
-            <td class={["num", row.node.warnings > 0 && "lvl-warning"]}>{row.node.warnings}</td>
-            <td>
-              <span class="spark mono" aria-hidden="true">{Tree.spark_text(row.node.spark)}</span>
-            </td>
-            <td class="small muted">{row.node.last_at && clock(row.node.last_at)}</td>
-            <td>
-              <button
-                type="button"
-                class="secondary small-btn"
-                phx-click="tree_show"
-                phx-value-id={row.node.id}
-                title="Show these lines on the Lines tab"
-              >
-                Lines
-              </button>
-            </td>
-          </tr>
+          <%= for row <- @rows do %>
+            <tr
+              id={"tree-" <> row.node.id}
+              class={[
+                "logs-tree-row",
+                "logs-tree-#{row.node.kind}",
+                row.node.problems > 0 && "has-problems"
+              ]}
+            >
+              <td style={"padding-left: #{0.5 + row.depth * 1.25}rem"}>
+                <button
+                  :if={row.node.children != []}
+                  type="button"
+                  class="tree-toggle"
+                  phx-click="tree_toggle"
+                  phx-value-id={row.node.id}
+                  aria-expanded={to_string(row.open?)}
+                >
+                  <span aria-hidden="true">{if row.open?, do: "▾", else: "▸"}</span>
+                  <span class={["tree-label", row.node.kind != :app && "mono"]}>{row.node.label}</span>
+                </button>
+                <button
+                  :if={row.node.children == [] and row.node.kind == :template}
+                  type="button"
+                  class="tree-toggle"
+                  phx-click="tree_detail"
+                  phx-value-id={row.node.id}
+                  aria-expanded={to_string(MapSet.member?(@detail, row.node.id))}
+                  title="Show the key=value fields of this message"
+                >
+                  <span aria-hidden="true">
+                    {if MapSet.member?(@detail, row.node.id), do: "▾", else: "▸"}
+                  </span>
+                  <span class="tree-label tree-leaf mono">{row.node.label}</span>
+                </button>
+                <span
+                  :if={row.node.children == [] and row.node.kind != :template}
+                  class="tree-label tree-leaf mono"
+                >
+                  {row.node.label}
+                </span>
+                <span :if={row.node.new > 0} class="badge badge-new">
+                  {if row.node.kind == :template, do: "new", else: "#{row.node.new} new"}
+                </span>
+                <span :if={row.node.more > 0} class="muted small">
+                  (showing {length(row.node.children)}, {row.node.more} more)
+                </span>
+              </td>
+              <td class="num">{row.node.count}</td>
+              <td class={["num", row.node.problems > 0 && "error"]}>{row.node.problems}</td>
+              <td class={["num", row.node.warnings > 0 && "lvl-warning"]}>{row.node.warnings}</td>
+              <td>
+                <span class="spark mono" aria-hidden="true">{Tree.spark_text(row.node.spark)}</span>
+              </td>
+              <td class="small muted">{row.node.last_at && clock(row.node.last_at)}</td>
+              <td>
+                <button
+                  type="button"
+                  class="secondary small-btn"
+                  phx-click="tree_show"
+                  phx-value-id={row.node.id}
+                  title="Show these lines on the Lines tab"
+                >
+                  Lines
+                </button>
+              </td>
+            </tr>
+            <tr
+              :if={row.node.kind == :template and MapSet.member?(@detail, row.node.id)}
+              class="logs-tree-detail"
+            >
+              <td colspan="7" style={"padding-left: #{0.5 + (row.depth + 1) * 1.25}rem"}>
+                <p class="muted small">Fields of the newest line in this kind of line</p>
+                <ul class="tree-fields">
+                  <li :for={{key, value} <- tree_fields(row.node.sample)}>
+                    <span class="tree-field-key">{key}</span> = <span class="mono">{value}</span>
+                  </li>
+                </ul>
+                <p :if={tree_fields(row.node.sample) == []} class="muted small">
+                  No key=value fields in this line.
+                </p>
+              </td>
+            </tr>
+          <% end %>
         </tbody>
       </table>
     </section>
     """
   end
+
+  defp tree_fields(%{message: message} = entry),
+    do: Map.get(entry, :fields) || Pretty.all_fields(message)
+
+  defp tree_fields(_entry), do: []
 
   defp summary(tree) do
     Enum.join(
