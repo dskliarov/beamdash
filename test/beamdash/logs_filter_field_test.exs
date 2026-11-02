@@ -27,6 +27,16 @@ defmodule Beamdash.LogsFilterFieldTest do
     assert Filter.match?(f, entry("state #st{count = 4,name = fixture}"))
   end
 
+  test "a pair whose value has quotes stays one term and still matches its line" do
+    pair = ~s(quote=he said "hi")
+    text = Filter.pair_term(pair)
+    f = Filter.parse(text)
+
+    assert f.include == [String.downcase(pair)]
+    assert Filter.match?(f, entry(Jason.encode!(%{"quote" => ~s(he said "hi")})))
+    refute Filter.match?(f, entry(Jason.encode!(%{"quote" => "other"})))
+  end
+
   test "pair_term quotes a pair with spaces so it stays one term" do
     assert Filter.pair_term("count=3") == "count=3"
     assert Filter.pair_term("name=my value") == ~s("name=my value")

@@ -6,13 +6,13 @@ defmodule Beamdash.Logs.Filter do
 
   alias Beamdash.Logs.Pretty
 
-  @term ~r/(-?)(?:"([^"]*)"|(\S+))/
+  @term ~r/(-?)(?:"((?:[^"\\]|\\.)*)"|(\S+))/
 
   @doc "Parses a query into lowercased `%{include: [...], exclude: [...]}` terms."
   def parse(text) do
     terms =
-      for [_, sign | words] <- Regex.scan(@term, text),
-          term = words |> Enum.join() |> String.trim() |> String.downcase(),
+      for [_, sign | groups] <- Regex.scan(@term, text),
+          term = groups |> term_text() |> String.trim() |> String.downcase(),
           term not in ["", "-"] do
         {sign == "-", term}
       end
@@ -29,28 +29,46 @@ defmodule Beamdash.Logs.Filter do
   """
   def match?(%{include: include, exclude: exclude}, entry) do
     haystack = haystack(entry)
+    pairs = pairs(include ++ exclude, entry)
 
-    Enum.all?(include, &term?(&1, haystack, entry)) and
-      not Enum.any?(exclude, &term?(&1, haystack, entry))
+    Enum.all?(include, &term?(&1, haystack, pairs)) and
+      not Enum.any?(exclude, &term?(&1, haystack, pairs))
   end
 
-  @doc "The filter text for a `key=value` pair, quoted when it has spaces."
+  @doc "The filter text for a `key=value` pair, quoted when it has spaces or quotes."
   def pair_term(pair) do
-    if String.contains?(pair, [" ", "\t"]), do: ~s("#{pair}"), else: pair
+    if String.contains?(pair, [" ", "\t", "\""]), do: ~s("#{escape(pair)}"), else: pair
   end
 
-  defp term?(term, haystack, entry) do
-    String.contains?(haystack, term) or field?(term, entry)
+  defp escape(text), do: text |> String.replace("\\", "\\\\") |> String.replace("\"", "\\\"")
+
+  defp unescape(text), do: Regex.replace(~r/\\(.)/, text, "\\1")
+
+  # Regex.scan leaves out trailing groups that did not match, so a bare word
+  # comes back as [quoted_empty, word] and a phrase as [phrase]
+  defp term_text([quoted]), do: unescape(quoted)
+  defp term_text([quoted, bare]), do: if(bare == "", do: unescape(quoted), else: bare)
+  defp term_text([]), do: ""
+
+  # the entry's fields, parsed once per match and only when a term is a key=value
+  defp pairs(terms, entry) do
+    if Enum.any?(terms, &String.contains?(&1, "=")) do
+      for {k, v} <- Pretty.all_fields(entry[:message] || ""),
+          into: MapSet.new(),
+          do: {String.downcase(k), String.downcase(v)}
+    else
+      MapSet.new()
+    end
   end
 
-  defp field?(term, entry) do
+  defp term?(term, haystack, pairs) do
+    String.contains?(haystack, term) or field?(term, pairs)
+  end
+
+  defp field?(term, pairs) do
     case String.split(term, "=", parts: 2) do
       [key, value] when key != "" and value != "" ->
-        value = String.trim(value)
-
-        Enum.any?(Pretty.all_fields(entry[:message] || ""), fn {k, v} ->
-          String.downcase(k) == key and String.downcase(v) == value
-        end)
+        MapSet.member?(pairs, {key, String.trim(value)})
 
       _ ->
         false
