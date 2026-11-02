@@ -83,6 +83,33 @@ defmodule Beamdash.LogsPrettyTest do
     assert [{:term, _}] = Pretty.segments(text)
   end
 
+  test "fields lists the map entries and key-value tuples of a message" do
+    assert Pretty.fields(~S|state #st{count = 3,name = fixture}|) ==
+             [{"count", "3"}, {"name", "fixture"}]
+
+    assert Pretty.fields(~S|got {status,ok} and #{retries => 2}|) ==
+             [{"status", "ok"}, {"retries", "2"}]
+  end
+
+  test "fields finds pairs inside nested terms" do
+    assert Pretty.fields(~S|{req,[{user,{id,7}}]}|) ==
+             [{"req", "[{user, {id, 7}}]"}, {"user", "{id, 7}"}, {"id", "7"}]
+  end
+
+  test "a message without a key-value term has no fields" do
+    assert Pretty.fields("plain text 42") == []
+    assert Pretty.fields("{1,2,3}") == []
+  end
+
+  test "fields_match? needs every filter pair" do
+    text = ~S|state #st{count = 3,name = fixture}|
+    assert Pretty.fields_match?([], text)
+    assert Pretty.fields_match?([{"count", "3"}], text)
+    assert Pretty.fields_match?([{"count", "3"}, {"name", "fixture"}], text)
+    refute Pretty.fields_match?([{"count", "4"}], text)
+    refute Pretty.fields_match?([{"count", "3"}], "no terms here")
+  end
+
   test "deep nesting does not crash" do
     text = String.duplicate("[", 100) <> String.duplicate("]", 100)
     assert [_ | _] = Pretty.segments(text)

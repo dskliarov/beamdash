@@ -267,8 +267,15 @@ defmodule BeamdashWeb.LogsTable do
     own_json? = assigns.entry.json_line? and is_list(json_rows)
     json_time? = own_json? and Enum.any?(@json_time_keys, &List.keymember?(json_rows, &1, 0))
 
+    fields = if json_rows == nil, do: Pretty.fields(assigns.entry.message), else: []
+
     assigns =
-      assign(assigns, json_rows: json_rows, props?: not own_json?, time?: not json_time?)
+      assign(assigns,
+        json_rows: json_rows,
+        props?: not own_json?,
+        time?: not json_time?,
+        fields: fields
+      )
 
     ~H"""
     <div class="detail log-detail" role="region">
@@ -287,6 +294,18 @@ defmodule BeamdashWeb.LogsTable do
         </details>
       <% else %>
         <pre>{pretty_message(@entry.message)}</pre>
+        <div :if={@fields != []} class="logs-fields" role="group" aria-label="Fields in this message">
+          <span class="muted small">Filter by field:</span>
+          <button
+            :for={{key, value} <- @fields}
+            type="button"
+            class="secondary small-btn"
+            phx-click="filter_field"
+            phx-value-key={key}
+            phx-value-value={value}
+            title="Show only lines with this field"
+          >{key} = {value}</button>
+        </div>
       <% end %>
       <table class="props">
         <tr :if={@time?}>

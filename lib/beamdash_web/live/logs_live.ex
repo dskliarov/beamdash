@@ -49,7 +49,7 @@ defmodule BeamdashWeb.LogsLive do
   use Phoenix.LiveView
 
   alias Beamdash.{Format, Logs, Target}
-  alias Beamdash.Logs.{Cascade, Filter, Group, Tree}
+  alias Beamdash.Logs.{Cascade, Filter, Group, Pretty, Tree}
 
   @max_rows 1_000
   @max_entries 2_000
@@ -77,6 +77,7 @@ defmodule BeamdashWeb.LogsLive do
         info: Logs.info(logs),
         filter_text: "",
         filter: Filter.parse(""),
+        field_filters: [],
         min_level: nil,
         pattern: nil,
         group?: true,
@@ -146,12 +147,23 @@ defmodule BeamdashWeb.LogsLive do
     {:noreply, socket |> assign(min_level: min_level) |> reset_rows()}
   end
 
+  defp event("filter_field", %{"key" => key, "value" => value}, socket) do
+    field_filters = Enum.uniq(socket.assigns.field_filters ++ [{key, value}])
+    {:noreply, socket |> assign(field_filters: field_filters) |> reset_rows()}
+  end
+
+  defp event("remove_field_filter", %{"key" => key, "value" => value}, socket) do
+    field_filters = List.delete(socket.assigns.field_filters, {key, value})
+    {:noreply, socket |> assign(field_filters: field_filters) |> reset_rows()}
+  end
+
   defp event("clear_filter", _params, socket) do
     {:noreply,
      socket
      |> assign(
        filter_text: "",
        filter: Filter.parse(""),
+       field_filters: [],
        min_level: nil,
        pattern: nil,
        scope: nil
@@ -881,7 +893,8 @@ defmodule BeamdashWeb.LogsLive do
   defp visible?(entry, a) do
     Filter.level_ok?(a.min_level, entry) and Filter.match?(a.filter, entry) and
       (a.pattern == nil or Group.key(entry) == a.pattern) and
-      (a.scope == nil or in_scope?(a.scope, entry, a))
+      (a.scope == nil or in_scope?(a.scope, entry, a)) and
+      Pretty.fields_match?(a.field_filters, entry.message)
   end
 
   defp in_scope?({:ids, _label, ids}, entry, _a), do: MapSet.member?(ids, entry.id)
@@ -1161,6 +1174,18 @@ defmodule BeamdashWeb.LogsLive do
             aria-label="Filter logs"
           />
         </form>
+        <span :for={{key, value} <- @field_filters} class="chip">
+          {key} = {value}
+          <button
+            type="button"
+            phx-click="remove_field_filter"
+            phx-value-key={key}
+            phx-value-value={value}
+            aria-label={"Remove filter #{key} = #{value}"}
+          >
+            ×
+          </button>
+        </span>
         <span :if={@pattern} class="chip">
           pattern: {elem(@pattern, 2)}
           <button
@@ -1615,5 +1640,5 @@ defmodule BeamdashWeb.LogsLive do
   defp filtering?(a),
     do:
       String.trim(a.filter_text) != "" or a.min_level != nil or a.pattern != nil or
-        a.scope != nil
+        a.scope != nil or a.field_filters != []
 end

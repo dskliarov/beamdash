@@ -25,32 +25,67 @@ defmodule Beamdash.Logs.Pretty do
   def segments(text) when byte_size(text) > @max_bytes, do: [{:text, text}]
 
   def segments(text) do
-    starts =
-      @candidate
-      |> Regex.scan(text, return: :index)
-      |> Enum.map(fn [{start, _} | _] -> start end)
-      |> Enum.take(@max_candidates)
-
     {pieces, cursor} =
-      Enum.reduce(starts, {[], 0}, fn start, {acc, cursor} ->
-        if start < cursor do
-          {acc, cursor}
-        else
-          case value(text, start, 0) do
-            {:ok, node, stop} ->
-              term = {:term, render(node, column(text, start))}
-              {[term, {:text, slice(text, cursor, start)} | acc], stop}
-
-            :error ->
-              {acc, cursor}
-          end
-        end
+      Enum.reduce(terms(text), {[], 0}, fn {start, node, stop}, {acc, cursor} ->
+        term = {:term, render(node, column(text, start))}
+        {[term, {:text, slice(text, cursor, start)} | acc], stop}
       end)
 
     [{:text, slice(text, cursor, byte_size(text))} | pieces]
     |> Enum.reverse()
     |> Enum.reject(&match?({:text, ""}, &1))
   end
+
+  @doc "The `{key, value}` pairs (as printed) of the map entries and `{key, value}` tuples in `text`."
+  def fields(text) do
+    text
+    |> terms()
+    |> Enum.flat_map(fn {_start, node, _stop} -> node |> pairs([]) |> Enum.reverse() end)
+    |> Enum.uniq()
+  end
+
+  @doc "True when `text` has every `{key, value}` in `filters`."
+  def fields_match?([], _text), do: true
+
+  def fields_match?(filters, text) do
+    found = fields(text)
+    Enum.all?(filters, &(&1 in found))
+  end
+
+  defp terms(text) do
+    starts =
+      @candidate
+      |> Regex.scan(text, return: :index)
+      |> Enum.map(fn [{start, _} | _] -> start end)
+      |> Enum.take(@max_candidates)
+
+    {found, _cursor} =
+      Enum.reduce(starts, {[], 0}, fn start, {acc, cursor} ->
+        if start < cursor do
+          {acc, cursor}
+        else
+          case value(text, start, 0) do
+            {:ok, node, stop} -> {[{start, node, stop} | acc], stop}
+            :error -> {acc, cursor}
+          end
+        end
+      end)
+
+    Enum.reverse(found)
+  end
+
+  defp pairs({:tuple, [{:leaf, key}, value]}, acc), do: pairs(value, [{key, flat(value)} | acc])
+
+  defp pairs({:map, _prefix, entries}, acc),
+    do:
+      Enum.reduce(entries, acc, fn {key, _sep, value}, acc ->
+        pairs(value, [{flat(key), flat(value)} | acc])
+      end)
+
+  defp pairs({kind, items}, acc) when kind in [:tuple, :list],
+    do: Enum.reduce(items, acc, &pairs/2)
+
+  defp pairs(_leaf_or_binary, acc), do: acc
 
   defp value(_text, _i, depth) when depth > @max_depth, do: :error
 

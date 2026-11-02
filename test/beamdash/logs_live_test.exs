@@ -376,6 +376,37 @@ defmodule Beamdash.LogsLiveTest do
     assert html =~ "1234"
   end
 
+  test "selecting a field of an Erlang term filters the lines to that field's value", ctx do
+    {_, socket} = ctx |> mount() |> render()
+
+    socket =
+      info(
+        socket,
+        {:beamdash_logs,
+         {:entries,
+          [
+            new_entry(30, "state #st{count = 3,name = fixture}"),
+            new_entry(31, "state #st{count = 4,name = other}")
+          ]}}
+      )
+
+    {_, socket} = render(socket)
+    {html, socket} = socket |> event("toggle_entry", %{"id" => "30", "row" => "g-30"}) |> render()
+    assert html =~ ~s(phx-value-key="count")
+
+    {html, socket} =
+      socket |> event("filter_field", %{"key" => "count", "value" => "3"}) |> render()
+
+    assert html =~ ~s(aria-label="Remove filter count = 3")
+    assert "state #st{count = 3,name = fixture}" in messages(html)
+    refute "state #st{count = 4,name = other}" in messages(html)
+
+    {html, _} =
+      socket |> event("remove_field_filter", %{"key" => "count", "value" => "3"}) |> render()
+
+    assert "state #st{count = 4,name = other}" in messages(html)
+  end
+
   test "a plain message's embedded terms are pretty-printed", ctx do
     {_, socket} = ctx |> mount() |> render()
     socket = info(socket, {:beamdash_logs, {:entries, [new_entry(13, "got {ok,[1,2]}")]}})
