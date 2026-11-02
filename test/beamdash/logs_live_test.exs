@@ -1109,7 +1109,7 @@ defmodule Beamdash.LogsLiveTest do
            ]
 
     {html, socket} = socket |> event("tree_expand_all") |> render()
-    assert Enum.take(tree_labels(html), -3) == ["stdlib", "lists", "bad range #"]
+    assert Enum.take(tree_labels(html), -3) == ["lists", "seq/2", "bad range #"]
 
     {html, socket} = socket |> event("tree_collapse_all") |> render()
     assert tree_labels(html) == ["no source", "stdlib"]

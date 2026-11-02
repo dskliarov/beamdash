@@ -73,6 +73,14 @@ defmodule Beamdash.LogsParseTest do
     refute Parse.line("plain text").json_line?
   end
 
+  test "a JSON line's mfa is its where when it has no module or logger" do
+    e = Parse.line(~s({"level":"info","mfa":"Elixir.Foo.Bar:run/2","msg":"hi"}))
+    assert e.where == "Elixir.Foo.Bar:run/2"
+
+    e = Parse.line(~s({"level":"info","module":"Mod","mfa":"Other:run/2","msg":"hi"}))
+    assert e.where == "Mod"
+  end
+
   test "json line with severity, message, logger, pid and a non-string value" do
     e =
       Parse.line(

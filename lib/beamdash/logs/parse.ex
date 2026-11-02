@@ -181,7 +181,7 @@ defmodule Beamdash.Logs.Parse do
   defp from_json(json, rest) do
     {level, json} = take(json, ["level", "severity", "lvl", "log.level"])
     {message, json} = take(json, ["msg", "message"])
-    {where, json} = take(json, ["module", "logger"])
+    {where, json} = take(json, ["module", "logger", "mfa"])
     {pid, json} = take(json, ["pid"])
 
     %{

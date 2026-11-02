@@ -1,18 +1,19 @@
 defmodule Beamdash.Logs.Tree do
   @moduledoc """
   The Logs tab's Tree: the log lines arranged by where they came from,
-  application → module → line template, so the part of the system that is
-  noisy or failing shows at a glance.
+  application → module → function → line template, so the part of the
+  system that is noisy or failing shows at a glance.
 
     * The module comes from the line's source (`where`: `Module:fun/arity`
-      from the logger handler, or a JSON line's `module`/`logger`), its
+      from the logger handler, or a JSON line's `module`/`logger`/`mfa`), its
       application from the node (`apps`: module name to application, from
       `apps_map/1` of `Beamdash.Target.module_apps/1`). Lines without a
       source (most `kubectl logs` text) go under "#{"no source"}", modules
       the node doesn't list under "#{"application unknown"}".
-    * A template is the message with its variable parts masked
-      (`Beamdash.Logs.Group.key/1`), over every level and function of the
-      module.
+    * A line whose source names a function goes under a function branch
+      (`fun/arity`) of its module; a template is the message with its
+      variable parts masked (`Beamdash.Logs.Group.key/1`), within one
+      function, so the same message under two functions is two templates.
 
   Every node counts its lines, problems (error and above) and warnings,
   when it first and last logged, and its lines over the window
@@ -64,6 +65,16 @@ defmodule Beamdash.Logs.Tree do
     end
   end
 
+  @doc "The function and arity a line's source names (`fun/1`), or nil."
+  def function_of(%{where: where}) when is_binary(where) do
+    case Regex.run(where_regex(), String.trim(where)) do
+      [_, _mod, fun] -> fun
+      nil -> nil
+    end
+  end
+
+  def function_of(_entry), do: nil
+
   defp strip("Elixir." <> name), do: name
   defp strip(name), do: name
 
@@ -80,21 +91,27 @@ defmodule Beamdash.Logs.Tree do
 
   @doc """
   True when the line is in the part of the tree `scope` names:
-  `{:app, app}`, `{:module, app, module}` or `{:template, app, module,
-  template}` (a node's `scope`).
+  `{:app, app}`, `{:module, app, module}`, `{:function, app, module, fun}`
+  or `{:template, app, module, fun, template}` (a node's `scope`).
   """
   def in_scope?({:app, app}, entry, apps), do: elem(place(entry, apps), 0) == app
   def in_scope?({:module, app, mod}, entry, apps), do: place(entry, apps) == {app, mod}
 
-  def in_scope?({:template, app, mod, template}, entry, apps),
-    do: place(entry, apps) == {app, mod} and template(entry) == template
+  def in_scope?({:function, app, mod, fun}, entry, apps),
+    do: place(entry, apps) == {app, mod} and function_of(entry) == fun
 
-  @doc "What a scope shows on its filter chip: `app › module › template`."
+  def in_scope?({:template, app, mod, fun, template}, entry, apps),
+    do:
+      place(entry, apps) == {app, mod} and function_of(entry) == fun and
+        template(entry) == template
+
+  @doc "What a scope shows on its filter chip: `app › module › function › template`."
   def scope_label({:app, app}), do: app
   def scope_label({:module, app, mod}), do: Enum.join([app, mod], " › ")
+  def scope_label({:function, app, mod, fun}), do: Enum.join([app, mod, fun], " › ")
 
-  def scope_label({:template, app, mod, template}),
-    do: [app, mod, template] |> Enum.reject(&is_nil/1) |> Enum.join(" › ")
+  def scope_label({:template, app, mod, fun, template}),
+    do: [app, mod, fun, template] |> Enum.reject(&is_nil/1) |> Enum.join(" › ")
 
   @doc """
   The tree of `entries` (newest first): `%{nodes, lines, modules,
@@ -121,17 +138,30 @@ defmodule Beamdash.Logs.Tree do
       Enum.reduce(keyed, %{}, fn {entry, {_key, template}}, acc ->
         {app, mod} = place(entry, apps)
         s = line_stats(entry, window)
-        Map.update(acc, {app, mod, template}, s, &merge(&1, s))
+        Map.update(acc, {app, mod, function_of(entry), template}, s, &merge(&1, s))
       end)
 
     templates =
-      for {{app, mod, template}, s} <- leaves do
+      for {{app, mod, fun, template}, s} <- leaves do
         new = if since && s.first && s.first > since, do: 1, else: 0
-        {{app, mod}, node(:template, template, {:template, app, mod, template}, s, [], new)}
+
+        {{app, mod, fun},
+         node(:template, template, {:template, app, mod, fun, template}, s, [], new)}
       end
 
+    # a line whose source names a function hangs its templates under that function
+    {with_fun, plain} = Enum.split_with(templates, fn {{_, _, fun}, _} -> fun != nil end)
+
+    functions =
+      for {{app, mod, fun}, children} <- Enum.group_by(with_fun, &elem(&1, 0), &elem(&1, 1)) do
+        {{app, mod}, parent(:function, fun, {:function, app, mod, fun}, children)}
+      end
+
+    under_module =
+      Enum.map(plain, fn {{app, mod, _}, node} -> {{app, mod}, node} end) ++ functions
+
     # a line without a source has no module: its templates hang off the app
-    {loose, in_modules} = Enum.split_with(templates, fn {{_app, mod}, _} -> mod == nil end)
+    {loose, in_modules} = Enum.split_with(under_module, fn {{_app, mod}, _} -> mod == nil end)
 
     modules =
       for {{app, mod}, children} <- Enum.group_by(in_modules, &elem(&1, 0), &elem(&1, 1)) do

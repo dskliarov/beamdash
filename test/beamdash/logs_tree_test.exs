@@ -55,7 +55,7 @@ defmodule Beamdash.LogsTreeTest do
     tree = Tree.build(entries(), apps: apps())
 
     assert labels(tree.nodes) == ["my_app", "stdlib", "application unknown", "no source"]
-    assert %{lines: 7, modules: 4, templates: 5} = tree
+    assert %{lines: 7, modules: 4, templates: 6} = tree
     {oldest, newest} = tree.window
     assert same_time?(oldest, 0) and same_time?(newest, 60)
 
@@ -64,13 +64,20 @@ defmodule Beamdash.LogsTreeTest do
     assert labels(my_app.children) == ["MyApp.Repo", "MyApp.Web"]
 
     [repo, web] = my_app.children
-    # one template over both functions and levels
-    assert [%{label: "timeout after # ms", count: 2, problems: 2, kind: :template} = t] =
+    # each function gets its own branch, the most problems first
+    assert [%{label: "checkout/1", kind: :function}, %{label: "query/2", kind: :function}] =
              repo.children
 
+    [_checkout, query] = repo.children
+
+    assert [%{label: "timeout after # ms", count: 1, problems: 1, kind: :template} = t] =
+             query.children
+
     assert t.sample.id == 7
-    assert same_time?(t.first_at, 55) and same_time?(t.last_at, 60)
-    assert [%{label: "GET /users/# #", count: 2}] = web.children
+    assert same_time?(t.first_at, 60) and same_time?(t.last_at, 60)
+
+    assert [%{label: "call/2", kind: :function, children: [%{label: "GET /users/# #", count: 2}]}] =
+             web.children
 
     stdlib = Enum.find(tree.nodes, &(&1.label == "stdlib"))
     assert %{warnings: 1, problems: 0} = stdlib
@@ -94,10 +101,11 @@ defmodule Beamdash.LogsTreeTest do
 
   test "templates first seen after since are new, and parents count them" do
     tree = Tree.build(entries(), apps: apps(), since: DateTime.add(@t0, 50, :second))
-    assert tree.new == 1
+    # checkout/1 and query/2 each have a template first seen after `since`
+    assert tree.new == 2
     [my_app | _] = tree.nodes
-    assert my_app.new == 1
-    assert [%{new: 1}] = hd(my_app.children).children
+    assert my_app.new == 2
+    assert [%{new: 1}, %{new: 1}] = hd(my_app.children).children
     assert Tree.build(entries(), apps: apps()).new == 0
   end
 
@@ -113,7 +121,7 @@ defmodule Beamdash.LogsTreeTest do
              [{"my_app", 0}, {"MyApp.Repo", 1}, {"MyApp.Web", 1}]
 
     all = Tree.rows(tree.nodes, MapSet.new(Tree.parent_ids(tree.nodes)))
-    assert length(all) == 4 + 4 + 5
+    assert length(all) == 4 + 4 + 5 + 6
 
     repo = hd(my_app.children)
     assert Tree.find(tree.nodes, repo.id) == repo
@@ -127,11 +135,22 @@ defmodule Beamdash.LogsTreeTest do
     refute Tree.in_scope?({:app, "stdlib"}, e7, apps())
     assert Tree.in_scope?({:module, "my_app", "MyApp.Repo"}, e7, apps())
     refute Tree.in_scope?({:module, "my_app", "MyApp.Repo"}, e5, apps())
-    assert Tree.in_scope?({:template, "my_app", "MyApp.Repo", "timeout after # ms"}, e7, apps())
-    assert Tree.in_scope?({:template, "no source", nil, "plain text line"}, e3, apps())
+    assert Tree.in_scope?({:function, "my_app", "MyApp.Repo", "query/2"}, e7, apps())
+    refute Tree.in_scope?({:function, "my_app", "MyApp.Repo", "query/2"}, e5, apps())
 
-    assert Tree.scope_label({:template, "no source", nil, "plain text line"}) ==
+    assert Tree.in_scope?(
+             {:template, "my_app", "MyApp.Repo", "query/2", "timeout after # ms"},
+             e7,
+             apps()
+           )
+
+    assert Tree.in_scope?({:template, "no source", nil, nil, "plain text line"}, e3, apps())
+
+    assert Tree.scope_label({:template, "no source", nil, nil, "plain text line"}) ==
              "no source › plain text line"
+
+    assert Tree.scope_label({:function, "my_app", "MyApp.Repo", "query/2"}) ==
+             "my_app › MyApp.Repo › query/2"
 
     assert Tree.scope_label({:module, "my_app", "MyApp.Repo"}) == "my_app › MyApp.Repo"
   end
@@ -146,7 +165,17 @@ defmodule Beamdash.LogsTreeTest do
     cache = Map.put(tree.template_cache, key, "cached kind")
     again = Tree.build(entries(), apps: apps(), template_cache: cache)
     [my_app | _] = again.nodes
-    assert "cached kind" in Enum.map(hd(my_app.children).children, & &1.label)
+    templates = Enum.flat_map(hd(my_app.children).children, & &1.children)
+    assert "cached kind" in Enum.map(templates, & &1.label)
+  end
+
+  test "a line with only an mfa gets its module and a function branch" do
+    tree = Tree.build([e(1, 0, :info, "Elixir.Foo.Bar:run/2", "x")], apps: apps())
+
+    [unknown] = tree.nodes
+    assert unknown.label == "application unknown"
+    assert [%{label: "Foo.Bar", kind: :module, children: [fun]}] = unknown.children
+    assert %{label: "run/2", kind: :function, children: [%{label: "x", kind: :template}]} = fun
   end
 
   test "an empty buffer" do
