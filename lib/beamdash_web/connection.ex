@@ -67,7 +67,8 @@ defmodule BeamdashWeb.Connection do
           kube_pod: "",
           kube_pods: nil,
           kube_pods_listing: false,
-          kube_target: nil,
+          kube_target:
+            if(status == :connected, do: kube_target(Target.source(), clusters.kube_clusters)),
           kube_restore_ref: nil,
           kube_containers: nil,
           kube_container: nil,
@@ -313,7 +314,11 @@ defmodule BeamdashWeb.Connection do
            kube_pod: pod,
            kube_container: container,
            kube_binary: binary,
-           kube_target: kube_target(socket.assigns.conn, cluster, namespace, pod)
+           kube_target:
+             kube_target(
+               {:kubectl, %{kubeconfig: cluster, namespace: namespace, pod: pod}},
+               socket.assigns.conn.kube_clusters
+             )
          )
          |> to_system()}
 
@@ -354,7 +359,9 @@ defmodule BeamdashWeb.Connection do
          node: node,
          error: nil,
          node_input: Atom.to_string(node),
-         reconnecting: nil
+         reconnecting: nil,
+         kube_target:
+           kube_target(Target.source(), Map.get(socket.assigns.conn, :kube_clusters, []))
        )
        |> refresh()}
 
@@ -471,14 +478,20 @@ defmodule BeamdashWeb.Connection do
     :exit, _ -> []
   end
 
-  defp kube_target(conn, cluster, namespace, pod) do
+  @doc false
+  def kube_target({:kubectl, %{kubeconfig: kubeconfig, namespace: namespace, pod: pod}}, clusters)
+      when is_binary(kubeconfig) do
+    default = Path.rootname(Path.basename(kubeconfig))
+
     name =
-      Enum.find_value(conn.kube_clusters, Path.basename(cluster), fn entry ->
-        entry.path == cluster && entry.name
+      Enum.find_value(clusters, default, fn entry ->
+        entry.path == kubeconfig && entry.name
       end)
 
     %{cluster: name, namespace: namespace, pod: pod}
   end
+
+  def kube_target(_source, _clusters), do: nil
 
   defp refresh(%{assigns: %{conn: %{status: :connected}}} = socket) do
     case Target.node_info() do

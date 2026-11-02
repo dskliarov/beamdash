@@ -70,6 +70,19 @@ defmodule Beamdash.ConnectionBarTest do
     assert :binary.match(html, "prod · shop") < :binary.match(html, "app@app-1")
   end
 
+  test "a Kubernetes source gives its cluster name, namespace and pod" do
+    clusters = [%{name: "prod", path: "/kube/prod.yaml"}]
+    source = {:kubectl, %{kubeconfig: "/kube/prod.yaml", namespace: "shop", pod: "app-1"}}
+
+    assert Connection.kube_target(source, clusters) ==
+             %{cluster: "prod", namespace: "shop", pod: "app-1"}
+
+    assert Connection.kube_target(source, []) ==
+             %{cluster: "prod", namespace: "shop", pod: "app-1"}
+
+    assert Connection.kube_target(:direct, clusters) == nil
+  end
+
   test "Connect, node info, then Disconnect, as the bar shows them", %{node: node} do
     :ok = Target.subscribe()
 
