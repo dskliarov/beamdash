@@ -102,6 +102,24 @@ defmodule Beamdash.LogsPrettyTest do
     assert Pretty.fields(json) == [{"count", "3"}, {"level", "info"}, {"meta", ~S|{"a":1}|}]
   end
 
+  @struct ~S|%{"campaign_id" => "298821", "event" => "impression", "event_count" => "5555"}|
+
+  test "a map with string keys gives its pairs unquoted" do
+    assert Pretty.fields(@struct) == [
+             {"campaign_id", "298821"},
+             {"event", "impression"},
+             {"event_count", "5555"}
+           ]
+  end
+
+  test "all_fields adds the pairs of a struct inside a JSON string value" do
+    json = Jason.encode!(%{"level" => "info", "text" => @struct})
+
+    assert {"campaign_id", "298821"} in Pretty.all_fields(json)
+    assert {"level", "info"} in Pretty.all_fields(json)
+    refute {"campaign_id", "298821"} in Pretty.fields(json)
+  end
+
   test "a message without a key-value term has no fields" do
     assert Pretty.fields("plain text 42") == []
     assert Pretty.fields("{1,2,3}") == []

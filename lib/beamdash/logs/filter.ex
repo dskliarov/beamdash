@@ -48,7 +48,7 @@ defmodule Beamdash.Logs.Filter do
       [key, value] when key != "" and value != "" ->
         value = String.trim(value)
 
-        Enum.any?(Pretty.fields(entry[:message] || ""), fn {k, v} ->
+        Enum.any?(Pretty.all_fields(entry[:message] || ""), fn {k, v} ->
           String.downcase(k) == key and String.downcase(v) == value
         end)
 

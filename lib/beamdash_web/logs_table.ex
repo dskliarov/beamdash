@@ -279,7 +279,15 @@ defmodule BeamdashWeb.LogsTable do
         time?: not json_time?,
         pairs: pairs,
         pair_map: Map.new(pairs),
-        plain_pairs: if(json_rows == nil, do: pairs, else: [])
+        plain_pairs: if(json_rows == nil, do: pairs, else: []),
+        struct_rows:
+          for(
+            {key, value, true} <- json_rows || [],
+            fields = Pretty.fields(value),
+            fields != [],
+            into: %{},
+            do: {key, fields}
+          )
       )
 
     ~H"""
@@ -296,7 +304,26 @@ defmodule BeamdashWeb.LogsTable do
                   </label>
                   <span :if={!Map.has_key?(@pair_map, key)}>{key}</span>
                 </th>
-                <td><.json_cell key={key} value={value} string?={string?} node={@node} /></td>
+                <td>
+                  <.json_cell key={key} value={value} string?={string?} node={@node} />
+                  <table
+                    :if={Map.has_key?(@struct_rows, key)}
+                    class="logs-json logs-struct"
+                    aria-label={"Fields in #{key}"}
+                  >
+                    <tbody>
+                      <tr :for={{k, v} <- @struct_rows[key]}>
+                        <th scope="row">
+                          <label class="field-pick">
+                            <input type="checkbox" name="pairs[]" value={"#{k}=#{v}"} />
+                            {k}
+                          </label>
+                        </th>
+                        <td class="mono">{v}</td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </td>
               </tr>
             </tbody>
           </table>
@@ -306,17 +333,25 @@ defmodule BeamdashWeb.LogsTable do
           </details>
         <% else %>
           <pre>{pretty_message(@entry.message)}</pre>
+          <table
+            :if={@plain_pairs != []}
+            class="logs-json logs-struct"
+            aria-label="Fields in this message"
+          >
+            <tbody>
+              <tr :for={{key, value} <- @plain_pairs}>
+                <th scope="row">
+                  <label class="field-pick">
+                    <input type="checkbox" name="pairs[]" value={"#{key}=#{value}"} />
+                    {key}
+                  </label>
+                </th>
+                <td class="mono">{value}</td>
+              </tr>
+            </tbody>
+          </table>
         <% end %>
         <table class="props">
-          <tr :for={{key, value} <- @plain_pairs}>
-            <th>
-              <label class="field-pick">
-                <input type="checkbox" name="pairs[]" value={"#{key}=#{value}"} />
-                {key}
-              </label>
-            </th>
-            <td class="mono">{value}</td>
-          </tr>
           <tr :if={@time?}>
             <th>time</th>
             <td class="mono">{if @entry.at, do: DateTime.to_iso8601(@entry.at), else: "—"}</td>

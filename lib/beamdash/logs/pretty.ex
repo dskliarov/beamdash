@@ -68,6 +68,28 @@ defmodule Beamdash.Logs.Pretty do
   defp json_text(value) when is_binary(value), do: value
   defp json_text(value), do: Jason.encode!(value)
 
+  defp field_text(node), do: node |> flat() |> unquote_text()
+
+  defp unquote_text(<<?", _::binary>> = text) when byte_size(text) >= 2 do
+    if String.ends_with?(text, "\""), do: binary_part(text, 1, byte_size(text) - 2), else: text
+  end
+
+  defp unquote_text(text), do: text
+
+  @doc "The fields of `text`, and of the terms inside a JSON object's string values."
+  def all_fields(text) when byte_size(text) <= 262_144 do
+    case json_object(text) do
+      {:ok, map} ->
+        inner = for value <- Map.values(map), is_binary(value), pair <- fields(value), do: pair
+        Enum.uniq(fields(text) ++ inner)
+
+      :error ->
+        fields(text)
+    end
+  end
+
+  def all_fields(_text), do: []
+
   defp terms(text) do
     starts =
       @candidate
@@ -90,12 +112,13 @@ defmodule Beamdash.Logs.Pretty do
     Enum.reverse(found)
   end
 
-  defp pairs({:tuple, [{:leaf, key}, value]}, acc), do: pairs(value, [{key, flat(value)} | acc])
+  defp pairs({:tuple, [{:leaf, key}, value]}, acc),
+    do: pairs(value, [{unquote_text(key), field_text(value)} | acc])
 
   defp pairs({:map, _prefix, entries}, acc),
     do:
       Enum.reduce(entries, acc, fn {key, _sep, value}, acc ->
-        pairs(value, [{flat(key), flat(value)} | acc])
+        pairs(value, [{field_text(key), field_text(value)} | acc])
       end)
 
   defp pairs({kind, items}, acc) when kind in [:tuple, :list],

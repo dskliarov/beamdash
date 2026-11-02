@@ -453,6 +453,26 @@ defmodule Beamdash.LogsLiveTest do
     refute "{&quot;count&quot;:4,&quot;name&quot;:&quot;other&quot;}" in messages(html)
   end
 
+  test "a struct in a JSON text value gets its items in the details under that value", ctx do
+    {_, socket} = ctx |> mount() |> render()
+
+    struct = ~S|%{"campaign_id" => "298821", "event" => "impression"}|
+    message = Jason.encode!(%{"level" => "info", "text" => "bid " <> struct})
+
+    socket =
+      info(socket, {:beamdash_logs, {:entries, [%{new_entry(40, message) | json_line?: true}]}})
+
+    {_, socket} = render(socket)
+    {html, socket} = socket |> event("toggle_entry", %{"id" => "40", "row" => "g-40"}) |> render()
+
+    assert html =~ ~s(aria-label="Fields in text")
+    assert html =~ ~s(name="pairs[]" value="campaign_id=298821")
+
+    {html, _} = socket |> event("field_filter", %{"pairs" => ["campaign_id=298821"]}) |> render()
+    escaped = message |> Phoenix.HTML.html_escape() |> Phoenix.HTML.safe_to_string()
+    assert escaped in messages(html)
+  end
+
   test "a plain message's embedded terms are pretty-printed", ctx do
     {_, socket} = ctx |> mount() |> render()
     socket = info(socket, {:beamdash_logs, {:entries, [new_entry(13, "got {ok,[1,2]}")]}})
