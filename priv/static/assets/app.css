@@ -1237,6 +1237,7 @@ dl.relations .pid-other { background: var(--app-box); border: 1.5px solid var(--
 .logs-json th { width: 1%; white-space: nowrap; color: var(--muted); }
 .logs-json td pre { margin: 0; }
 .logs-json-original { margin: 8px 0; }
+.tree-field-actions { display: flex; flex-wrap: wrap; gap: 8px; margin: 8px 0; }
 .logs-json-original summary { cursor: pointer; color: var(--muted); }
 .lvl { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
 .lvl-emergency, .lvl-alert, .lvl-critical, .lvl-error { color: var(--error); font-weight: 600; }

@@ -1245,14 +1245,42 @@ defmodule Beamdash.LogsLiveTest do
 
     node = tree_node(socket, "state #st{count = #,name = fixture}")
     {html, socket} = socket |> event("tree_detail", %{"id" => node.id}) |> render()
-    assert html =~ ~s(<th scope="row">count</th>)
+    assert html =~ ~s(phx-value-key="count")
     assert html =~ "<pre>3</pre>"
-    assert html =~ ~s(<th scope="row">name</th>)
+    assert html =~ ~s(phx-value-key="name")
 
     json_node = template_for(socket.assigns.tree.nodes, 61)
     {html, _} = socket |> event("tree_detail", %{"id" => json_node.id}) |> render()
-    assert html =~ ~s(<th scope="row">campaign_id</th>)
+    assert html =~ ~s(phx-value-key="campaign_id")
     assert html =~ "298821"
+  end
+
+  test "regroup by checked fields adds a branch per value, and ungroup removes them", ctx do
+    {_, socket} = ctx |> mount() |> render()
+    socket = event(socket, "tab", %{"tab" => "tree"})
+
+    lines = [
+      new_entry(70, "state #st{count = 3,name = fixture}"),
+      new_entry(71, "state #st{count = 4,name = fixture}")
+    ]
+
+    socket = socket |> info({:beamdash_logs, {:entries, lines}}) |> async_result(:tree_apps)
+    {_, socket} = socket |> event("tree_expand_all") |> render()
+
+    node = tree_node(socket, "state #st{count = #,name = fixture}")
+    {_, socket} = socket |> event("tree_detail", %{"id" => node.id}) |> render()
+    {_, socket} = socket |> event("tree_check", %{"key" => "count", "value" => "3"}) |> render()
+    {_, socket} = socket |> event("tree_regroup") |> render()
+
+    assert socket.assigns.tree_group_keys == ["count"]
+    {html, socket} = socket |> event("tree_expand_all") |> render()
+    labels = tree_labels(html)
+    assert "count = 3" in labels
+    assert "count = 4" in labels
+
+    {html, socket} = socket |> event("tree_ungroup") |> render()
+    assert socket.assigns.tree_group_keys == []
+    refute "count = 3" in tree_labels(html)
   end
 
   test "Lines on a tree row shows that row's lines on the Lines tab", ctx do

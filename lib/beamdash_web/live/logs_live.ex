@@ -108,6 +108,8 @@ defmodule BeamdashWeb.LogsLive do
         tree: nil,
         tree_open: nil,
         tree_detail: MapSet.new(),
+        tree_group_keys: [],
+        tree_checked: [],
         tree_apps: %{},
         tree_apps_node: nil,
         tree_apps_error: nil,
@@ -196,6 +198,29 @@ defmodule BeamdashWeb.LogsLive do
   defp event("tree_detail", %{"id" => id}, socket) do
     {:noreply, assign(socket, tree_detail: toggle(socket.assigns.tree_detail, id))}
   end
+
+  defp event("tree_check", %{"key" => key, "value" => value}, socket) do
+    pair = {key, value}
+    checked = socket.assigns.tree_checked
+
+    checked =
+      if pair in checked, do: List.delete(checked, pair), else: checked ++ [pair]
+
+    {:noreply, assign(socket, tree_checked: checked)}
+  end
+
+  defp event("tree_filter", _params, socket) do
+    pairs = Enum.map(socket.assigns.tree_checked, fn {key, value} -> "#{key}=#{value}" end)
+    event("field_filter", %{"pairs" => pairs}, socket)
+  end
+
+  defp event("tree_regroup", _params, socket) do
+    keys = socket.assigns.tree_checked |> Enum.map(&elem(&1, 0)) |> Enum.uniq()
+    {:noreply, socket |> assign(tree_group_keys: keys) |> refresh_tree()}
+  end
+
+  defp event("tree_ungroup", _params, socket),
+    do: {:noreply, socket |> assign(tree_group_keys: []) |> refresh_tree()}
 
   defp event("tree_expand_all", _params, %{assigns: %{tree: %{nodes: nodes}}} = socket),
     do: {:noreply, assign(socket, tree_open: MapSet.new(Tree.parent_ids(nodes)))}
@@ -916,7 +941,9 @@ defmodule BeamdashWeb.LogsLive do
   defp lines_scope(scope), do: scope
 
   defp tree_scope?(scope),
-    do: is_tuple(scope) and elem(scope, 0) in [:app, :module, :function, :template]
+    do:
+      is_tuple(scope) and
+        elem(scope, 0) in [:app, :module, :function, :template, :field, :group_template]
 
   defp scope_label({:ids, label, _}), do: label
   defp scope_label({:window, label, _, _}), do: label
@@ -1041,7 +1068,8 @@ defmodule BeamdashWeb.LogsLive do
       Tree.build(filtered(a),
         apps: a.tree_apps,
         since: a.tree_since,
-        template_cache: a.tree_cache
+        template_cache: a.tree_cache,
+        group_keys: a.tree_group_keys
       )
 
     assign(socket, tree: tree, tree_cache: tree.template_cache)
@@ -1304,6 +1332,8 @@ defmodule BeamdashWeb.LogsLive do
         tree={@tree}
         open={tree_open(assigns)}
         detail={@tree_detail}
+        group_keys={@tree_group_keys}
+        checked={@tree_checked}
         apps_error={@tree_apps_error}
         since={@tree_since}
         source={@info.source}
@@ -1406,6 +1436,8 @@ defmodule BeamdashWeb.LogsLive do
   attr :since, :any, required: true
   attr :source, :atom, required: true
   attr :detail, :any, required: true
+  attr :group_keys, :list, default: []
+  attr :checked, :list, default: []
 
   defp tree(assigns) do
     assigns =
@@ -1429,6 +1461,17 @@ defmodule BeamdashWeb.LogsLive do
           </button>
           <button type="button" class="secondary small-btn" phx-click="tree_collapse_all">
             Collapse all
+          </button>
+          <span :if={@group_keys != []} class="muted small">
+            grouped by {Enum.join(@group_keys, ", ")}
+          </span>
+          <button
+            :if={@group_keys != []}
+            type="button"
+            class="secondary small-btn"
+            phx-click="tree_ungroup"
+          >
+            Ungroup
           </button>
         </span>
       </div>
@@ -1537,7 +1580,18 @@ defmodule BeamdashWeb.LogsLive do
                 >
                   <tbody>
                     <tr :for={{key, value} <- tree_fields(row.node.sample)}>
-                      <th scope="row">{key}</th>
+                      <th scope="row">
+                        <label class="field-pick">
+                          <input
+                            type="checkbox"
+                            checked={{key, value} in @checked}
+                            phx-click="tree_check"
+                            phx-value-key={key}
+                            phx-value-value={value}
+                          />
+                          {key}
+                        </label>
+                      </th>
                       <td><pre>{value}</pre></td>
                     </tr>
                   </tbody>
@@ -1545,6 +1599,24 @@ defmodule BeamdashWeb.LogsLive do
                 <p :if={tree_fields(row.node.sample) == []} class="muted small">
                   No key=value fields in this line.
                 </p>
+                <div :if={tree_fields(row.node.sample) != []} class="tree-field-actions">
+                  <button
+                    type="button"
+                    class="secondary small-btn"
+                    phx-click="tree_filter"
+                    disabled={@checked == []}
+                  >
+                    Filter by checked fields
+                  </button>
+                  <button
+                    type="button"
+                    class="small-btn"
+                    phx-click="tree_regroup"
+                    disabled={@checked == []}
+                  >
+                    Regroup by checked fields
+                  </button>
+                </div>
               </td>
             </tr>
           <% end %>
@@ -1554,8 +1626,10 @@ defmodule BeamdashWeb.LogsLive do
     """
   end
 
-  defp tree_fields(%{message: message} = entry),
-    do: Map.get(entry, :fields) || Pretty.all_fields(message)
+  defp tree_fields(%{message: message} = entry) do
+    (Map.get(entry, :fields) || Pretty.all_fields(message))
+    |> Enum.reject(fn {key, _value} -> key == "text" end)
+  end
 
   defp tree_fields(_entry), do: []
 
