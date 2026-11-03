@@ -199,7 +199,7 @@ defmodule BeamdashWeb.LogsLive do
     {:noreply, assign(socket, tree_detail: toggle(socket.assigns.tree_detail, id))}
   end
 
-  defp event("tree_check", %{"key" => key, "value" => value}, socket) do
+  defp event("tree_check", %{"key" => key, "val" => value}, socket) do
     pair = {key, value}
     checked = socket.assigns.tree_checked
 
@@ -1587,7 +1587,7 @@ defmodule BeamdashWeb.LogsLive do
                             checked={{key, value} in @checked}
                             phx-click="tree_check"
                             phx-value-key={key}
-                            phx-value-value={value}
+                            phx-value-val={value}
                           />
                           {key}
                         </label>

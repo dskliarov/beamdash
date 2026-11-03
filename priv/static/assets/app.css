@@ -1530,7 +1530,7 @@ button.danger { background: var(--error); border-color: var(--error); color: #ff
 .logs-tree { margin-top: 10px; }
 .logs-tree-actions { display: inline-flex; gap: 6px; }
 .logs-tree-table { width: 100%; margin-top: 8px; table-layout: fixed; }
-.logs-tree-table td:first-child, .logs-tree-table th:first-child { width: 60%; }
+.logs-tree-table > thead > tr > th:first-child, .logs-tree-table > tbody > tr > td:first-child { width: 60%; }
 .logs-tree-table td { vertical-align: top; }
 .logs-tree-row.has-problems.logs-tree-app td:first-child,
 .logs-tree-row.has-problems.logs-tree-module td:first-child { box-shadow: inset 3px 0 0 var(--error); }
@@ -1539,10 +1539,10 @@ button.danger { background: var(--error); border-color: var(--error); color: #ff
 .tree-toggle:hover .tree-label { text-decoration: underline; }
 .tree-leaf { margin-left: 18px; white-space: normal; overflow-wrap: anywhere; }
 .logs-tree .tree-label { white-space: normal; overflow-wrap: anywhere; min-width: 0; }
-.logs-tree-table td:first-child { overflow-wrap: anywhere; }
+.logs-tree-table > tbody > tr > td:first-child { overflow-wrap: anywhere; }
 .logs-tree .tree-toggle { display: flex; width: 100%; max-width: 100%; }
 .logs-tree .spark { white-space: pre; letter-spacing: -1px; color: var(--accent); display: block; overflow: hidden; }
-.logs-tree-table th:nth-child(5), .logs-tree-table td:nth-child(5) { width: 200px; }
+.logs-tree-table > thead > tr > th:nth-child(5), .logs-tree-table > tbody > tr > td:nth-child(5) { width: 200px; }
 .connected-name { display: inline-flex; flex-direction: column; line-height: 1.3; }
 .kube-target { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 0; font-size: 13px; color: var(--fg); }
 .kube-part { display: inline-flex; align-items: baseline; gap: 6px; padding: 0 10px; }

@@ -1269,7 +1269,7 @@ defmodule Beamdash.LogsLiveTest do
 
     node = tree_node(socket, "state #st{count = #,name = fixture}")
     {_, socket} = socket |> event("tree_detail", %{"id" => node.id}) |> render()
-    {_, socket} = socket |> event("tree_check", %{"key" => "count", "value" => "3"}) |> render()
+    {_, socket} = socket |> event("tree_check", %{"key" => "count", "val" => "3"}) |> render()
     {_, socket} = socket |> event("tree_regroup") |> render()
 
     assert socket.assigns.tree_group_keys == ["count"]
