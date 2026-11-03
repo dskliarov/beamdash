@@ -111,6 +111,7 @@ defmodule BeamdashWeb.LogsLive do
         tree_group_keys: [],
         tree_hidden: [],
         tree_checked: [],
+        tree_parent: nil,
         tree_apps: %{},
         tree_apps_node: nil,
         tree_apps_error: nil,
@@ -197,7 +198,9 @@ defmodule BeamdashWeb.LogsLive do
   end
 
   defp event("tree_detail", %{"id" => id}, socket) do
-    {:noreply, assign(socket, tree_detail: toggle(socket.assigns.tree_detail, id))}
+    detail = toggle(socket.assigns.tree_detail, id)
+    socket = assign(socket, tree_detail: detail)
+    {:noreply, if(MapSet.member?(detail, id), do: seed_parent(socket, id), else: socket)}
   end
 
   defp event("tree_check", %{"key" => key, "val" => value}, socket) do
@@ -216,24 +219,19 @@ defmodule BeamdashWeb.LogsLive do
   end
 
   defp event("tree_regroup", _params, socket) do
-    keys = socket.assigns.tree_checked |> Enum.map(&elem(&1, 0)) |> Enum.uniq()
-    {:noreply, socket |> assign(tree_group_keys: keys) |> refresh_tree()}
+    a = socket.assigns
+
+    keys =
+      if a.tree_checked == [],
+        do: a.tree_group_keys,
+        else: a.tree_checked |> Enum.map(&elem(&1, 0)) |> Enum.uniq()
+
+    hidden = Enum.uniq(a.tree_hidden ++ removed_branch(a.tree_parent, a.tree_checked))
+    {:noreply, socket |> assign(tree_group_keys: keys, tree_hidden: hidden) |> refresh_tree()}
   end
 
   defp event("tree_ungroup", _params, socket),
     do: {:noreply, socket |> assign(tree_group_keys: [], tree_hidden: []) |> refresh_tree()}
-
-  # a branch added by regrouping is removed: its lines leave the tree
-  defp event("tree_hide_branch", %{"id" => id}, %{assigns: %{tree: %{nodes: nodes}}} = socket) do
-    case Tree.find(nodes, id) do
-      %{kind: :field, scope: scope} ->
-        hidden = Enum.uniq(socket.assigns.tree_hidden ++ [scope])
-        {:noreply, socket |> assign(tree_hidden: hidden) |> refresh_tree()}
-
-      _ ->
-        {:noreply, socket}
-    end
-  end
 
   defp event("tree_restore", _params, socket),
     do: {:noreply, socket |> assign(tree_hidden: []) |> refresh_tree()}
@@ -1053,6 +1051,26 @@ defmodule BeamdashWeb.LogsLive do
     for id <- ids, e = by_id[id], do: e
   end
 
+  defp seed_parent(socket, id) do
+    case Tree.find(socket.assigns.tree.nodes, id) do
+      %{scope: {:group_template, app, mod, fun, groups, _}} ->
+        parents = Enum.reject(groups, &match?({_, nil}, &1))
+        assign(socket, tree_parent: {app, mod, fun, groups}, tree_checked: parents)
+
+      _ ->
+        assign(socket, tree_parent: nil)
+    end
+  end
+
+  defp removed_branch({app, mod, fun, groups}, checked) do
+    case Enum.find_index(groups, &(&1 not in checked and not match?({_, nil}, &1))) do
+      nil -> []
+      index -> [{:field, app, mod, fun, Enum.take(groups, index + 1)}]
+    end
+  end
+
+  defp removed_branch(nil, _checked), do: []
+
   defp toggle(set, value),
     do:
       if(MapSet.member?(set, value), do: MapSet.delete(set, value), else: MapSet.put(set, value))
@@ -1592,16 +1610,6 @@ defmodule BeamdashWeb.LogsLive do
                 >
                   Lines
                 </button>
-                <button
-                  :if={row.node.kind == :field}
-                  type="button"
-                  class="secondary small-btn"
-                  phx-click="tree_hide_branch"
-                  phx-value-id={row.node.id}
-                  title="Remove this branch from the tree"
-                >
-                  Remove
-                </button>
               </td>
             </tr>
             <tr
@@ -1649,7 +1657,6 @@ defmodule BeamdashWeb.LogsLive do
                     type="button"
                     class="small-btn"
                     phx-click="tree_regroup"
-                    disabled={@checked == []}
                   >
                     Regroup by checked fields
                   </button>

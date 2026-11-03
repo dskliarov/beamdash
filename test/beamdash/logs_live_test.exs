@@ -1303,7 +1303,15 @@ defmodule Beamdash.LogsLiveTest do
     assert "count = 3" in tree_labels(html)
 
     branch = tree_node(socket, "count = 3")
-    {html, socket} = socket |> event("tree_hide_branch", %{"id" => branch.id}) |> render()
+    [template | _] = branch.children
+    refute html =~ "Remove this branch"
+
+    {html, socket} = socket |> event("tree_detail", %{"id" => template.id}) |> render()
+    assert html =~ ~r/<input type="checkbox" checked[^>]*phx-value-key="count"/
+
+    {_, socket} = socket |> event("tree_check", %{"key" => "count", "val" => "3"}) |> render()
+    {_, socket} = socket |> event("tree_regroup") |> render()
+    {html, socket} = socket |> event("tree_expand_all") |> render()
     refute "count = 3" in tree_labels(html)
     assert "count = 4" in tree_labels(html)
     assert html =~ "Restore 1 removed"
