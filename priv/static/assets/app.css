@@ -1237,6 +1237,7 @@ dl.relations .pid-other { background: var(--app-box); border: 1.5px solid var(--
 .logs-json th { width: 1%; white-space: nowrap; color: var(--muted); }
 .logs-json td pre { margin: 0; }
 .logs-json-original { margin: 8px 0; }
+.tree-field-actions { display: flex; flex-wrap: wrap; gap: 8px; margin: 8px 0; }
 .logs-json-original summary { cursor: pointer; color: var(--muted); }
 .lvl { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
 .lvl-emergency, .lvl-alert, .lvl-critical, .lvl-error { color: var(--error); font-weight: 600; }
@@ -1529,7 +1530,8 @@ button.danger { background: var(--error); border-color: var(--error); color: #ff
 .logs-tree { margin-top: 10px; }
 .logs-tree-actions { display: inline-flex; gap: 6px; }
 .logs-tree-table { width: 100%; margin-top: 8px; table-layout: fixed; }
-.logs-tree-table td:first-child, .logs-tree-table th:first-child { width: 60%; }
+.logs-tree-table > thead > tr > th:first-child, .logs-tree-table > tbody > tr > td:first-child { width: 50%; }
+.logs-tree-table > tbody > tr > td:last-child { white-space: nowrap; }
 .logs-tree-table td { vertical-align: top; }
 .logs-tree-row.has-problems.logs-tree-app td:first-child,
 .logs-tree-row.has-problems.logs-tree-module td:first-child { box-shadow: inset 3px 0 0 var(--error); }
@@ -1538,10 +1540,16 @@ button.danger { background: var(--error); border-color: var(--error); color: #ff
 .tree-toggle:hover .tree-label { text-decoration: underline; }
 .tree-leaf { margin-left: 18px; white-space: normal; overflow-wrap: anywhere; }
 .logs-tree .tree-label { white-space: normal; overflow-wrap: anywhere; min-width: 0; }
-.logs-tree-table td:first-child { overflow-wrap: anywhere; }
+.logs-tree-table > tbody > tr > td:first-child { overflow-wrap: anywhere; }
 .logs-tree .tree-toggle { display: flex; width: 100%; max-width: 100%; }
 .logs-tree .spark { white-space: pre; letter-spacing: -1px; color: var(--accent); display: block; overflow: hidden; }
-.logs-tree-table th:nth-child(5), .logs-tree-table td:nth-child(5) { width: 200px; }
+.logs-tree-table > thead > tr > th:nth-child(5), .logs-tree-table > tbody > tr > td:nth-child(5) { width: 170px; }
+.connected-name { display: inline-flex; flex-direction: column; line-height: 1.3; }
+.kube-target { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 0; font-size: 13px; color: var(--fg); }
+.kube-part { display: inline-flex; align-items: baseline; gap: 6px; padding: 0 10px; }
+.kube-part:first-child { padding-left: 0; }
+.kube-part + .kube-part { border-left: 2px solid var(--line); }
+.kube-key { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .05em; }
 .badge-new { background: var(--traced-bg-strong); color: var(--fg); }
 .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 .logs-tree { overflow-x: auto; }

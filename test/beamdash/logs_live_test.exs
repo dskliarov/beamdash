@@ -1163,6 +1163,14 @@ defmodule Beamdash.LogsLiveTest do
     |> Enum.map(fn [_, label] -> label end)
   end
 
+  defp template_for(nodes, id) do
+    Enum.find_value(nodes, fn node ->
+      if (node.kind == :template and node.sample) && node.sample.id == id,
+        do: node,
+        else: template_for(node.children, id)
+    end)
+  end
+
   defp tree_node(socket, label) do
     find = fn find, nodes ->
       Enum.find_value(nodes, fn n -> if n.label == label, do: n, else: find.(find, n.children) end)
@@ -1219,6 +1227,149 @@ defmodule Beamdash.LogsLiveTest do
     {html, _} = socket |> event("filter", %{"q" => "boom"}) |> render()
     assert tree_labels(html) == ["no source"]
     assert html =~ "1 line · 1 application · 0 modules · 1 kind of line"
+  end
+
+  test "clicking a tree message lists its key=value fields, including a struct's", ctx do
+    {_, socket} = ctx |> mount() |> render()
+    socket = event(socket, "tab", %{"tab" => "tree"})
+
+    json = Jason.encode!(%{"level" => "info", "text" => ~S|bid %{"campaign_id" => "298821"}|})
+
+    lines = [
+      new_entry(60, "state #st{count = 3,name = fixture}"),
+      %{new_entry(61, json) | json_line?: true}
+    ]
+
+    socket = socket |> info({:beamdash_logs, {:entries, lines}}) |> async_result(:tree_apps)
+    {_, socket} = socket |> event("tree_expand_all") |> render()
+
+    node = tree_node(socket, "state #st{count = #,name = fixture}")
+    {html, socket} = socket |> event("tree_detail", %{"id" => node.id}) |> render()
+    assert html =~ ~s(phx-value-key="count")
+    assert html =~ "<pre>3</pre>"
+    assert html =~ ~s(phx-value-key="name")
+
+    json_node = template_for(socket.assigns.tree.nodes, 61)
+    {html, _} = socket |> event("tree_detail", %{"id" => json_node.id}) |> render()
+    assert html =~ ~s(phx-value-key="campaign_id")
+    assert html =~ "298821"
+  end
+
+  test "regroup by checked fields adds a branch per value, and ungroup removes them", ctx do
+    {_, socket} = ctx |> mount() |> render()
+    socket = event(socket, "tab", %{"tab" => "tree"})
+
+    lines = [
+      new_entry(70, "state #st{count = 3,name = fixture}"),
+      new_entry(71, "state #st{count = 4,name = fixture}")
+    ]
+
+    socket = socket |> info({:beamdash_logs, {:entries, lines}}) |> async_result(:tree_apps)
+    {_, socket} = socket |> event("tree_expand_all") |> render()
+
+    node = tree_node(socket, "state #st{count = #,name = fixture}")
+    {_, socket} = socket |> event("tree_detail", %{"id" => node.id}) |> render()
+    {_, socket} = socket |> event("tree_check", %{"key" => "count", "val" => "3"}) |> render()
+    {_, socket} = socket |> event("tree_regroup") |> render()
+
+    assert socket.assigns.tree_group_keys == ["count"]
+    {html, socket} = socket |> event("tree_expand_all") |> render()
+    labels = tree_labels(html)
+    assert "count = 3" in labels
+    assert "count = 4" in labels
+
+    {html, socket} = socket |> event("tree_ungroup") |> render()
+    assert socket.assigns.tree_group_keys == []
+    refute "count = 3" in tree_labels(html)
+  end
+
+  test "unchecking a field and regrouping drops that field level from the tree", ctx do
+    {_, socket} = ctx |> mount() |> render()
+    socket = event(socket, "tab", %{"tab" => "tree"})
+
+    lines = [
+      new_entry(72, "state #st{campaign_id = 1,flight_id = 10}"),
+      new_entry(73, "state #st{campaign_id = 1,flight_id = 11}"),
+      new_entry(74, "state #st{campaign_id = 2,flight_id = 10}")
+    ]
+
+    socket = socket |> info({:beamdash_logs, {:entries, lines}}) |> async_result(:tree_apps)
+    {_, socket} = socket |> event("tree_expand_all") |> render()
+
+    node = tree_node(socket, "state #st{campaign_id = #,flight_id = #}")
+    {_, socket} = socket |> event("tree_detail", %{"id" => node.id}) |> render()
+
+    {_, socket} =
+      socket |> event("tree_check", %{"key" => "campaign_id", "val" => "1"}) |> render()
+
+    {_, socket} =
+      socket |> event("tree_check", %{"key" => "flight_id", "val" => "10"}) |> render()
+
+    {_, socket} = socket |> event("tree_regroup") |> render()
+    {_, socket} = socket |> event("tree_expand_all") |> render()
+
+    campaign = tree_node(socket, "campaign_id = 1")
+    flight = Enum.find(campaign.children, &(&1.label == "flight_id = 10"))
+    [template | _] = flight.children
+    {html, socket} = socket |> event("tree_detail", %{"id" => template.id}) |> render()
+    assert html =~ ~r/<input type="checkbox" checked[^>]*phx-value-key="flight_id"/
+
+    {_, socket} =
+      socket |> event("tree_check", %{"key" => "flight_id", "val" => "10"}) |> render()
+
+    {_, socket} = socket |> event("tree_regroup") |> render()
+    {html, socket} = socket |> event("tree_expand_all") |> render()
+    refute Enum.any?(tree_labels(html), &String.starts_with?(&1, "flight_id"))
+    assert "campaign_id = 1" in tree_labels(html)
+    assert "campaign_id = 2" in tree_labels(html)
+
+    campaign = tree_node(socket, "campaign_id = 1")
+    [template | _] = campaign.children
+    {html, socket} = socket |> event("tree_detail", %{"id" => template.id}) |> render()
+    assert html =~ ~r/<input type="checkbox" checked[^>]*phx-value-key="campaign_id"/
+
+    {_, socket} =
+      socket |> event("tree_check", %{"key" => "campaign_id", "val" => "1"}) |> render()
+
+    {_, socket} = socket |> event("tree_regroup") |> render()
+    {html, _} = socket |> event("tree_expand_all") |> render()
+    refute Enum.any?(tree_labels(html), &String.starts_with?(&1, "campaign_id"))
+    assert Enum.any?(tree_labels(html), &String.starts_with?(&1, "state"))
+  end
+
+  test "regroup keeps a level a checked message has no value for", ctx do
+    {_, socket} = ctx |> mount() |> render()
+    socket = event(socket, "tab", %{"tab" => "tree"})
+
+    lines = [
+      new_entry(72, "state #st{campaign_id = 1,flight_id = 10}"),
+      new_entry(73, "state #st{campaign_id = 1}")
+    ]
+
+    socket = socket |> info({:beamdash_logs, {:entries, lines}}) |> async_result(:tree_apps)
+    {_, socket} = socket |> event("tree_expand_all") |> render()
+
+    node = tree_node(socket, "state #st{campaign_id = #,flight_id = #}")
+    {_, socket} = socket |> event("tree_detail", %{"id" => node.id}) |> render()
+
+    {_, socket} =
+      socket |> event("tree_check", %{"key" => "campaign_id", "val" => "1"}) |> render()
+
+    {_, socket} =
+      socket |> event("tree_check", %{"key" => "flight_id", "val" => "10"}) |> render()
+
+    {_, socket} = socket |> event("tree_regroup") |> render()
+    {_, socket} = socket |> event("tree_expand_all") |> render()
+
+    campaign = tree_node(socket, "campaign_id = 1")
+    none = Enum.find(campaign.children, &(&1.label == "flight_id = (none)"))
+    [template | _] = none.children
+    {_, socket} = socket |> event("tree_detail", %{"id" => template.id}) |> render()
+    {_, socket} = socket |> event("tree_regroup") |> render()
+    {html, _} = socket |> event("tree_expand_all") |> render()
+
+    assert "flight_id = (none)" in tree_labels(html)
+    assert "flight_id = 10" in tree_labels(html)
   end
 
   test "Lines on a tree row shows that row's lines on the Lines tab", ctx do

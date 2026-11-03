@@ -24,7 +24,7 @@ defmodule Beamdash.Logs.Tree do
   how many were left out).
   """
 
-  alias Beamdash.Logs.Group
+  alias Beamdash.Logs.{Group, Pretty}
 
   @no_source "no source"
   @unknown_app "application unknown"
@@ -105,6 +105,18 @@ defmodule Beamdash.Logs.Tree do
       place(entry, apps) == {app, mod} and function_of(entry) == fun and
         template(entry) == template
 
+  def in_scope?({:field, app, mod, fun, path}, entry, apps),
+    do:
+      place(entry, apps) == {app, mod} and function_of(entry) == fun and
+        grouped?(entry, path)
+
+  def in_scope?({:group_template, app, mod, fun, groups, template}, entry, apps),
+    do:
+      place(entry, apps) == {app, mod} and function_of(entry) == fun and
+        template(entry) == template and grouped?(entry, groups)
+
+  defp grouped?(entry, pairs), do: Enum.all?(pairs, fn {k, v} -> field_value(entry, k) == v end)
+
   @doc "What a scope shows on its filter chip: `app › module › function › template`."
   def scope_label({:app, app}), do: app
   def scope_label({:module, app, mod}), do: Enum.join([app, mod], " › ")
@@ -112,6 +124,17 @@ defmodule Beamdash.Logs.Tree do
 
   def scope_label({:template, app, mod, fun, template}),
     do: [app, mod, fun, template] |> Enum.reject(&is_nil/1) |> Enum.join(" › ")
+
+  def scope_label({:field, app, mod, fun, path}),
+    do: [app, mod, fun | pair_labels(path)] |> Enum.reject(&is_nil/1) |> Enum.join(" › ")
+
+  def scope_label({:group_template, app, mod, fun, groups, template}),
+    do:
+      [app, mod, fun | pair_labels(groups) ++ [template]]
+      |> Enum.reject(&is_nil/1)
+      |> Enum.join(" › ")
+
+  defp pair_labels(pairs), do: for({key, value} <- pairs, do: field_label(key, value))
 
   @doc """
   The tree of `entries` (newest first): `%{nodes, lines, modules,
@@ -127,6 +150,7 @@ defmodule Beamdash.Logs.Tree do
   """
   def build(entries, opts \\ []) do
     apps = Keyword.get(opts, :apps, %{})
+    group_keys = Keyword.get(opts, :group_keys, [])
     since = opts[:since] && DateTime.to_unix(opts[:since], :microsecond)
     times = for %{at: %DateTime{} = at} <- entries, do: DateTime.to_unix(at, :microsecond)
     window = if times != [], do: {Enum.min(times), Enum.max(times)}
@@ -138,37 +162,29 @@ defmodule Beamdash.Logs.Tree do
       Enum.reduce(keyed, %{}, fn {entry, {_key, template}}, acc ->
         {app, mod} = place(entry, apps)
         s = line_stats(entry, window)
-        Map.update(acc, {app, mod, function_of(entry), template}, s, &merge(&1, s))
+        groups = groups_of(entry, group_keys)
+        Map.update(acc, {app, mod, function_of(entry), groups, template}, s, &merge(&1, s))
       end)
 
-    templates =
-      for {{app, mod, fun, template}, s} <- leaves do
+    template_nodes =
+      for {{app, mod, fun, groups, template}, s} <- leaves do
         new = if since && s.first && s.first > since, do: 1, else: 0
-
-        {{app, mod, fun},
-         node(:template, template, {:template, app, mod, fun, template}, s, [], new)}
+        scope = template_scope(app, mod, fun, groups, template)
+        {{app, mod}, fun, groups, node(:template, template, scope, s, [], new)}
       end
 
-    # a line whose source names a function hangs its templates under that function
-    {with_fun, plain} = Enum.split_with(templates, fn {{_, _, fun}, _} -> fun != nil end)
-
-    functions =
-      for {{app, mod, fun}, children} <- Enum.group_by(with_fun, &elem(&1, 0), &elem(&1, 1)) do
-        {{app, mod}, parent(:function, fun, {:function, app, mod, fun}, children)}
-      end
-
-    under_module =
-      Enum.map(plain, fn {{app, mod, _}, node} -> {{app, mod}, node} end) ++ functions
-
-    # a line without a source has no module: its templates hang off the app
-    {loose, in_modules} = Enum.split_with(under_module, fn {{_app, mod}, _} -> mod == nil end)
+    nodes_by_module = Enum.group_by(template_nodes, &elem(&1, 0))
 
     modules =
-      for {{app, mod}, children} <- Enum.group_by(in_modules, &elem(&1, 0), &elem(&1, 1)) do
-        {app, parent(:module, mod, {:module, app, mod}, children)}
+      for {{app, mod}, items} <- nodes_by_module, mod != nil do
+        {app, parent(:module, mod, {:module, app, mod}, module_children(app, mod, items))}
       end
 
-    loose = Enum.map(loose, fn {{app, nil}, node} -> {app, node} end)
+    # a line without a source has no module: its templates hang off the app
+    loose =
+      for {{app, nil}, items} <- nodes_by_module,
+          child <- module_children(app, nil, items),
+          do: {app, child}
 
     nodes =
       (modules ++ loose)
@@ -180,12 +196,64 @@ defmodule Beamdash.Logs.Tree do
       nodes: nodes,
       lines: length(entries),
       modules: length(modules),
-      templates: length(templates),
+      templates: map_size(leaves),
       new: Enum.reduce(nodes, 0, &(&1.new + &2)),
       window: window && {datetime(elem(window, 0)), datetime(elem(window, 1))},
       template_cache: Map.new(keyed, fn {_entry, key_template} -> key_template end)
     }
   end
+
+  # the children of a module (or of the app, for a line without a source):
+  # each function's branch, then the lines outside any function
+  defp module_children(app, mod, items) do
+    items
+    |> Enum.group_by(fn {_, fun, _, _} -> fun end, fn {_, _, groups, node} -> {groups, node} end)
+    |> Enum.flat_map(fn {fun, sub} ->
+      nested = nest(sub, app, mod, fun, [])
+
+      if fun == nil,
+        do: nested,
+        else: [parent(:function, fun, {:function, app, mod, fun}, nested)]
+    end)
+  end
+
+  # the templates of a function, under a branch per checked field value
+  defp nest(items, app, mod, fun, prefix) do
+    {done, rest} = Enum.split_with(items, fn {groups, _} -> groups == [] end)
+    templates = for {_, node} <- done, do: node
+
+    fields =
+      rest
+      |> Enum.group_by(fn {[pair | _], _} -> pair end, fn {[_ | tail], node} -> {tail, node} end)
+      |> Enum.map(fn {{key, value} = pair, sub} ->
+        path = prefix ++ [pair]
+        children = nest(sub, app, mod, fun, path)
+        parent(:field, field_label(key, value), {:field, app, mod, fun, path}, children)
+      end)
+
+    templates ++ fields
+  end
+
+  defp template_scope(app, mod, fun, [], template), do: {:template, app, mod, fun, template}
+
+  defp template_scope(app, mod, fun, groups, template),
+    do: {:group_template, app, mod, fun, groups, template}
+
+  defp groups_of(_entry, []), do: []
+
+  defp groups_of(entry, keys), do: for(key <- keys, do: {key, field_value(entry, key)})
+
+  defp field_label(key, nil), do: "#{key} = (none)"
+  defp field_label(key, value), do: "#{key} = #{value}"
+
+  @doc "The value of the entry's field `key`, or nil."
+  def field_value(entry, key) do
+    entry
+    |> entry_fields()
+    |> Enum.find_value(fn {k, v} -> k == key && v end)
+  end
+
+  defp entry_fields(entry), do: entry[:fields] || Pretty.all_fields(entry[:message] || "")
 
   defp cached_template(entry, cache) do
     key = {entry[:id], :erlang.phash2(entry[:message])}

@@ -291,7 +291,23 @@ defmodule BeamdashWeb.Layouts do
 
         <div :if={@conn.status == :connected} class="connected">
           <span class="dot" aria-hidden="true"></span>
-          <strong>{@conn.node}</strong>
+          <span class="connected-name">
+            <span :if={@conn[:kube_target]} class="kube-target">
+              <span class="kube-part">
+                <span class="kube-key">cluster</span>
+                <strong>{@conn.kube_target.cluster}</strong>
+              </span>
+              <span class="kube-part">
+                <span class="kube-key">namespace</span>
+                <strong>{@conn.kube_target.namespace}</strong>
+              </span>
+              <span class="kube-part">
+                <span class="kube-key">pod</span>
+                <strong>{@conn.kube_target.pod}</strong>
+              </span>
+            </span>
+            <strong>{@conn.node}</strong>
+          </span>
           <button phx-click="disconnect" class="secondary">Disconnect</button>
         </div>
       </div>
