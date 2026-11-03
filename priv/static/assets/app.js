@@ -167,6 +167,12 @@ const NavOverflow = {
       if (menu && (!menu.contains(e.target) || e.target.closest("a"))) menu.open = false;
     };
     document.addEventListener("click", this.onMenuClick);
+    // the More menu closes on a pick or a click elsewhere
+    this.onMoreMenuClick = (e) => {
+      const more = this.el.querySelector(".tabs-more[open]");
+      if (more && (!more.contains(e.target) || e.target.closest("a"))) more.open = false;
+    };
+    document.addEventListener("click", this.onMoreMenuClick);
   },
   updated() { this.layout(); },
   destroyed() {
@@ -174,6 +180,7 @@ const NavOverflow = {
     window.removeEventListener("keydown", this.onKey);
     document.removeEventListener("click", this.onHelp);
     document.removeEventListener("click", this.onMenuClick);
+    document.removeEventListener("click", this.onMoreMenuClick);
   },
 
   layout() {
