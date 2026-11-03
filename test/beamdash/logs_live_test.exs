@@ -1337,6 +1337,41 @@ defmodule Beamdash.LogsLiveTest do
     assert Enum.any?(tree_labels(html), &String.starts_with?(&1, "state"))
   end
 
+  test "regroup keeps a level a checked message has no value for", ctx do
+    {_, socket} = ctx |> mount() |> render()
+    socket = event(socket, "tab", %{"tab" => "tree"})
+
+    lines = [
+      new_entry(72, "state #st{campaign_id = 1,flight_id = 10}"),
+      new_entry(73, "state #st{campaign_id = 1}")
+    ]
+
+    socket = socket |> info({:beamdash_logs, {:entries, lines}}) |> async_result(:tree_apps)
+    {_, socket} = socket |> event("tree_expand_all") |> render()
+
+    node = tree_node(socket, "state #st{campaign_id = #,flight_id = #}")
+    {_, socket} = socket |> event("tree_detail", %{"id" => node.id}) |> render()
+
+    {_, socket} =
+      socket |> event("tree_check", %{"key" => "campaign_id", "val" => "1"}) |> render()
+
+    {_, socket} =
+      socket |> event("tree_check", %{"key" => "flight_id", "val" => "10"}) |> render()
+
+    {_, socket} = socket |> event("tree_regroup") |> render()
+    {_, socket} = socket |> event("tree_expand_all") |> render()
+
+    campaign = tree_node(socket, "campaign_id = 1")
+    none = Enum.find(campaign.children, &(&1.label == "flight_id = (none)"))
+    [template | _] = none.children
+    {_, socket} = socket |> event("tree_detail", %{"id" => template.id}) |> render()
+    {_, socket} = socket |> event("tree_regroup") |> render()
+    {html, _} = socket |> event("tree_expand_all") |> render()
+
+    assert "flight_id = (none)" in tree_labels(html)
+    assert "flight_id = 10" in tree_labels(html)
+  end
+
   test "Lines on a tree row shows that row's lines on the Lines tab", ctx do
     {_, socket} = ctx |> mount() |> render()
     socket = socket |> event("tab", %{"tab" => "tree"}) |> async_result(:tree_apps)

@@ -219,14 +219,28 @@ defmodule BeamdashWeb.LogsLive do
 
   defp event("tree_regroup", _params, socket) do
     a = socket.assigns
-    dropped = for {key, _} = pair <- a.tree_parent, pair not in a.tree_checked, do: key
+
+    dropped =
+      for {key, value} = pair <- a.tree_parent,
+          value != nil and pair not in a.tree_checked,
+          do: key
+
+    missing = for {key, nil} <- a.tree_parent, do: key
 
     keys =
-      if a.tree_checked == [],
-        do: Enum.reject(a.tree_group_keys, &(&1 in dropped)),
-        else: a.tree_checked |> Enum.map(&elem(&1, 0)) |> Enum.uniq()
+      if a.tree_checked == [] do
+        Enum.reject(a.tree_group_keys, &(&1 in dropped))
+      else
+        (Enum.map(a.tree_checked, &elem(&1, 0)) ++ missing)
+        |> Enum.uniq()
+        |> Enum.reject(&(&1 in dropped))
+      end
 
-    parents = Enum.filter(a.tree_parent, &(&1 in a.tree_checked))
+    parents =
+      Enum.filter(a.tree_parent, fn {_, value} = pair ->
+        value == nil or pair in a.tree_checked
+      end)
+
     {:noreply, socket |> assign(tree_group_keys: keys, tree_parent: parents) |> refresh_tree()}
   end
 
@@ -1051,8 +1065,8 @@ defmodule BeamdashWeb.LogsLive do
   defp seed_parent(socket, id) do
     case Tree.find(socket.assigns.tree.nodes, id) do
       %{scope: {:group_template, _, _, _, groups, _}} ->
-        parents = Enum.reject(groups, &match?({_, nil}, &1))
-        assign(socket, tree_parent: parents, tree_checked: parents)
+        checked = Enum.reject(groups, &match?({_, nil}, &1))
+        assign(socket, tree_parent: groups, tree_checked: checked)
 
       _ ->
         assign(socket, tree_parent: [])
