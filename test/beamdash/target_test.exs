@@ -70,22 +70,7 @@ defmodule Beamdash.TargetTest do
   end
 
   test "a kubectl connect runs off the GenServer and reports its steps", ctx do
-    dir =
-      Path.join(
-        System.tmp_dir!(),
-        "beamdash-target-kubectl-#{System.unique_integer([:positive])}"
-      )
-
-    File.mkdir_p!(dir)
-    on_exit(fn -> File.rm_rf!(dir) end)
-    kubectl = Path.join(dir, "kubectl")
-    File.write!(kubectl, "#!/bin/sh\nsleep 1\nexit 1\n")
-    File.chmod!(kubectl, 0o755)
-
-    path = System.get_env("PATH")
-    System.put_env("PATH", dir <> ":" <> path)
-    on_exit(fn -> System.put_env("PATH", path) end)
-
+    fake_kubectl("sleep 1\nexit 1\n")
     :ok = Target.subscribe_connecting()
     :ok = Target.subscribe(ctx.server)
 
@@ -111,6 +96,28 @@ defmodule Beamdash.TargetTest do
     assert_receive {:beamdash_connecting, nil}
     refute_received {:beamdash_target, {:connecting, _}}
     refute_received {:beamdash_target, _}
+  end
+
+  test "disconnect during a kubectl connect clears its progress at once", ctx do
+    fake_kubectl("sleep 2\nexit 1\n")
+    :ok = Target.subscribe_connecting()
+
+    caller =
+      Task.async(fn ->
+        Target.connect_via_kubectl(
+          nil,
+          "prod",
+          "my-pod",
+          "",
+          "/opt/my_app/bin/my_app",
+          ctx.server
+        )
+      end)
+
+    assert_receive {:beamdash_connecting, %{}}, 5_000
+    assert :ok = Target.disconnect(ctx.server)
+    assert_receive {:beamdash_connecting, nil}, 500
+    assert {:error, _} = Task.await(caller, 10_000)
   end
 
   test "subscribers hear when the target goes down", ctx do
@@ -196,6 +203,24 @@ defmodule Beamdash.TargetTest do
     # after an earlier dotted direct connect.
     assert {:ok, _} = Target.connect(Atom.to_string(ctx.node), @cookie, ctx.server)
     assert %{name_domain: :shortnames} = :net_kernel.get_state()
+  end
+
+  defp fake_kubectl(script) do
+    dir =
+      Path.join(
+        System.tmp_dir!(),
+        "beamdash-target-kubectl-#{System.unique_integer([:positive])}"
+      )
+
+    File.mkdir_p!(dir)
+    on_exit(fn -> File.rm_rf!(dir) end)
+    kubectl = Path.join(dir, "kubectl")
+    File.write!(kubectl, "#!/bin/sh\n" <> script)
+    File.chmod!(kubectl, 0o755)
+
+    path = System.get_env("PATH")
+    System.put_env("PATH", dir <> ":" <> path)
+    on_exit(fn -> System.put_env("PATH", path) end)
   end
 
   defp start_named_peer(name) do

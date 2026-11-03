@@ -327,8 +327,10 @@ defmodule Beamdash.Target do
     handle_call({:connect, node, cookie}, from, state)
   end
 
-  def handle_call(:disconnect, _from, %{pending: %{} = pending} = state),
-    do: {:reply, :ok, %{state | pending: %{pending | cancelled: true}}}
+  def handle_call(:disconnect, _from, %{pending: %{} = pending} = state) do
+    publish_connecting(nil)
+    {:reply, :ok, %{state | pending: %{pending | cancelled: true}}}
+  end
 
   def handle_call(:disconnect, _from, state) do
     {:reply, :ok, state |> cancel_reconnect() |> drop_current(:user)}
@@ -373,7 +375,10 @@ defmodule Beamdash.Target do
 
   def handle_info({:nodedown, _other}, state), do: {:noreply, state}
 
-  def handle_info({:connect_progress, ref, label, command}, %{pending: %{ref: ref}} = state) do
+  def handle_info(
+        {:connect_progress, ref, label, command},
+        %{pending: %{ref: ref, cancelled: false}} = state
+      ) do
     publish_connecting(%{label: label, command: command})
     {:noreply, state}
   end

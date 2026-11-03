@@ -81,6 +81,7 @@ defmodule BeamdashWeb.Connection do
           kube_binary: nil,
           connecting: nil,
           kube_progress: nil,
+          progress_timer: false,
           reconnecting: if(status == :connected, do: nil, else: Target.reconnecting()),
           plugins: active_plugins()
         })
@@ -142,7 +143,8 @@ defmodule BeamdashWeb.Connection do
        node: nil,
        info: nil,
        kube_target: nil,
-       reconnecting: nil
+       reconnecting: nil,
+       connecting: nil
      )
      |> to_root()}
   end
@@ -446,6 +448,9 @@ defmodule BeamdashWeb.Connection do
 
   def handle_info({:beamdash_kube_connected, ctx, result}, socket) do
     case result do
+      {:error, :cancelled} ->
+        {:halt, update(socket, connecting: nil)}
+
       {:ok, info} ->
         # the page hears {:connected, node} from Target as well
         {:halt,
@@ -492,10 +497,12 @@ defmodule BeamdashWeb.Connection do
       |> tick_progress(:connecting)
       |> tick_progress(:kube_progress)
 
-    if active_progress?(socket),
-      do: Process.send_after(self(), :beamdash_progress_tick, @progress_ms)
-
-    {:halt, socket}
+    if active_progress?(socket) do
+      Process.send_after(self(), :beamdash_progress_tick, @progress_ms)
+      {:halt, socket}
+    else
+      {:halt, update(socket, progress_timer: false)}
+    end
   end
 
   def handle_info({:beamdash_plugins, event}, socket)
@@ -761,14 +768,17 @@ defmodule BeamdashWeb.Connection do
     :exit, reason -> {:error, {:connect_failed, reason}}
   end
 
+  # One tick chain at a time: it runs while any progress is active and clears
+  # `progress_timer` when it stops, so a step set later starts a new chain.
   defp put_progress(socket, key, step) do
-    was_active? = active_progress?(socket)
     socket = update(socket, [{key, step}])
 
-    if step && !was_active?,
-      do: Process.send_after(self(), :beamdash_progress_tick, @progress_ms)
-
-    socket
+    if step && !socket.assigns.conn.progress_timer do
+      Process.send_after(self(), :beamdash_progress_tick, @progress_ms)
+      update(socket, progress_timer: true)
+    else
+      socket
+    end
   end
 
   defp progress_step(label, command),
