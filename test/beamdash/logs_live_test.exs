@@ -1283,41 +1283,58 @@ defmodule Beamdash.LogsLiveTest do
     refute "count = 3" in tree_labels(html)
   end
 
-  test "a branch added by regrouping can be removed and restored", ctx do
+  test "unchecking a field and regrouping drops that field level from the tree", ctx do
     {_, socket} = ctx |> mount() |> render()
     socket = event(socket, "tab", %{"tab" => "tree"})
 
     lines = [
-      new_entry(72, "state #st{count = 3,name = fixture}"),
-      new_entry(73, "state #st{count = 4,name = fixture}")
+      new_entry(72, "state #st{campaign_id = 1,flight_id = 10}"),
+      new_entry(73, "state #st{campaign_id = 1,flight_id = 11}"),
+      new_entry(74, "state #st{campaign_id = 2,flight_id = 10}")
     ]
 
     socket = socket |> info({:beamdash_logs, {:entries, lines}}) |> async_result(:tree_apps)
     {_, socket} = socket |> event("tree_expand_all") |> render()
 
-    node = tree_node(socket, "state #st{count = #,name = fixture}")
+    node = tree_node(socket, "state #st{campaign_id = #,flight_id = #}")
     {_, socket} = socket |> event("tree_detail", %{"id" => node.id}) |> render()
-    {_, socket} = socket |> event("tree_check", %{"key" => "count", "val" => "3"}) |> render()
+
+    {_, socket} =
+      socket |> event("tree_check", %{"key" => "campaign_id", "val" => "1"}) |> render()
+
+    {_, socket} =
+      socket |> event("tree_check", %{"key" => "flight_id", "val" => "10"}) |> render()
+
     {_, socket} = socket |> event("tree_regroup") |> render()
-    {html, socket} = socket |> event("tree_expand_all") |> render()
-    assert "count = 3" in tree_labels(html)
+    {_, socket} = socket |> event("tree_expand_all") |> render()
 
-    branch = tree_node(socket, "count = 3")
-    [template | _] = branch.children
-    refute html =~ "Remove this branch"
-
+    campaign = tree_node(socket, "campaign_id = 1")
+    flight = Enum.find(campaign.children, &(&1.label == "flight_id = 10"))
+    [template | _] = flight.children
     {html, socket} = socket |> event("tree_detail", %{"id" => template.id}) |> render()
-    assert html =~ ~r/<input type="checkbox" checked[^>]*phx-value-key="count"/
+    assert html =~ ~r/<input type="checkbox" checked[^>]*phx-value-key="flight_id"/
 
-    {_, socket} = socket |> event("tree_check", %{"key" => "count", "val" => "3"}) |> render()
+    {_, socket} =
+      socket |> event("tree_check", %{"key" => "flight_id", "val" => "10"}) |> render()
+
     {_, socket} = socket |> event("tree_regroup") |> render()
     {html, socket} = socket |> event("tree_expand_all") |> render()
-    refute "count = 3" in tree_labels(html)
-    assert "count = 4" in tree_labels(html)
-    assert html =~ "Restore 1 removed"
+    refute Enum.any?(tree_labels(html), &String.starts_with?(&1, "flight_id"))
+    assert "campaign_id = 1" in tree_labels(html)
+    assert "campaign_id = 2" in tree_labels(html)
 
-    {html, _} = socket |> event("tree_restore") |> render()
-    assert "count = 3" in tree_labels(html)
+    campaign = tree_node(socket, "campaign_id = 1")
+    [template | _] = campaign.children
+    {html, socket} = socket |> event("tree_detail", %{"id" => template.id}) |> render()
+    assert html =~ ~r/<input type="checkbox" checked[^>]*phx-value-key="campaign_id"/
+
+    {_, socket} =
+      socket |> event("tree_check", %{"key" => "campaign_id", "val" => "1"}) |> render()
+
+    {_, socket} = socket |> event("tree_regroup") |> render()
+    {html, _} = socket |> event("tree_expand_all") |> render()
+    refute Enum.any?(tree_labels(html), &String.starts_with?(&1, "campaign_id"))
+    assert Enum.any?(tree_labels(html), &String.starts_with?(&1, "state"))
   end
 
   test "Lines on a tree row shows that row's lines on the Lines tab", ctx do

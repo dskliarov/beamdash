@@ -151,8 +151,6 @@ defmodule Beamdash.Logs.Tree do
   def build(entries, opts \\ []) do
     apps = Keyword.get(opts, :apps, %{})
     group_keys = Keyword.get(opts, :group_keys, [])
-    hidden = Keyword.get(opts, :hidden, [])
-    entries = Enum.reject(entries, &Enum.any?(hidden, fn scope -> in_scope?(scope, &1, apps) end))
     since = opts[:since] && DateTime.to_unix(opts[:since], :microsecond)
     times = for %{at: %DateTime{} = at} <- entries, do: DateTime.to_unix(at, :microsecond)
     window = if times != [], do: {Enum.min(times), Enum.max(times)}

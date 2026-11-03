@@ -109,9 +109,8 @@ defmodule BeamdashWeb.LogsLive do
         tree_open: nil,
         tree_detail: MapSet.new(),
         tree_group_keys: [],
-        tree_hidden: [],
         tree_checked: [],
-        tree_parent: nil,
+        tree_parent: [],
         tree_apps: %{},
         tree_apps_node: nil,
         tree_apps_error: nil,
@@ -220,21 +219,19 @@ defmodule BeamdashWeb.LogsLive do
 
   defp event("tree_regroup", _params, socket) do
     a = socket.assigns
+    dropped = for {key, _} = pair <- a.tree_parent, pair not in a.tree_checked, do: key
 
     keys =
       if a.tree_checked == [],
-        do: a.tree_group_keys,
+        do: Enum.reject(a.tree_group_keys, &(&1 in dropped)),
         else: a.tree_checked |> Enum.map(&elem(&1, 0)) |> Enum.uniq()
 
-    hidden = Enum.uniq(a.tree_hidden ++ removed_branch(a.tree_parent, a.tree_checked))
-    {:noreply, socket |> assign(tree_group_keys: keys, tree_hidden: hidden) |> refresh_tree()}
+    parents = Enum.filter(a.tree_parent, &(&1 in a.tree_checked))
+    {:noreply, socket |> assign(tree_group_keys: keys, tree_parent: parents) |> refresh_tree()}
   end
 
   defp event("tree_ungroup", _params, socket),
-    do: {:noreply, socket |> assign(tree_group_keys: [], tree_hidden: []) |> refresh_tree()}
-
-  defp event("tree_restore", _params, socket),
-    do: {:noreply, socket |> assign(tree_hidden: []) |> refresh_tree()}
+    do: {:noreply, socket |> assign(tree_group_keys: []) |> refresh_tree()}
 
   defp event("tree_expand_all", _params, %{assigns: %{tree: %{nodes: nodes}}} = socket),
     do: {:noreply, assign(socket, tree_open: MapSet.new(Tree.parent_ids(nodes)))}
@@ -1053,23 +1050,14 @@ defmodule BeamdashWeb.LogsLive do
 
   defp seed_parent(socket, id) do
     case Tree.find(socket.assigns.tree.nodes, id) do
-      %{scope: {:group_template, app, mod, fun, groups, _}} ->
+      %{scope: {:group_template, _, _, _, groups, _}} ->
         parents = Enum.reject(groups, &match?({_, nil}, &1))
-        assign(socket, tree_parent: {app, mod, fun, groups}, tree_checked: parents)
+        assign(socket, tree_parent: parents, tree_checked: parents)
 
       _ ->
-        assign(socket, tree_parent: nil)
+        assign(socket, tree_parent: [])
     end
   end
-
-  defp removed_branch({app, mod, fun, groups}, checked) do
-    case Enum.find_index(groups, &(&1 not in checked and not match?({_, nil}, &1))) do
-      nil -> []
-      index -> [{:field, app, mod, fun, Enum.take(groups, index + 1)}]
-    end
-  end
-
-  defp removed_branch(nil, _checked), do: []
 
   defp toggle(set, value),
     do:
@@ -1103,8 +1091,7 @@ defmodule BeamdashWeb.LogsLive do
         apps: a.tree_apps,
         since: a.tree_since,
         template_cache: a.tree_cache,
-        group_keys: a.tree_group_keys,
-        hidden: a.tree_hidden
+        group_keys: a.tree_group_keys
       )
 
     assign(socket, tree: tree, tree_cache: tree.template_cache)
@@ -1369,7 +1356,6 @@ defmodule BeamdashWeb.LogsLive do
         detail={@tree_detail}
         group_keys={@tree_group_keys}
         checked={@tree_checked}
-        hidden={@tree_hidden}
         apps_error={@tree_apps_error}
         since={@tree_since}
         source={@info.source}
@@ -1474,7 +1460,6 @@ defmodule BeamdashWeb.LogsLive do
   attr :detail, :any, required: true
   attr :group_keys, :list, default: []
   attr :checked, :list, default: []
-  attr :hidden, :list, default: []
 
   defp tree(assigns) do
     assigns =
@@ -1509,14 +1494,6 @@ defmodule BeamdashWeb.LogsLive do
             phx-click="tree_ungroup"
           >
             Ungroup
-          </button>
-          <button
-            :if={@hidden != []}
-            type="button"
-            class="secondary small-btn"
-            phx-click="tree_restore"
-          >
-            Restore {length(@hidden)} removed
           </button>
         </span>
       </div>
