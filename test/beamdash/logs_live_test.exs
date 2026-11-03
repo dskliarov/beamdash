@@ -1245,12 +1245,13 @@ defmodule Beamdash.LogsLiveTest do
 
     node = tree_node(socket, "state #st{count = #,name = fixture}")
     {html, socket} = socket |> event("tree_detail", %{"id" => node.id}) |> render()
-    assert html =~ ~s(<span class="tree-field-key">count</span> = <span class="mono">3</span>)
-    assert html =~ ~s(<span class="tree-field-key">name</span>)
+    assert html =~ ~s(<th scope="row">count</th>)
+    assert html =~ "<pre>3</pre>"
+    assert html =~ ~s(<th scope="row">name</th>)
 
     json_node = template_for(socket.assigns.tree.nodes, 61)
     {html, _} = socket |> event("tree_detail", %{"id" => json_node.id}) |> render()
-    assert html =~ ~s(<span class="tree-field-key">campaign_id</span>)
+    assert html =~ ~s(<th scope="row">campaign_id</th>)
     assert html =~ "298821"
   end
 

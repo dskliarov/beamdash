@@ -1530,11 +1530,18 @@ defmodule BeamdashWeb.LogsLive do
             >
               <td colspan="7" style={"padding-left: #{0.5 + (row.depth + 1) * 1.25}rem"}>
                 <p class="muted small">Fields of the newest line in this kind of line</p>
-                <ul class="tree-fields">
-                  <li :for={{key, value} <- tree_fields(row.node.sample)}>
-                    <span class="tree-field-key">{key}</span> = <span class="mono">{value}</span>
-                  </li>
-                </ul>
+                <table
+                  :if={tree_fields(row.node.sample) != []}
+                  class="logs-json"
+                  aria-label="Fields of this message"
+                >
+                  <tbody>
+                    <tr :for={{key, value} <- tree_fields(row.node.sample)}>
+                      <th scope="row">{key}</th>
+                      <td><pre>{value}</pre></td>
+                    </tr>
+                  </tbody>
+                </table>
                 <p :if={tree_fields(row.node.sample) == []} class="muted small">
                   No key=value fields in this line.
                 </p>
