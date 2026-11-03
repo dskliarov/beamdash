@@ -37,14 +37,38 @@ defmodule Beamdash.HomeRefreshTest do
     assert socket.assigns.error
   end
 
-  test "a crashed detail read still schedules the next tick for the same selection" do
+  test "a tick schedules the next tick and starts one read" do
     me = self()
     ref = make_ref()
-    socket = Phoenix.Component.assign(connected_socket(), selected: me, detail_ref: ref)
 
-    {:noreply, _socket} = HomeLive.handle_async(:detail, {:exit, :boom}, socket)
+    socket =
+      Phoenix.Component.assign(connected_socket(),
+        selected: me,
+        detail_ref: ref,
+        detail_busy: false
+      )
 
+    {:noreply, socket} = HomeLive.handle_info({:detail_tick, me, ref}, socket)
+
+    assert socket.assigns.detail_busy
     assert_receive {:detail_tick, ^me, ^ref}, 2000
+  end
+
+  test "a crashed detail read frees the next tick to read again" do
+    socket = Phoenix.Component.assign(connected_socket(), selected: self(), detail_busy: true)
+
+    {:noreply, socket} = HomeLive.handle_async(:detail, {:exit, :boom}, socket)
+
+    refute socket.assigns.detail_busy
+  end
+
+  test "a tick from an earlier selection schedules nothing" do
+    me = self()
+    socket = Phoenix.Component.assign(connected_socket(), selected: me, detail_ref: make_ref())
+
+    {:noreply, _socket} = HomeLive.handle_info({:detail_tick, me, make_ref()}, socket)
+
+    refute_receive {:detail_tick, ^me, _}, 1100
   end
 
   test "a finished fetch is ignored once the node is no longer connected" do

@@ -157,7 +157,7 @@ defmodule Beamdash.ModuleSourceTest do
     # the source check runs in a task; its answer is applied here as the task would return it
     defp answer(socket, mod) do
       node = socket.assigns.node
-      answer = {:ok, {node, mod, Beamdash.ModuleSource.available?(node, mod)}}
+      answer = {:ok, {node, Beamdash.ModuleSource.available?(node, mod)}}
       {:noreply, socket} = socket.view.handle_async({:source_check, mod}, answer, socket)
       socket
     end
@@ -248,13 +248,27 @@ defmodule Beamdash.ModuleSourceTest do
       trace = %{page(TraceLive, node, [{:src_tab_ok, [hello: 1], []}]) | view: TraceLive}
 
       {:noreply, trace} =
-        TraceLive.handle_async(
-          {:source_check, :src_tab_ok},
-          {:ok, {:other@host, :src_tab_ok, true}},
-          trace
-        )
+        TraceLive.handle_async({:source_check, :src_tab_ok}, {:ok, {:other@host, true}}, trace)
 
       assert trace.assigns.source_known == %{}
+    end
+
+    test "the source check runs in a task, and its answer lands on the page", %{node: node} do
+      load(node, :src_task_demo)
+      modules = [{:src_task_demo, [hello: 1], []}]
+      socket = %{page(TraceLive, node, modules) | view: TraceLive, transport_pid: self()}
+
+      socket = event(socket, "select_module", %{"mod" => "src_task_demo"})
+      assert socket.assigns.source_known == %{src_task_demo: :pending}
+      refute html(socket) =~ ~s(phx-click="open_source")
+
+      assert_receive {:phoenix, :async_result, {:start, {_ref, nil, key, result}}}, 15_000
+      {:noreply, socket} = TraceLive.handle_async(key, result, socket)
+
+      assert socket.assigns.source_known == %{src_task_demo: true}
+
+      assert html(socket) =~
+               ~r/<button[^>]*phx-click="open_source"[^>]*phx-value-mod="src_task_demo"/
     end
 
     test "the Profile tab has the same Source button and tabs", %{node: node} do

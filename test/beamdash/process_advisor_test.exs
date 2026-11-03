@@ -94,7 +94,7 @@ defmodule Beamdash.ProcessAdvisorTest do
     {:noreply, socket} =
       view.handle_event("select", %{"pid" => Beamdash.Format.pid(pid, :erlang)}, socket)
 
-    {:noreply, socket} = view.handle_info({:detail_tick, pid}, socket)
+    {:noreply, socket} = view.handle_info({:detail_tick, pid, socket.assigns.detail_ref}, socket)
     {:noreply, socket} = view.handle_async(:detail, {:ok, {pid, {:ok, detail}}}, socket)
     assert socket.assigns.details.pid == pid
     evidence = ProcessAdvisor.evidence(detail, socket.assigns.history)

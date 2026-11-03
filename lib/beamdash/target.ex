@@ -525,7 +525,15 @@ defmodule Beamdash.Target do
 
       progress.("Connecting to #{node}", nil)
 
-      case attach(node, cookie) do
+      # the ports now belong to the GenServer, so a crash here must still close them
+      result =
+        try do
+          attach(node, cookie)
+        catch
+          kind, reason -> {:error, {kind, reason}}
+        end
+
+      case result do
         {:ok, info} ->
           source =
             {:kubectl,

@@ -35,22 +35,26 @@ defmodule BeamdashWeb.SourceTabs do
   def check(socket, mod) do
     node = socket.assigns[:node]
 
-    Phoenix.LiveView.start_async(socket, {:source_check, mod}, fn ->
-      {node, mod, ModuleSource.available?(node, mod)}
+    socket
+    |> assign(source_known: Map.put(socket.assigns.source_known, mod, :pending))
+    |> Phoenix.LiveView.start_async({:source_check, mod}, fn ->
+      {node, ModuleSource.available?(node, mod)}
     end)
   end
 
   @doc "Applies an answer from `check/2`, if it is for the node the page shows."
-  def checked(socket, {:ok, {node, mod, available}}) do
+  def checked(socket, mod, {:ok, {node, available}}) do
     if node == socket.assigns[:node],
       do: assign(socket, source_known: Map.put(socket.assigns.source_known, mod, available)),
       else: socket
   end
 
-  def checked(socket, _exit), do: socket
+  # a failed check is asked again the next time the module is selected
+  def checked(socket, mod, _exit),
+    do: assign(socket, source_known: Map.delete(socket.assigns.source_known, mod))
 
   @doc "Whether `check/2` found a source for `mod`: the Source button shows only then."
-  def available?(known, mod), do: Map.get(known, mod, false)
+  def available?(known, mod), do: Map.get(known, mod) == true
 
   @doc """
   Handles one of `events/0`. A module name from the browser is only taken

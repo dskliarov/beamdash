@@ -284,6 +284,7 @@ defmodule BeamdashWeb.HomeLive do
           |> assign(
             selected: pid,
             detail_ref: ref,
+            detail_busy: false,
             details: nil,
             history: [],
             gc_result: nil,
@@ -533,7 +534,7 @@ defmodule BeamdashWeb.HomeLive do
   end
 
   def handle_async(:detail, {:ok, {pid, result}}, %{assigns: %{selected: pid}} = socket) do
-    Process.send_after(self(), {:detail_tick, pid, socket.assigns.detail_ref}, @detail_refresh_ms)
+    socket = assign(socket, detail_busy: false)
 
     case result do
       {:ok, :undefined} ->
@@ -557,12 +558,7 @@ defmodule BeamdashWeb.HomeLive do
     end
   end
 
-  def handle_async(:detail, _result, %{assigns: %{selected: pid}} = socket) when pid != nil do
-    Process.send_after(self(), {:detail_tick, pid, socket.assigns.detail_ref}, @detail_refresh_ms)
-    {:noreply, socket}
-  end
-
-  def handle_async(:detail, _result, socket), do: {:noreply, socket}
+  def handle_async(:detail, _result, socket), do: {:noreply, assign(socket, detail_busy: false)}
 
   def handle_async({:triage, _} = request, result, socket) do
     if request == socket.assigns.triage.request do
@@ -707,12 +703,22 @@ defmodule BeamdashWeb.HomeLive do
   end
 
   # Details of the selected process, every second while it stays selected.
+  # Each tick schedules the next, so a failed read cannot stop the loop.
   def handle_info(
         {:detail_tick, pid, ref},
         %{assigns: %{selected: pid, detail_ref: ref, status: :connected}} = socket
       ) do
-    limit = socket.assigns.message_limit
-    {:noreply, start_async(socket, :detail, fn -> {pid, Target.process_details(pid, limit)} end)}
+    Process.send_after(self(), {:detail_tick, pid, ref}, @detail_refresh_ms)
+
+    if socket.assigns.detail_busy do
+      {:noreply, socket}
+    else
+      limit = socket.assigns.message_limit
+      socket = assign(socket, detail_busy: true)
+
+      {:noreply,
+       start_async(socket, :detail, fn -> {pid, Target.process_details(pid, limit)} end)}
+    end
   end
 
   # A tick from an earlier selection, or while disconnected.

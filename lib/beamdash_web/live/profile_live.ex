@@ -297,8 +297,8 @@ defmodule BeamdashWeb.ProfileLive do
       else: {:noreply, socket}
   end
 
-  def handle_async({:source_check, _mod}, result, socket),
-    do: {:noreply, SourceTabs.checked(socket, result)}
+  def handle_async({:source_check, mod}, result, socket),
+    do: {:noreply, SourceTabs.checked(socket, mod, result)}
 
   def handle_async(:modules, {:exit, _reason}, socket),
     do: {:noreply, assign(socket, in_flight: MapSet.delete(socket.assigns.in_flight, :modules))}
