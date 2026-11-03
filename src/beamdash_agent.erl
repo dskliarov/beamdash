@@ -412,15 +412,15 @@ app_label(P) ->
     catch _:_ -> undefined
     end.
 
+%% The processes page's refresh in one call: the list and the node's info.
+process_list() -> {?MODULE:processes(), node_info()}.
+
 %% One map per live process. Processes that exit while we walk the list
 %% are skipped. Module behaviours are looked up once per module per call.
 %%
 %% Since OTP 21, process_info/2 on another process is a signal that the
 %% process itself handles, so each call costs the inspected process a
 %% little work. Everything is asked for in a single call per process.
-%% The processes page's refresh in one call: the list and the node's info.
-process_list() -> {?MODULE:processes(), node_info()}.
-
 processes() ->
     Keys = case dict_key_supported() of
                true -> ?SUMMARY_KEYS ++ [?INITIAL_CALL_KEY];

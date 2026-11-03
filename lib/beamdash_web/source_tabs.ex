@@ -11,6 +11,7 @@ defmodule BeamdashWeb.SourceTabs do
   stream such as the Trace log keeps its rows.
   """
   use Phoenix.Component
+  require Phoenix.LiveView
 
   alias Beamdash.{Format, ModuleSource}
 
@@ -21,10 +22,10 @@ defmodule BeamdashWeb.SourceTabs do
   def init(socket), do: assign(socket, sources: [], source_tab: nil, source_known: %{})
 
   @doc """
-  Asks the node, once per module, whether `mod` has a source to show
-  (`Beamdash.ModuleSource.available?/2`), for `available?/2`. A page calls
-  it when the module it shows a Source button for changes; `init/1` (on a
-  new node) forgets the answers.
+  Asks the node, once per module, whether `mod` has a source to show, in a
+  task; the answer comes back through `checked/2` from the page's
+  `handle_async/3`. A page calls it when the module it shows a Source button
+  for changes; `init/1` (on a new node) forgets the answers.
   """
   def check(socket, nil), do: socket
 
@@ -32,9 +33,21 @@ defmodule BeamdashWeb.SourceTabs do
     do: socket
 
   def check(socket, mod) do
-    available = Beamdash.ModuleSource.available?(socket.assigns[:node], mod)
-    assign(socket, source_known: Map.put(socket.assigns.source_known, mod, available))
+    node = socket.assigns[:node]
+
+    Phoenix.LiveView.start_async(socket, {:source_check, mod}, fn ->
+      {node, mod, ModuleSource.available?(node, mod)}
+    end)
   end
+
+  @doc "Applies an answer from `check/2`, if it is for the node the page shows."
+  def checked(socket, {:ok, {node, mod, available}}) do
+    if node == socket.assigns[:node],
+      do: assign(socket, source_known: Map.put(socket.assigns.source_known, mod, available)),
+      else: socket
+  end
+
+  def checked(socket, _exit), do: socket
 
   @doc "Whether `check/2` found a source for `mod`: the Source button shows only then."
   def available?(known, mod), do: Map.get(known, mod, false)

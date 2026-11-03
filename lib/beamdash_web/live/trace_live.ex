@@ -415,6 +415,9 @@ defmodule BeamdashWeb.TraceLive do
       else: {:noreply, socket}
   end
 
+  def handle_async({:source_check, _mod}, result, socket),
+    do: {:noreply, SourceTabs.checked(socket, result)}
+
   def handle_async(:modules, {:exit, reason}, socket) do
     {:noreply,
      assign(socket,

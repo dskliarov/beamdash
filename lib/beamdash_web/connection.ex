@@ -741,7 +741,7 @@ defmodule BeamdashWeb.Connection do
   defp reported(report, label) do
     fn args ->
       report.(label, Kubectl.command_line(args))
-      Kubectl.run(args)
+      Kubectl.run_kubectl(args)
     end
   end
 

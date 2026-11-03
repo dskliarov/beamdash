@@ -84,7 +84,7 @@ defmodule Beamdash.Kubectl do
   """
   @spec list_pods(String.t() | nil, String.t(), (list(String.t()) -> {binary(), integer()})) ::
           {:ok, [String.t()]} | {:error, term()}
-  def list_pods(kubeconfig, namespace, exec \\ &run/1) do
+  def list_pods(kubeconfig, namespace, exec \\ &run_kubectl/1) do
     args =
       kubeconfig_args(kubeconfig) ++
         ["get", "pods", "-n", namespace, "-o", "jsonpath={.items[*].metadata.name}"]
@@ -109,7 +109,7 @@ defmodule Beamdash.Kubectl do
   """
   @spec find_pod(String.t() | nil, String.t(), node(), (list(String.t()) -> {binary(), integer()})) ::
           {:ok, {String.t(), String.t()}} | {:error, term()}
-  def find_pod(kubeconfig, namespace, node, exec \\ &run/1) do
+  def find_pod(kubeconfig, namespace, node, exec \\ &run_kubectl/1) do
     host = node |> Atom.to_string() |> String.split("@", parts: 2) |> List.last()
     [label | rest] = String.split(host, ".")
     namespace = dns_namespace(rest) || namespace
@@ -151,7 +151,7 @@ defmodule Beamdash.Kubectl do
   """
   @spec list_namespaces(String.t() | nil, (list(String.t()) -> {binary(), integer()})) ::
           {:ok, [String.t()]} | {:error, term()}
-  def list_namespaces(kubeconfig, exec \\ &run/1) do
+  def list_namespaces(kubeconfig, exec \\ &run_kubectl/1) do
     args =
       kubeconfig_args(kubeconfig) ++
         [
@@ -185,7 +185,7 @@ defmodule Beamdash.Kubectl do
           (list(String.t()) -> {binary(), integer()})
         ) ::
           {:ok, [String.t()]} | {:error, term()}
-  def list_containers(kubeconfig, namespace, pod, exec \\ &run/1) do
+  def list_containers(kubeconfig, namespace, pod, exec \\ &run_kubectl/1) do
     args =
       kubeconfig_args(kubeconfig) ++
         [
@@ -224,7 +224,7 @@ defmodule Beamdash.Kubectl do
           (list(String.t()) -> {binary(), integer()})
         ) ::
           {:ok, [String.t()]} | {:error, term()}
-  def list_binaries(kubeconfig, namespace, pod, container, exec \\ &run/1) do
+  def list_binaries(kubeconfig, namespace, pod, container, exec \\ &run_kubectl/1) do
     command = ["sh", "-c", @list_binaries_script]
 
     case exec.(exec_args(kubeconfig, namespace, pod, container, command)) do
@@ -273,7 +273,7 @@ defmodule Beamdash.Kubectl do
   @spec connect(String.t() | nil, String.t(), String.t(), String.t(), String.t(), keyword()) ::
           {:ok, %{node: node(), cookie: atom(), tunnel: %Tunnel{}}} | {:error, term()}
   def connect(kubeconfig, namespace, pod, container, binary, opts \\ []) do
-    exec = Keyword.get(opts, :exec, &run/1)
+    exec = Keyword.get(opts, :exec, &run_kubectl/1)
     open_forward = Keyword.get(opts, :open_forward, &open_port_forward/4)
     progress = Keyword.get(opts, :progress, fn _label, _command -> :ok end)
 
@@ -513,7 +513,7 @@ defmodule Beamdash.Kubectl do
   def command_line(args), do: Enum.map_join(["kubectl" | args], " ", &shell_quote/1)
 
   @doc false
-  def run(args) do
+  def run_kubectl(args) do
     case System.find_executable("kubectl") do
       nil -> {"kubectl not found on PATH", 127}
       kubectl -> System.cmd(kubectl, args, stderr_to_stdout: true)

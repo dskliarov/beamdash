@@ -275,11 +275,15 @@ defmodule BeamdashWeb.HomeLive do
         {:noreply, socket}
 
       pid ->
+        ref = make_ref()
+
         socket =
           socket
+          |> cancel_async(:detail)
           |> reset_process_advisor()
           |> assign(
             selected: pid,
+            detail_ref: ref,
             details: nil,
             history: [],
             gc_result: nil,
@@ -289,7 +293,7 @@ defmodule BeamdashWeb.HomeLive do
             module_info: nil
           )
 
-        send(self(), {:detail_tick, pid})
+        send(self(), {:detail_tick, pid, ref})
         {:noreply, socket}
     end
   end
@@ -529,7 +533,7 @@ defmodule BeamdashWeb.HomeLive do
   end
 
   def handle_async(:detail, {:ok, {pid, result}}, %{assigns: %{selected: pid}} = socket) do
-    Process.send_after(self(), {:detail_tick, pid}, @detail_refresh_ms)
+    Process.send_after(self(), {:detail_tick, pid, socket.assigns.detail_ref}, @detail_refresh_ms)
 
     case result do
       {:ok, :undefined} ->
@@ -551,6 +555,11 @@ defmodule BeamdashWeb.HomeLive do
       {:error, reason} ->
         {:noreply, assign(socket, detail_note: Format.error(reason))}
     end
+  end
+
+  def handle_async(:detail, _result, %{assigns: %{selected: pid}} = socket) when pid != nil do
+    Process.send_after(self(), {:detail_tick, pid, socket.assigns.detail_ref}, @detail_refresh_ms)
+    {:noreply, socket}
   end
 
   def handle_async(:detail, _result, socket), do: {:noreply, socket}
@@ -698,13 +707,16 @@ defmodule BeamdashWeb.HomeLive do
   end
 
   # Details of the selected process, every second while it stays selected.
-  def handle_info({:detail_tick, pid}, %{assigns: %{selected: pid, status: :connected}} = socket) do
+  def handle_info(
+        {:detail_tick, pid, ref},
+        %{assigns: %{selected: pid, detail_ref: ref, status: :connected}} = socket
+      ) do
     limit = socket.assigns.message_limit
     {:noreply, start_async(socket, :detail, fn -> {pid, Target.process_details(pid, limit)} end)}
   end
 
-  # A tick for a process no longer selected.
-  def handle_info({:detail_tick, _pid}, socket), do: {:noreply, socket}
+  # A tick from an earlier selection, or while disconnected.
+  def handle_info({:detail_tick, _pid, _ref}, socket), do: {:noreply, socket}
 
   # after the details are shown: their module is looked up on the node
   def handle_info({:module_info, pid, details}, %{assigns: %{selected: pid}} = socket),
