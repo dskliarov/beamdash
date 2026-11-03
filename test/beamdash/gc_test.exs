@@ -120,9 +120,12 @@ defmodule Beamdash.GCTest do
     {:noreply, socket} =
       view.handle_event("select", %{"pid" => Beamdash.Format.pid(pid, :erlang)}, socket)
 
-    # the panel loads (and then refreshes) on a detail tick, as on Processes
+    # the panel loads (and then refreshes) on a detail tick, as on Processes;
+    # the read runs in a task, so its result is applied here as the task returns it
     assert_receive {:detail_tick, ^pid} = tick
     {:noreply, socket} = view.handle_info(tick, socket)
+    result = Beamdash.Target.rpc(node, :beamdash_agent, :process_details, [pid, -1])
+    {:noreply, socket} = view.handle_async(:detail, {:ok, {pid, result}}, socket)
     assert socket.assigns.detail.pid == pid
     assert length(socket.assigns.history) == 1
     html = view.render(socket.assigns) |> Phoenix.LiveViewTest.rendered_to_string()

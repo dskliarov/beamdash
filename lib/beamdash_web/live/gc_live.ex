@@ -43,16 +43,18 @@ defmodule BeamdashWeb.GCLive do
         events: [],
         trace_status: nil,
         trace_seconds: 10,
-        active_trace_seconds: 10
+        active_trace_seconds: 10,
+        in_flight: MapSet.new()
       )
       |> reset_advisor()
 
     if connected?(socket) do
       Target.subscribe()
       Process.send_after(self(), :tick, @refresh_ms)
+      if status == :connected, do: send(self(), :load)
     end
 
-    {:ok, if(connected?(socket) and status == :connected, do: refresh(socket), else: socket)}
+    {:ok, socket}
   end
 
   # /gc?pid=<0.1.0> opens that process's panel, as /?pid= does on Processes.
@@ -70,65 +72,70 @@ defmodule BeamdashWeb.GCLive do
 
   def handle_params(_params, _uri, socket), do: {:noreply, socket}
 
-  defp refresh(socket) do
-    case GC.snapshot(socket.assigns.node) do
-      {:ok, snap} ->
-        rates = GC.rates(socket.assigns.snap, snap)
+  # The snapshot is read in a task, so the page renders before the node
+  # answers; a read still running is not started again.
+  defp request_snapshot(socket) do
+    if MapSet.member?(socket.assigns.in_flight, :snapshot) do
+      socket
+    else
+      node = socket.assigns.node
 
-        assign(socket,
-          snap: snap,
-          rates: rates,
-          error: nil,
-          node_history:
-            if(rates,
-              do: Enum.take(socket.assigns.node_history ++ [rates], -@node_history),
-              else: socket.assigns.node_history
-            )
-        )
-
-      {:error, reason} ->
-        assign(socket, error: Format.error(reason))
+      socket
+      |> assign(in_flight: MapSet.put(socket.assigns.in_flight, :snapshot))
+      |> start_async(:snapshot, fn -> {node, GC.snapshot(node)} end)
     end
+  end
+
+  defp apply_snapshot(socket, {:ok, snap}) do
+    rates = GC.rates(socket.assigns.snap, snap)
+
+    assign(socket,
+      snap: snap,
+      rates: rates,
+      error: nil,
+      node_history:
+        if(rates,
+          do: Enum.take(socket.assigns.node_history ++ [rates], -@node_history),
+          else: socket.assigns.node_history
+        )
+    )
+  end
+
+  defp apply_snapshot(socket, {:error, reason}), do: assign(socket, error: Format.error(reason))
+
+  defp cancel_reads(socket) do
+    socket
+    |> cancel_async(:snapshot)
+    |> cancel_async(:detail)
+    |> assign(in_flight: MapSet.new())
   end
 
   ## Messages
 
   @impl true
+  def handle_info(:load, socket) do
+    {:noreply,
+     if(socket.assigns.status == :connected, do: request_snapshot(socket), else: socket)}
+  end
+
   def handle_info(:tick, socket) do
     Process.send_after(self(), :tick, @refresh_ms)
 
     {:noreply,
      if(socket.assigns.status == :connected and not socket.assigns.paused,
-       do: refresh(socket),
+       do: request_snapshot(socket),
        else: socket
      )}
   end
 
   def handle_info({:detail_tick, pid}, %{assigns: %{selected: pid, status: :connected}} = socket) do
+    node = socket.assigns.node
+
     # A negative mailbox limit: never copy queued messages.
-    case Target.rpc(socket.assigns.node, :beamdash_agent, :process_details, [pid, -1]) do
-      {:ok, :undefined} ->
-        {:noreply, assign(socket, detail: nil, detail_note: "The process has exited.")}
-
-      {:ok, detail} ->
-        Process.send_after(self(), {:detail_tick, pid}, @detail_refresh_ms)
-        now = System.monotonic_time(:millisecond)
-        origin = socket.assigns.sample_origin || now
-        sample = Map.put(GCAdvisor.sample(detail), :offset_ms, now - origin)
-
-        {:noreply,
-         assign(socket,
-           detail: detail,
-           detail_note: nil,
-           history: GCDetails.push(socket.assigns.history, detail),
-           sample_origin: origin,
-           samples: Enum.take(socket.assigns.samples ++ [sample], -60)
-         )}
-
-      {:error, reason} ->
-        Process.send_after(self(), {:detail_tick, pid}, @detail_refresh_ms)
-        {:noreply, assign(socket, detail_note: Format.error(reason))}
-    end
+    {:noreply,
+     start_async(socket, :detail, fn ->
+       {pid, Target.rpc(node, :beamdash_agent, :process_details, [pid, -1])}
+     end)}
   end
 
   # a tick for a process that is no longer selected
@@ -140,8 +147,9 @@ defmodule BeamdashWeb.GCLive do
     {:noreply,
      socket
      |> unselect()
+     |> cancel_reads()
      |> assign(status: :connected, node: node, snap: nil, rates: nil, node_history: [])
-     |> refresh()}
+     |> request_snapshot()}
   end
 
   def handle_info({:beamdash_target, {:disconnected, _}}, socket) do
@@ -150,6 +158,7 @@ defmodule BeamdashWeb.GCLive do
     {:noreply,
      socket
      |> unselect()
+     |> cancel_reads()
      |> assign(status: :disconnected, node: nil, snap: nil, rates: nil, node_history: [])}
   end
 
@@ -186,7 +195,7 @@ defmodule BeamdashWeb.GCLive do
     do: {:noreply, assign(socket, paused: not socket.assigns.paused)}
 
   def handle_event("refresh", _, %{assigns: %{status: :connected}} = socket),
-    do: {:noreply, refresh(socket)}
+    do: {:noreply, request_snapshot(socket)}
 
   def handle_event("filter", %{"q" => filter}, socket),
     do: {:noreply, assign(socket, filter: filter)}
@@ -364,6 +373,54 @@ defmodule BeamdashWeb.GCLive do
   def handle_event(_, _, socket), do: {:noreply, socket}
 
   @impl true
+  def handle_async(:snapshot, result, socket) do
+    socket = assign(socket, in_flight: MapSet.delete(socket.assigns.in_flight, :snapshot))
+
+    case result do
+      {:ok, {node, read}} ->
+        if node == socket.assigns.node,
+          do: {:noreply, apply_snapshot(socket, read)},
+          else: {:noreply, socket}
+
+      _ ->
+        {:noreply, socket}
+    end
+  end
+
+  def handle_async(:detail, {:ok, {pid, result}}, %{assigns: %{selected: pid}} = socket) do
+    case result do
+      {:ok, :undefined} ->
+        {:noreply, assign(socket, detail: nil, detail_note: "The process has exited.")}
+
+      {:ok, detail} ->
+        Process.send_after(self(), {:detail_tick, pid}, @detail_refresh_ms)
+        now = System.monotonic_time(:millisecond)
+        origin = socket.assigns.sample_origin || now
+        sample = Map.put(GCAdvisor.sample(detail), :offset_ms, now - origin)
+
+        {:noreply,
+         assign(socket,
+           detail: detail,
+           detail_note: nil,
+           history: GCDetails.push(socket.assigns.history, detail),
+           sample_origin: origin,
+           samples: Enum.take(socket.assigns.samples ++ [sample], -60)
+         )}
+
+      {:error, reason} ->
+        Process.send_after(self(), {:detail_tick, pid}, @detail_refresh_ms)
+        {:noreply, assign(socket, detail_note: Format.error(reason))}
+    end
+  end
+
+  def handle_async(:detail, {:exit, _}, %{assigns: %{selected: pid}} = socket)
+      when is_pid(pid) do
+    Process.send_after(self(), {:detail_tick, pid}, @detail_refresh_ms)
+    {:noreply, socket}
+  end
+
+  def handle_async(:detail, _result, socket), do: {:noreply, socket}
+
   def handle_async({:gc_advisor, _} = request, result, socket) do
     if request == socket.assigns.advisor_request and Settings.jev_enabled?() do
       socket = assign(socket, advisor_request: nil)
@@ -395,6 +452,7 @@ defmodule BeamdashWeb.GCLive do
     GC.stop(socket.assigns.collector)
 
     socket
+    |> cancel_async(:detail)
     |> reset_advisor()
     |> assign(
       selected: nil,

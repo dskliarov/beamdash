@@ -60,7 +60,9 @@ defmodule BeamdashWeb.ProfileLive do
         view: "all",
         sort: {:measurement, :desc},
         filter: "",
-        now: System.monotonic_time(:millisecond)
+        now: System.monotonic_time(:millisecond),
+        in_flight: MapSet.new(),
+        link: nil
       )
       |> SourceTabs.init()
 
@@ -68,34 +70,81 @@ defmodule BeamdashWeb.ProfileLive do
       :ok = Target.subscribe()
       :ok = Profiler.subscribe()
       :timer.send_interval(500, :tick)
-      {:ok, socket |> assign(profile: Profiler.state()) |> check_available() |> load_modules()}
+      if status == :connected, do: send(self(), :load)
+      {:ok, assign(socket, profile: Profiler.state())}
     else
       {:ok, socket}
     end
   end
 
-  defp check_available(%{assigns: %{status: :connected}} = socket) do
-    case Profiler.available() do
-      {:ok, true} -> assign(socket, available: true)
-      {:ok, {false, otp}} -> assign(socket, available: {:no, otp})
-      {:error, reason} -> assign(socket, available: {:error, Format.error(reason)})
+  # The tprof check and the module list are calls into the node, so they are
+  # read in tasks and the page does not wait for them.
+  defp request_available(socket) do
+    if MapSet.member?(socket.assigns.in_flight, :available) do
+      socket
+    else
+      node = socket.assigns.node
+
+      socket
+      |> assign(in_flight: MapSet.put(socket.assigns.in_flight, :available))
+      |> start_async(:available, fn -> {node, Profiler.available()} end)
     end
   end
 
-  defp check_available(socket), do: assign(socket, available: nil)
+  defp request_modules(%{assigns: %{available: true}} = socket) do
+    if MapSet.member?(socket.assigns.in_flight, :modules) do
+      socket
+    else
+      node = socket.assigns.node
 
-  defp load_modules(%{assigns: %{available: true}} = socket) do
-    case Tracer.module_functions() do
-      {:ok, mods} -> assign(socket, modules: mods)
-      {:error, _} -> socket
+      socket
+      |> assign(in_flight: MapSet.put(socket.assigns.in_flight, :modules))
+      |> start_async(:modules, fn -> {node, Tracer.module_functions()} end)
     end
   end
 
-  defp load_modules(socket), do: socket
+  defp request_modules(socket), do: socket
+
+  defp cancel_reads(socket) do
+    socket
+    |> cancel_async(:available)
+    |> cancel_async(:modules)
+    |> assign(in_flight: MapSet.new())
+  end
+
+  defp apply_available(socket, {:ok, true}),
+    do: socket |> assign(available: true) |> request_modules()
+
+  defp apply_available(socket, {:ok, {false, otp}}), do: assign(socket, available: {:no, otp})
+
+  defp apply_available(socket, {:error, reason}),
+    do: assign(socket, available: {:error, Format.error(reason)})
+
+  defp apply_modules(socket, {:ok, mods}) do
+    socket = assign(socket, modules: mods)
+
+    case socket.assigns.link do
+      nil ->
+        socket
+
+      {params, uri} ->
+        {:noreply, socket} = handle_params(params, uri, assign(socket, link: nil))
+        socket
+    end
+  end
+
+  defp apply_modules(socket, {:error, _reason}), do: socket
+
+  # a ?mod= link opened before the module list has arrived waits for it
+  defp defer_link(%{assigns: %{modules: [], link: nil}} = socket, params, uri),
+    do: assign(socket, link: {params, uri})
+
+  defp defer_link(socket, _params, _uri), do: socket
 
   # ?mod=&fun=&arity= also picks that function (a link from a log line)
   @impl true
-  def handle_params(%{"mod" => mod, "fun" => fun, "arity" => arity}, uri, socket) do
+  def handle_params(%{"mod" => mod, "fun" => fun, "arity" => arity} = params, uri, socket) do
+    socket = defer_link(socket, params, uri)
     {:noreply, socket} = handle_params(%{"mod" => mod}, uri, socket)
     pick_mod = socket.assigns.pick_mod
 
@@ -115,7 +164,9 @@ defmodule BeamdashWeb.ProfileLive do
   end
 
   # ?mod= opens that module (a link from "Ask beamdash")
-  def handle_params(%{"mod" => mod}, _uri, socket) do
+  def handle_params(%{"mod" => mod} = params, uri, socket) do
+    socket = defer_link(socket, params, uri)
+
     case Enum.find(socket.assigns.modules, fn {m, _, _} -> Atom.to_string(m) == mod end) do
       {m, _, _} ->
         {:noreply, socket |> assign(pick_mod: m, pick_q: mod) |> SourceTabs.check(m)}
@@ -156,7 +207,7 @@ defmodule BeamdashWeb.ProfileLive do
   def handle_event("pick_ff", %{"f" => f}, socket) when f in ~w(all exported local picked),
     do: {:noreply, assign(socket, ff: String.to_existing_atom(f))}
 
-  def handle_event("refresh_modules", _params, socket), do: {:noreply, load_modules(socket)}
+  def handle_event("refresh_modules", _params, socket), do: {:noreply, request_modules(socket)}
 
   def handle_event("pick", %{"mod" => m, "fun" => f, "arity" => a}, socket) do
     pattern = parse_pick(m, f, a)
@@ -219,6 +270,36 @@ defmodule BeamdashWeb.ProfileLive do
     {:noreply, assign(socket, sort: {col, dir})}
   end
 
+  ## Async
+
+  @impl true
+  def handle_async(:available, {:ok, {node, result}}, socket) do
+    socket = assign(socket, in_flight: MapSet.delete(socket.assigns.in_flight, :available))
+
+    if node == socket.assigns.node,
+      do: {:noreply, apply_available(socket, result)},
+      else: {:noreply, socket}
+  end
+
+  def handle_async(:available, {:exit, reason}, socket) do
+    {:noreply,
+     assign(socket,
+       in_flight: MapSet.delete(socket.assigns.in_flight, :available),
+       available: {:error, Format.error(reason)}
+     )}
+  end
+
+  def handle_async(:modules, {:ok, {node, result}}, socket) do
+    socket = assign(socket, in_flight: MapSet.delete(socket.assigns.in_flight, :modules))
+
+    if node == socket.assigns.node,
+      do: {:noreply, apply_modules(socket, result)},
+      else: {:noreply, socket}
+  end
+
+  def handle_async(:modules, {:exit, _reason}, socket),
+    do: {:noreply, assign(socket, in_flight: MapSet.delete(socket.assigns.in_flight, :modules))}
+
   ## Messages
 
   @impl true
@@ -230,17 +311,34 @@ defmodule BeamdashWeb.ProfileLive do
 
   def handle_info(:tick, socket), do: {:noreply, socket}
 
+  def handle_info(:load, socket),
+    do:
+      {:noreply,
+       if(socket.assigns.status == :connected, do: request_available(socket), else: socket)}
+
   def handle_info({:beamdash_target, {:connected, node}}, socket),
     do:
       {:noreply,
        socket
-       |> assign(status: :connected, node: node, picked: [], pick_mod: nil)
+       |> assign(
+         status: :connected,
+         node: node,
+         picked: [],
+         pick_mod: nil,
+         available: nil,
+         modules: []
+       )
+       |> cancel_reads()
        |> SourceTabs.init()
-       |> check_available()
-       |> load_modules()}
+       |> request_available()}
 
-  def handle_info({:beamdash_target, {:disconnected, _}}, socket),
-    do: {:noreply, socket |> assign(status: :disconnected, available: nil) |> SourceTabs.init()}
+  def handle_info({:beamdash_target, {:disconnected, _}}, socket) do
+    {:noreply,
+     socket
+     |> cancel_reads()
+     |> assign(status: :disconnected, available: nil, link: nil)
+     |> SourceTabs.init()}
+  end
 
   ## Parsing
 
@@ -367,7 +465,7 @@ defmodule BeamdashWeb.ProfileLive do
         </div>
         <p :if={match?({:error, _}, @available)} class="error">{elem(@available, 1)}</p>
 
-        <section :if={@status == :connected and @available == true} class="profile">
+        <section :if={@status == :connected and @available in [nil, true]} class="profile">
           <%!-- the picker's search boxes belong to this form (form="pick-form"),
              so typing in them, or Enter, never submits the profile --%>
           <form
