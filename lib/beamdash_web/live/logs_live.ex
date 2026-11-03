@@ -109,6 +109,7 @@ defmodule BeamdashWeb.LogsLive do
         tree_open: nil,
         tree_detail: MapSet.new(),
         tree_group_keys: [],
+        tree_hidden: [],
         tree_checked: [],
         tree_apps: %{},
         tree_apps_node: nil,
@@ -220,7 +221,22 @@ defmodule BeamdashWeb.LogsLive do
   end
 
   defp event("tree_ungroup", _params, socket),
-    do: {:noreply, socket |> assign(tree_group_keys: []) |> refresh_tree()}
+    do: {:noreply, socket |> assign(tree_group_keys: [], tree_hidden: []) |> refresh_tree()}
+
+  # a branch added by regrouping is removed: its lines leave the tree
+  defp event("tree_hide_branch", %{"id" => id}, %{assigns: %{tree: %{nodes: nodes}}} = socket) do
+    case Tree.find(nodes, id) do
+      %{kind: :field, scope: scope} ->
+        hidden = Enum.uniq(socket.assigns.tree_hidden ++ [scope])
+        {:noreply, socket |> assign(tree_hidden: hidden) |> refresh_tree()}
+
+      _ ->
+        {:noreply, socket}
+    end
+  end
+
+  defp event("tree_restore", _params, socket),
+    do: {:noreply, socket |> assign(tree_hidden: []) |> refresh_tree()}
 
   defp event("tree_expand_all", _params, %{assigns: %{tree: %{nodes: nodes}}} = socket),
     do: {:noreply, assign(socket, tree_open: MapSet.new(Tree.parent_ids(nodes)))}
@@ -1069,7 +1085,8 @@ defmodule BeamdashWeb.LogsLive do
         apps: a.tree_apps,
         since: a.tree_since,
         template_cache: a.tree_cache,
-        group_keys: a.tree_group_keys
+        group_keys: a.tree_group_keys,
+        hidden: a.tree_hidden
       )
 
     assign(socket, tree: tree, tree_cache: tree.template_cache)
@@ -1334,6 +1351,7 @@ defmodule BeamdashWeb.LogsLive do
         detail={@tree_detail}
         group_keys={@tree_group_keys}
         checked={@tree_checked}
+        hidden={@tree_hidden}
         apps_error={@tree_apps_error}
         since={@tree_since}
         source={@info.source}
@@ -1438,6 +1456,7 @@ defmodule BeamdashWeb.LogsLive do
   attr :detail, :any, required: true
   attr :group_keys, :list, default: []
   attr :checked, :list, default: []
+  attr :hidden, :list, default: []
 
   defp tree(assigns) do
     assigns =
@@ -1472,6 +1491,14 @@ defmodule BeamdashWeb.LogsLive do
             phx-click="tree_ungroup"
           >
             Ungroup
+          </button>
+          <button
+            :if={@hidden != []}
+            type="button"
+            class="secondary small-btn"
+            phx-click="tree_restore"
+          >
+            Restore {length(@hidden)} removed
           </button>
         </span>
       </div>
@@ -1564,6 +1591,16 @@ defmodule BeamdashWeb.LogsLive do
                   title="Show these lines on the Lines tab"
                 >
                   Lines
+                </button>
+                <button
+                  :if={row.node.kind == :field}
+                  type="button"
+                  class="secondary small-btn"
+                  phx-click="tree_hide_branch"
+                  phx-value-id={row.node.id}
+                  title="Remove this branch from the tree"
+                >
+                  Remove
                 </button>
               </td>
             </tr>

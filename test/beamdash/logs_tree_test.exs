@@ -178,6 +178,24 @@ defmodule Beamdash.LogsTreeTest do
     assert %{label: "run/2", kind: :function, children: [%{label: "x", kind: :template}]} = fun
   end
 
+  defp all_labels(nodes), do: Enum.flat_map(nodes, &[&1.label | all_labels(&1.children)])
+
+  test "a hidden branch leaves the tree and its lines are not counted" do
+    entries = [
+      e(1, 0, :info, "MyApp.Repo:query/2", "state #st{count = 3}"),
+      e(2, 1, :info, "MyApp.Repo:query/2", "state #st{count = 4}")
+    ]
+
+    scope = {:field, "my_app", "MyApp.Repo", "query/2", [{"count", "3"}]}
+    all = Tree.build(entries, apps: apps(), group_keys: ["count"])
+    less = Tree.build(entries, apps: apps(), group_keys: ["count"], hidden: [scope])
+
+    assert "count = 3" in all_labels(all.nodes)
+    refute "count = 3" in all_labels(less.nodes)
+    assert "count = 4" in all_labels(less.nodes)
+    assert less.lines == 1
+  end
+
   test "an empty buffer" do
     assert %{nodes: [], lines: 0, window: nil, new: 0} = Tree.build([])
   end

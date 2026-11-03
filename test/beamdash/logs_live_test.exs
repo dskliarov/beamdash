@@ -1283,6 +1283,35 @@ defmodule Beamdash.LogsLiveTest do
     refute "count = 3" in tree_labels(html)
   end
 
+  test "a branch added by regrouping can be removed and restored", ctx do
+    {_, socket} = ctx |> mount() |> render()
+    socket = event(socket, "tab", %{"tab" => "tree"})
+
+    lines = [
+      new_entry(72, "state #st{count = 3,name = fixture}"),
+      new_entry(73, "state #st{count = 4,name = fixture}")
+    ]
+
+    socket = socket |> info({:beamdash_logs, {:entries, lines}}) |> async_result(:tree_apps)
+    {_, socket} = socket |> event("tree_expand_all") |> render()
+
+    node = tree_node(socket, "state #st{count = #,name = fixture}")
+    {_, socket} = socket |> event("tree_detail", %{"id" => node.id}) |> render()
+    {_, socket} = socket |> event("tree_check", %{"key" => "count", "val" => "3"}) |> render()
+    {_, socket} = socket |> event("tree_regroup") |> render()
+    {html, socket} = socket |> event("tree_expand_all") |> render()
+    assert "count = 3" in tree_labels(html)
+
+    branch = tree_node(socket, "count = 3")
+    {html, socket} = socket |> event("tree_hide_branch", %{"id" => branch.id}) |> render()
+    refute "count = 3" in tree_labels(html)
+    assert "count = 4" in tree_labels(html)
+    assert html =~ "Restore 1 removed"
+
+    {html, _} = socket |> event("tree_restore") |> render()
+    assert "count = 3" in tree_labels(html)
+  end
+
   test "Lines on a tree row shows that row's lines on the Lines tab", ctx do
     {_, socket} = ctx |> mount() |> render()
     socket = socket |> event("tab", %{"tab" => "tree"}) |> async_result(:tree_apps)
