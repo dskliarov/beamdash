@@ -69,14 +69,16 @@ defmodule BeamdashWeb.MemoryLive do
         # Jev: which kind of memory needs attention
         health: %{request: nil, advice: nil, error: nil, evidence: nil},
         # ?check=1: run the health check as soon as there is enough history
-        health_auto: false
+        health_auto: false,
+        in_flight: MapSet.new()
       )
 
     if connected?(socket) do
       :ok = Target.subscribe()
       Process.send_after(self(), :tick, @refresh_ms)
       Process.send_after(self(), :ets_tick, @ets_refresh_ms)
-      {:ok, if(status == :connected, do: start(socket), else: socket)}
+      if status == :connected, do: send(self(), :start)
+      {:ok, socket}
     else
       {:ok, socket}
     end
@@ -84,83 +86,122 @@ defmodule BeamdashWeb.MemoryLive do
 
   defp start(socket) do
     socket
-    |> assign(recon: Memory.recon_status(socket.assigns.node))
-    |> refresh()
-    |> then(fn s -> assign(s, tab: s.assigns.tab || suggested_tab(s.assigns.snap)) end)
+    |> request_recon()
+    |> request_snapshot()
     |> load_tab()
   end
 
   ## Data
 
-  defp refresh(socket) do
-    case Memory.snapshot(socket.assigns.node) do
-      {:ok, snap} ->
-        point = %{
-          at: snap.sampled_at_ms,
-          memory: snap.memory,
-          counts: %{
-            atom_count: snap.atom_count,
-            process_count: snap.process_count,
-            ets_count: snap.ets_count
-          }
-        }
+  # Each read of the node runs in a task, so a slow node never holds up
+  # events; a read that is still running is not started again.
+  defp fetch(socket, kind, read) do
+    if MapSet.member?(socket.assigns.in_flight, kind) do
+      socket
+    else
+      node = socket.assigns.node
 
-        history = Enum.take(socket.assigns.history ++ [point], -@history)
-        trend_history = Enum.take(socket.assigns.trend_history ++ [point], -@trend_history)
-
-        assign(socket,
-          snap: snap,
-          history: history,
-          trend_history: trend_history,
-          forecast: Beamdash.Insights.Forecast.forecast(history, snap),
-          error: nil
-        )
-
-      {:error, reason} ->
-        assign(socket, error: Format.error(reason))
+      socket
+      |> assign(in_flight: MapSet.put(socket.assigns.in_flight, kind))
+      |> start_async({:memory, kind}, fn -> {node, read.(node)} end)
     end
   end
 
-  defp load_tab(%{assigns: %{tab: :ets}} = socket), do: load_ets(socket)
+  defp request_recon(socket), do: fetch(socket, :recon, &Memory.recon_status/1)
+  defp request_snapshot(socket), do: fetch(socket, :snapshot, &Memory.snapshot/1)
+  defp request_ets(socket), do: fetch(socket, :ets, &Memory.ets_tables/1)
+
+  # The snapshot and the open top list in one call; the ETS page and the
+  # bare start only need the snapshot.
+  defp request_refresh(%{assigns: %{tab: tab}} = socket) when tab in [nil, :ets],
+    do: request_snapshot(socket)
+
+  defp request_refresh(socket) do
+    attr = top_attr(socket)
+    top_n = socket.assigns.top_n
+    fetch(socket, :page, &Memory.page(&1, attr, top_n))
+  end
+
+  defp request_top(socket) do
+    attr = top_attr(socket)
+    top_n = socket.assigns.top_n
+    fetch(socket, {:top, attr}, &Memory.top_processes(&1, attr, top_n))
+  end
+
+  defp top_attr(%{assigns: %{tab: :binary}}), do: :binary_memory
+  defp top_attr(socket), do: socket.assigns.attr
+
+  defp apply_read(socket, :recon, recon), do: assign(socket, recon: recon)
+
+  defp apply_read(socket, :snapshot, {:ok, snap}) do
+    point = %{
+      at: snap.sampled_at_ms,
+      memory: snap.memory,
+      counts: %{
+        atom_count: snap.atom_count,
+        process_count: snap.process_count,
+        ets_count: snap.ets_count
+      }
+    }
+
+    history = Enum.take(socket.assigns.history ++ [point], -@history)
+    trend_history = Enum.take(socket.assigns.trend_history ++ [point], -@trend_history)
+
+    socket =
+      assign(socket,
+        snap: snap,
+        history: history,
+        trend_history: trend_history,
+        forecast: Beamdash.Insights.Forecast.forecast(history, snap),
+        error: nil
+      )
+
+    if socket.assigns.tab == nil,
+      do: socket |> assign(tab: suggested_tab(snap)) |> load_tab(),
+      else: socket
+  end
+
+  defp apply_read(socket, :page, {:ok, {snap, top}}) do
+    attr = top_attr(socket)
+
+    socket
+    |> apply_read(:snapshot, {:ok, snap})
+    |> apply_read({:top, attr}, {:ok, top})
+  end
+
+  defp apply_read(socket, :ets, {:ok, tables}) do
+    now = Map.new(tables, &{&1.id, &1})
+    # growth is measured against the first time a table was seen here
+    base = Map.merge(now, socket.assigns.ets_base, fn _id, _new, old -> old end)
+    prev = socket.assigns.ets || []
+    assign(socket, ets: tables, ets_base: base, ets_prev: Map.new(prev, &{&1.id, &1}), error: nil)
+  end
+
+  defp apply_read(socket, {:top, attr}, {:ok, {source, entries}}) do
+    if attr == top_attr(socket) do
+      prev =
+        case socket.assigns.top do
+          %{attr: ^attr, entries: old} -> Map.new(old, &{&1.pid, &1.value})
+          _ -> %{}
+        end
+
+      assign(socket, top: %{attr: attr, source: source, entries: entries}, top_prev: prev)
+    else
+      socket
+    end
+  end
+
+  defp apply_read(socket, _kind, {:error, reason}),
+    do: assign(socket, error: Format.error(reason))
+
+  defp apply_read(socket, _kind, _other), do: socket
+
+  defp load_tab(%{assigns: %{tab: :ets}} = socket), do: request_ets(socket)
   defp load_tab(%{assigns: %{tab: nil}} = socket), do: socket
-  defp load_tab(socket), do: load_top(socket)
-
-  defp load_top(socket) do
-    attr = if socket.assigns.tab == :binary, do: :binary_memory, else: socket.assigns.attr
-
-    case Memory.top_processes(socket.assigns.node, attr, socket.assigns.top_n) do
-      {:ok, {source, entries}} ->
-        prev =
-          case socket.assigns.top do
-            %{attr: ^attr, entries: old} -> Map.new(old, &{&1.pid, &1.value})
-            _ -> %{}
-          end
-
-        assign(socket, top: %{attr: attr, source: source, entries: entries}, top_prev: prev)
-
-      {:error, reason} ->
-        assign(socket, error: Format.error(reason))
-    end
-  end
-
-  defp load_ets(socket) do
-    case Memory.ets_tables(socket.assigns.node) do
-      {:ok, tables} ->
-        now = Map.new(tables, &{&1.id, &1})
-        # growth is measured against the first time a table was seen here
-        base = Map.merge(now, socket.assigns.ets_base, fn _id, _new, old -> old end)
-        prev = socket.assigns.ets || []
-        assign(socket, ets: tables, ets_base: base, ets_prev: Map.new(prev, &{&1.id, &1}))
-
-      {:error, reason} ->
-        assign(socket, error: Format.error(reason))
-    end
-  end
+  defp load_tab(socket), do: request_top(socket)
 
   # The investigation to open first: the biggest of processes, binaries
   # and ETS.
-  defp suggested_tab(nil), do: :processes
-
   defp suggested_tab(%{memory: m}) do
     [processes: m.processes, binary: m.binary, ets: m.ets]
     |> Enum.max_by(&elem(&1, 1))
@@ -226,24 +267,30 @@ defmodule BeamdashWeb.MemoryLive do
   def handle_event("attr", %{"attr" => attr, "n" => n}, socket) do
     attr = Enum.find(Keyword.keys(@attrs), :memory, &(Atom.to_string(&1) == attr))
     n = if n in ~w(5 10 20 50), do: String.to_integer(n), else: 10
-    {:noreply, socket |> assign(attr: attr, top_n: n, top: nil) |> load_top()}
+    {:noreply, socket |> assign(attr: attr, top_n: n, top: nil) |> request_top()}
   end
 
-  def handle_event("refresh_top", _params, socket), do: {:noreply, load_top(socket)}
+  def handle_event("refresh_top", _params, socket), do: {:noreply, request_top(socket)}
 
   def handle_event("gc_all", _params, socket) do
     socket = assign(socket, busy: :gc)
 
     case Memory.gc_all(socket.assigns.node) do
-      {:ok, gc} -> {:noreply, socket |> assign(gc: gc, busy: nil) |> refresh() |> load_top()}
-      {:error, r} -> {:noreply, assign(socket, error: Format.error(r), busy: nil)}
+      {:ok, gc} ->
+        {:noreply, socket |> assign(gc: gc, busy: nil) |> request_refresh()}
+
+      {:error, r} ->
+        {:noreply, assign(socket, error: Format.error(r), busy: nil)}
     end
   end
 
   def handle_event("bin_leak", _params, socket) do
     case Memory.binary_leaks(socket.assigns.node, socket.assigns.top_n) do
-      {:ok, leaks} -> {:noreply, socket |> assign(leaks: leaks) |> refresh() |> load_top()}
-      {:error, r} -> {:noreply, assign(socket, error: Format.error(r))}
+      {:ok, leaks} ->
+        {:noreply, socket |> assign(leaks: leaks) |> request_refresh()}
+
+      {:error, r} ->
+        {:noreply, assign(socket, error: Format.error(r))}
     end
   end
 
@@ -313,6 +360,18 @@ defmodule BeamdashWeb.MemoryLive do
     do: {:noreply, assign(socket, ets_base: Map.new(socket.assigns.ets || [], &{&1.id, &1}))}
 
   @impl true
+  def handle_async({:memory, kind}, result, socket) do
+    socket = assign(socket, in_flight: MapSet.delete(socket.assigns.in_flight, kind))
+
+    case result do
+      {:ok, {node, value}} when node == socket.assigns.node ->
+        {:noreply, apply_read(socket, kind, value)}
+
+      _ ->
+        {:noreply, socket}
+    end
+  end
+
   def handle_async({:memory_advisor, _} = request, result, socket) do
     if request == socket.assigns.health.request do
       socket = put_health(socket, request: nil)
@@ -365,12 +424,17 @@ defmodule BeamdashWeb.MemoryLive do
   ## Messages
 
   @impl true
+  # the first load runs after mount, so the page is rendered before the RPCs
+  def handle_info(:start, socket) do
+    {:noreply, if(socket.assigns.status == :connected, do: start(socket), else: socket)}
+  end
+
   def handle_info(:tick, socket) do
     Process.send_after(self(), :tick, @refresh_ms)
 
     {:noreply,
      if(socket.assigns.status == :connected,
-       do: socket |> refresh() |> maybe_auto_health(),
+       do: socket |> request_refresh() |> maybe_auto_health(),
        else: socket
      )}
   end
@@ -380,7 +444,7 @@ defmodule BeamdashWeb.MemoryLive do
 
     {:noreply,
      if(socket.assigns.status == :connected and socket.assigns.tab == :ets,
-       do: load_ets(socket),
+       do: request_ets(socket),
        else: socket
      )}
   end
@@ -388,7 +452,15 @@ defmodule BeamdashWeb.MemoryLive do
   def handle_info({:beamdash_target, {:connected, node}}, socket),
     do:
       {:noreply,
-       socket |> assign(status: :connected, node: node, history: [], trend_history: []) |> start()}
+       socket
+       |> assign(
+         status: :connected,
+         node: node,
+         history: [],
+         trend_history: [],
+         in_flight: MapSet.new()
+       )
+       |> start()}
 
   def handle_info({:beamdash_target, {:disconnected, _}}, socket),
     do:

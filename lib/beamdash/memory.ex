@@ -59,6 +59,9 @@ defmodule Beamdash.Memory do
   @doc "Top `n` processes by `attr` (`:memory`, `:message_queue_len`, `:binary_memory`, ...)."
   def top_processes(node, attr, n), do: call(node, :top_processes, [attr, n])
 
+  @doc "The snapshot and the top `n` by `attr` in one call: `{:ok, {snap, {source, entries}}}`."
+  def page(node, attr, n), do: call(node, :memory_page, [attr, n])
+
   @doc "Garbage collects every process: memory before and after."
   def gc_all(node), do: call(node, :gc_all, [])
 

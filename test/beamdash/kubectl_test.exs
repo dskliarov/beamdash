@@ -427,6 +427,30 @@ defmodule Beamdash.KubectlTest do
                )
     end
 
+    test "reports each step, with the kubectl command it runs where there is one" do
+      exec = fn _args -> {"app@10.0.0.5\nsecret_cookie\n", 0} end
+
+      open_forward = fn _kc, _ns, _pod, {local, _remote} ->
+        {:ok, fake_epmd(local, "app", 9999)}
+      end
+
+      progress = fn label, command -> send(self(), {:progress, label, command}) end
+
+      assert {:ok, _} =
+               Kubectl.connect(nil, "prod", "my-pod", "", "/opt/my_app/bin/my_app",
+                 exec: exec,
+                 open_forward: open_forward,
+                 progress: progress
+               )
+
+      assert_received {:progress, "Reading the node name and cookie from the pod",
+                       "kubectl " <> _}
+
+      assert_received {:progress, "Forwarding the pod's EPMD port", "kubectl " <> _}
+      assert_received {:progress, "Reading the node's distribution port from EPMD", nil}
+      assert_received {:progress, "Forwarding the node's distribution port", "kubectl " <> _}
+    end
+
     test "accepts a relx eval reply wrapped in {ok, _}" do
       exec = fn
         [_, _, _, _, _, _, "rpc", _] -> {"", 1}

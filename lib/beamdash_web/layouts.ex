@@ -53,6 +53,18 @@ defmodule BeamdashWeb.Layouts do
     if Application.get_env(:beamdash, :has_k8s, false), do: "Kubernetes", else: "kubectl"
   end
 
+  attr :progress, :map, required: true, doc: "a step: label, command (or nil), elapsed seconds"
+
+  defp progress_line(assigns) do
+    ~H"""
+    <p class="conn-progress muted small" role="status">
+      <span class="dot dot-wait" aria-hidden="true"></span>
+      <span>{@progress.label} · {@progress.elapsed}s</span>
+      <code :if={@progress.command} class="conn-command" title={@progress.command}>{@progress.command}</code>
+    </p>
+    """
+  end
+
   attr :active, :any, required: true, doc: "a tab's key, or {:plugin, app, slug}"
   attr :syntax, :atom, required: true
   attr :conn, :map, default: nil, doc: "from BeamdashWeb.Connection; nil hides the bar"
@@ -277,9 +289,9 @@ defmodule BeamdashWeb.Layouts do
               <button
                 type="submit"
                 phx-disable-with="Connecting…"
-                disabled={@conn.kube_binaries == []}
+                disabled={@conn.kube_binaries == [] or not is_nil(@conn[:connecting])}
               >
-                Connect
+                {if @conn[:connecting], do: "Connecting…", else: "Connect"}
               </button>
             </form>
             <p :if={@conn[:kube_binaries] == []} class="conn-hint muted small">
@@ -287,6 +299,9 @@ defmodule BeamdashWeb.Layouts do
                 do: " (container #{@conn.kube_container})"}.
             </p>
           </div>
+
+          <.progress_line :if={@conn[:connecting]} progress={@conn.connecting} />
+          <.progress_line :if={@conn[:kube_progress]} progress={@conn.kube_progress} />
         </div>
 
         <div :if={@conn.status == :connected} class="connected">

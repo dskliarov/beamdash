@@ -304,6 +304,14 @@ defmodule Beamdash.ModuleSourceTest do
 
       socket = event(socket, "select", %{"pid" => Beamdash.Format.pid(server, :erlang)})
       {:noreply, socket} = BeamdashWeb.HomeLive.handle_info({:detail_tick, server}, socket)
+      {:ok, details} = Target.process_details(server, socket.assigns.message_limit)
+
+      {:noreply, socket} =
+        BeamdashWeb.HomeLive.handle_async(:detail, {:ok, {server, {:ok, details}}}, socket)
+
+      assert_received {:module_info, ^server, ^details} = message
+      {:noreply, socket} = BeamdashWeb.HomeLive.handle_info(message, socket)
+
       assert %{module: :code_server, application: :kernel} = socket.assigns.module_info
 
       # the Source button opens only that module

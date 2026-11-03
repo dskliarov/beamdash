@@ -84,7 +84,7 @@ defmodule Beamdash.Kubectl do
   """
   @spec list_pods(String.t() | nil, String.t(), (list(String.t()) -> {binary(), integer()})) ::
           {:ok, [String.t()]} | {:error, term()}
-  def list_pods(kubeconfig, namespace, exec \\ &run_kubectl/1) do
+  def list_pods(kubeconfig, namespace, exec \\ &run/1) do
     args =
       kubeconfig_args(kubeconfig) ++
         ["get", "pods", "-n", namespace, "-o", "jsonpath={.items[*].metadata.name}"]
@@ -109,7 +109,7 @@ defmodule Beamdash.Kubectl do
   """
   @spec find_pod(String.t() | nil, String.t(), node(), (list(String.t()) -> {binary(), integer()})) ::
           {:ok, {String.t(), String.t()}} | {:error, term()}
-  def find_pod(kubeconfig, namespace, node, exec \\ &run_kubectl/1) do
+  def find_pod(kubeconfig, namespace, node, exec \\ &run/1) do
     host = node |> Atom.to_string() |> String.split("@", parts: 2) |> List.last()
     [label | rest] = String.split(host, ".")
     namespace = dns_namespace(rest) || namespace
@@ -151,7 +151,7 @@ defmodule Beamdash.Kubectl do
   """
   @spec list_namespaces(String.t() | nil, (list(String.t()) -> {binary(), integer()})) ::
           {:ok, [String.t()]} | {:error, term()}
-  def list_namespaces(kubeconfig, exec \\ &run_kubectl/1) do
+  def list_namespaces(kubeconfig, exec \\ &run/1) do
     args =
       kubeconfig_args(kubeconfig) ++
         [
@@ -185,7 +185,7 @@ defmodule Beamdash.Kubectl do
           (list(String.t()) -> {binary(), integer()})
         ) ::
           {:ok, [String.t()]} | {:error, term()}
-  def list_containers(kubeconfig, namespace, pod, exec \\ &run_kubectl/1) do
+  def list_containers(kubeconfig, namespace, pod, exec \\ &run/1) do
     args =
       kubeconfig_args(kubeconfig) ++
         [
@@ -224,7 +224,7 @@ defmodule Beamdash.Kubectl do
           (list(String.t()) -> {binary(), integer()})
         ) ::
           {:ok, [String.t()]} | {:error, term()}
-  def list_binaries(kubeconfig, namespace, pod, container, exec \\ &run_kubectl/1) do
+  def list_binaries(kubeconfig, namespace, pod, container, exec \\ &run/1) do
     command = ["sh", "-c", @list_binaries_script]
 
     case exec.(exec_args(kubeconfig, namespace, pod, container, command)) do
@@ -266,20 +266,43 @@ defmodule Beamdash.Kubectl do
   `list_binaries/5`, or a name under #{@release_bin_dir}) and returns the
   node and cookie discovered there,
   with the tunnel to pass to `Target.connect/2` and later to `close/1`.
+
+  `opts[:progress]` is called as `progress.(label, command)` before each
+  step, with the kubectl command line it runs (`nil` for steps that run none).
   """
   @spec connect(String.t() | nil, String.t(), String.t(), String.t(), String.t(), keyword()) ::
           {:ok, %{node: node(), cookie: atom(), tunnel: %Tunnel{}}} | {:error, term()}
   def connect(kubeconfig, namespace, pod, container, binary, opts \\ []) do
-    exec = Keyword.get(opts, :exec, &run_kubectl/1)
+    exec = Keyword.get(opts, :exec, &run/1)
     open_forward = Keyword.get(opts, :open_forward, &open_port_forward/4)
+    progress = Keyword.get(opts, :progress, fn _label, _command -> :ok end)
 
-    with {:ok, {node, cookie}} <- discover(kubeconfig, namespace, pod, container, binary, exec),
+    discovery_exec = fn args ->
+      progress.("Reading the node name and cookie from the pod", command_line(args))
+      exec.(args)
+    end
+
+    with {:ok, {node, cookie}} <-
+           discover(kubeconfig, namespace, pod, container, binary, discovery_exec),
          [short_name, _host] <- String.split(Atom.to_string(node), "@", parts: 2),
          {:ok, epmd_local} <- free_local_port(),
+         :ok <-
+           step(
+             progress,
+             "Forwarding the pod's EPMD port",
+             port_forward_command(kubeconfig, namespace, pod, {epmd_local, @epmd_port})
+           ),
          {:ok, epmd_forward} <-
            open_forward.(kubeconfig, namespace, pod, {epmd_local, @epmd_port}),
+         :ok <- step(progress, "Reading the node's distribution port from EPMD", nil),
          {:ok, dist_port} <- discover_dist_port(epmd_local, short_name),
          {:ok, dist_local} <- free_local_port(),
+         :ok <-
+           step(
+             progress,
+             "Forwarding the node's distribution port",
+             port_forward_command(kubeconfig, namespace, pod, {dist_local, dist_port})
+           ),
          {:ok, dist_forward} <- open_forward.(kubeconfig, namespace, pod, {dist_local, dist_port}) do
       install_epmd_module()
       persistent_term_put(short_name, dist_local)
@@ -419,15 +442,7 @@ defmodule Beamdash.Kubectl do
             [
               :binary,
               :exit_status,
-              args:
-                kubeconfig_args(kubeconfig) ++
-                  [
-                    "port-forward",
-                    "-n",
-                    namespace,
-                    "pod/#{pod}",
-                    "#{local_port}:#{remote_port}"
-                  ]
+              args: port_forward_args(kubeconfig, namespace, pod, {local_port, remote_port})
             ]
           )
 
@@ -494,6 +509,36 @@ defmodule Beamdash.Kubectl do
     with_container ++ ["--"] ++ command
   end
 
+  @doc "The kubectl command line for `args`, quoted so it can be pasted into a shell."
+  def command_line(args), do: Enum.map_join(["kubectl" | args], " ", &shell_quote/1)
+
+  @doc false
+  def run(args) do
+    case System.find_executable("kubectl") do
+      nil -> {"kubectl not found on PATH", 127}
+      kubectl -> System.cmd(kubectl, args, stderr_to_stdout: true)
+    end
+  end
+
+  defp shell_quote(arg) do
+    if String.match?(arg, ~r/\A[A-Za-z0-9_.\/:=@+,%-]+\z/),
+      do: arg,
+      else: "'" <> String.replace(arg, "'", "'\\''") <> "'"
+  end
+
+  defp port_forward_args(kubeconfig, namespace, pod, {local_port, remote_port}) do
+    kubeconfig_args(kubeconfig) ++
+      ["port-forward", "-n", namespace, "pod/#{pod}", "#{local_port}:#{remote_port}"]
+  end
+
+  defp port_forward_command(kubeconfig, namespace, pod, ports),
+    do: command_line(port_forward_args(kubeconfig, namespace, pod, ports))
+
+  defp step(progress, label, command) do
+    progress.(label, command)
+    :ok
+  end
+
   defp kubeconfig_args(nil), do: []
   defp kubeconfig_args(""), do: []
   defp kubeconfig_args(path), do: ["--kubeconfig", path]
@@ -505,13 +550,6 @@ defmodule Beamdash.Kubectl do
       {:ok, port}
     else
       {:error, reason} -> {:error, {:port_forward_failed, reason}}
-    end
-  end
-
-  defp run_kubectl(args) do
-    case System.find_executable("kubectl") do
-      nil -> {"kubectl not found on PATH", 127}
-      kubectl -> System.cmd(kubectl, args, stderr_to_stdout: true)
     end
   end
 end

@@ -75,6 +75,7 @@ defmodule BeamdashWeb.HomeLive do
         rates: %{},
         cpu_values: %{},
         cpu_request: nil,
+        refreshing?: false,
         cpu_enabled: false,
         cpu_generation: nil,
         cpu_error: nil,
@@ -104,7 +105,8 @@ defmodule BeamdashWeb.HomeLive do
       :ok = SysTracer.subscribe()
       socket = assign(socket, sys_traced: MapSet.new(SysTracer.traced()))
       Process.send_after(self(), :tick, @refresh_ms)
-      {:ok, if(status == :connected, do: refresh(socket), else: socket)}
+      if status == :connected, do: send(self(), :load)
+      {:ok, socket}
     else
       {:ok, socket}
     end
@@ -301,6 +303,7 @@ defmodule BeamdashWeb.HomeLive do
     do:
       {:noreply,
        socket
+       |> cancel_async(:detail)
        |> reset_process_advisor()
        |> assign(
          selected: nil,
@@ -510,6 +513,48 @@ defmodule BeamdashWeb.HomeLive do
 
   def handle_async({:cpu_sample, _}, _, socket), do: {:noreply, socket}
 
+  def handle_async(:refresh, result, socket) do
+    socket = assign(socket, refreshing?: false)
+
+    case {result, socket.assigns.status} do
+      {{:ok, {:ok, {procs, info}}}, :connected} ->
+        {:noreply, apply_refresh(socket, procs, info)}
+
+      {{:ok, {:error, reason}}, :connected} ->
+        {:noreply, assign(socket, error: Format.error(reason))}
+
+      _ ->
+        {:noreply, socket}
+    end
+  end
+
+  def handle_async(:detail, {:ok, {pid, result}}, %{assigns: %{selected: pid}} = socket) do
+    Process.send_after(self(), {:detail_tick, pid}, @detail_refresh_ms)
+
+    case result do
+      {:ok, :undefined} ->
+        {:noreply,
+         socket
+         |> reset_process_advisor()
+         |> assign(details: nil, detail_note: "The process has exited.")}
+
+      {:ok, details} ->
+        send(self(), {:module_info, pid, details})
+
+        {:noreply,
+         assign(socket,
+           details: details,
+           history: ProcessStats.push(socket.assigns.history, details),
+           detail_note: nil
+         )}
+
+      {:error, reason} ->
+        {:noreply, assign(socket, detail_note: Format.error(reason))}
+    end
+  end
+
+  def handle_async(:detail, _result, socket), do: {:noreply, socket}
+
   def handle_async({:triage, _} = request, result, socket) do
     if request == socket.assigns.triage.request do
       socket = put_triage(socket, request: nil)
@@ -642,6 +687,11 @@ defmodule BeamdashWeb.HomeLive do
 
   def handle_info({:cpu_tick, _}, socket), do: {:noreply, socket}
 
+  # the first load runs after mount, so the page is rendered before the RPCs
+  def handle_info(:load, socket) do
+    {:noreply, if(socket.assigns.status == :connected, do: refresh(socket), else: socket)}
+  end
+
   def handle_info(:tick, socket) do
     Process.send_after(self(), :tick, @refresh_ms)
     {:noreply, if(socket.assigns.status == :connected, do: refresh(socket), else: socket)}
@@ -649,33 +699,18 @@ defmodule BeamdashWeb.HomeLive do
 
   # Details of the selected process, every second while it stays selected.
   def handle_info({:detail_tick, pid}, %{assigns: %{selected: pid, status: :connected}} = socket) do
-    case Target.process_details(pid, socket.assigns.message_limit) do
-      {:ok, :undefined} ->
-        {:noreply,
-         socket
-         |> reset_process_advisor()
-         |> assign(details: nil, detail_note: "The process has exited.")}
-
-      {:ok, details} ->
-        Process.send_after(self(), {:detail_tick, pid}, @detail_refresh_ms)
-
-        {:noreply,
-         socket
-         |> assign(
-           details: details,
-           history: ProcessStats.push(socket.assigns.history, details),
-           detail_note: nil
-         )
-         |> module_info(details)}
-
-      {:error, reason} ->
-        Process.send_after(self(), {:detail_tick, pid}, @detail_refresh_ms)
-        {:noreply, assign(socket, detail_note: Format.error(reason))}
-    end
+    limit = socket.assigns.message_limit
+    {:noreply, start_async(socket, :detail, fn -> {pid, Target.process_details(pid, limit)} end)}
   end
 
   # A tick for a process no longer selected.
   def handle_info({:detail_tick, _pid}, socket), do: {:noreply, socket}
+
+  # after the details are shown: their module is looked up on the node
+  def handle_info({:module_info, pid, details}, %{assigns: %{selected: pid}} = socket),
+    do: {:noreply, module_info(socket, details)}
+
+  def handle_info({:module_info, _pid, _details}, socket), do: {:noreply, socket}
 
   def handle_info({:beamdash_sys_trace, pid, update}, socket) do
     traced =
@@ -715,6 +750,7 @@ defmodule BeamdashWeb.HomeLive do
        details: nil,
        history: []
      )
+     |> cancel_refresh()
      |> refresh()}
   end
 
@@ -774,37 +810,47 @@ defmodule BeamdashWeb.HomeLive do
 
   @min_rate_window_us 1_000_000
 
+  # The list is fetched in a task, so a slow node never holds up events; a
+  # tick while a fetch is running is skipped.
+  defp refresh(%{assigns: %{refreshing?: true}} = socket), do: socket
+
   defp refresh(socket) do
-    with {:ok, procs} <- Target.processes(),
-         {:ok, info} <- Target.node_info() do
-      now = System.monotonic_time(:microsecond)
-      prev_at = socket.assigns.prev_at
+    socket
+    |> assign(refreshing?: true)
+    |> start_async(:refresh, fn -> Target.process_list() end)
+  end
 
-      socket = assign(socket, procs: procs, info: info, error: nil)
+  defp cancel_refresh(socket) do
+    socket = if socket.assigns.refreshing?, do: cancel_async(socket, :refresh), else: socket
+    assign(socket, refreshing?: false)
+  end
 
-      # Rates are only taken over at least @min_rate_window_us: over a
-      # few milliseconds (two refreshes in a row, as on connect) the one
-      # reduction it costs a process to be looked at reads as a high rate.
-      if prev_at && now - prev_at < @min_rate_window_us do
-        socket
-      else
-        elapsed = if prev_at, do: now - prev_at, else: 0
-        {rates, sample} = ProcessStats.table_rates(procs, socket.assigns.prev_sample, elapsed)
+  defp apply_refresh(socket, procs, info) do
+    now = System.monotonic_time(:microsecond)
+    prev_at = socket.assigns.prev_at
 
-        assign(socket,
-          rates: rates,
-          prev_sample: sample,
-          prev_at: now,
-          triage_history:
-            if(prev_at,
-              do: TriageAdvisor.track(socket.assigns.triage_history, procs, rates, now),
-              else: socket.assigns.triage_history
-            )
-        )
-        |> maybe_auto_triage()
-      end
+    socket = assign(socket, procs: procs, info: info, error: nil)
+
+    # Rates are only taken over at least @min_rate_window_us: over a
+    # few milliseconds (two refreshes in a row, as on connect) the one
+    # reduction it costs a process to be looked at reads as a high rate.
+    if prev_at && now - prev_at < @min_rate_window_us do
+      socket
     else
-      {:error, reason} -> assign(socket, error: Format.error(reason))
+      elapsed = if prev_at, do: now - prev_at, else: 0
+      {rates, sample} = ProcessStats.table_rates(procs, socket.assigns.prev_sample, elapsed)
+
+      assign(socket,
+        rates: rates,
+        prev_sample: sample,
+        prev_at: now,
+        triage_history:
+          if(prev_at,
+            do: TriageAdvisor.track(socket.assigns.triage_history, procs, rates, now),
+            else: socket.assigns.triage_history
+          )
+      )
+      |> maybe_auto_triage()
     end
   end
 

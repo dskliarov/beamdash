@@ -541,21 +541,21 @@ defmodule Beamdash.ConnectionBarTest do
     assert s.assigns.conn.kube_cluster == cluster
     assert s.assigns.conn.kube_namespace == "prod"
     {:halt, s} = Connection.handle_event("set_conn_method", %{"method" => "kubectl"}, s)
-    assert_receive {:beamdash_restore_kube, ref, ^cluster, "prod", result}, 10_000
+    assert_receive {:beamdash_kube_listed, ref, ^cluster, "prod", result}, 10_000
 
     {:halt, stale} =
-      Connection.handle_info({:beamdash_restore_kube, make_ref(), cluster, "prod", result}, s)
+      Connection.handle_info({:beamdash_kube_listed, make_ref(), cluster, "prod", result}, s)
 
     assert stale.assigns.conn.kube_pods == nil
     partial = {:partial, %{pods: ["pod-a", "pod-b"], pod: "pod-b", error: :timeout}}
 
     {:halt, failed} =
-      Connection.handle_info({:beamdash_restore_kube, ref, cluster, "prod", partial}, s)
+      Connection.handle_info({:beamdash_kube_listed, ref, cluster, "prod", partial}, s)
 
     assert failed.assigns.conn.kube_pods == ["pod-a", "pod-b"]
     assert failed.assigns.conn.kube_pod == "pod-b"
     assert failed.assigns.conn.error != nil
-    {:halt, s} = Connection.handle_info({:beamdash_restore_kube, ref, cluster, "prod", result}, s)
+    {:halt, s} = Connection.handle_info({:beamdash_kube_listed, ref, cluster, "prod", result}, s)
     assert s.assigns.conn.kube_pod == "pod-b"
     assert s.assigns.conn.kube_container == "sidecar"
     assert s.assigns.conn.kube_binary == "/app/bin/two"
@@ -577,8 +577,8 @@ defmodule Beamdash.ConnectionBarTest do
 
     {:halt, s} = Connection.handle_info(:beamdash_restore_saved_kube, mounted_bar())
 
-    assert_receive {:beamdash_restore_kube, ref, ^cluster, "prod", result}, 10_000
-    {:halt, s} = Connection.handle_info({:beamdash_restore_kube, ref, cluster, "prod", result}, s)
+    assert_receive {:beamdash_kube_listed, ref, ^cluster, "prod", result}, 10_000
+    {:halt, s} = Connection.handle_info({:beamdash_kube_listed, ref, cluster, "prod", result}, s)
     assert s.assigns.conn.kube_pod == "pod-a"
     assert s.assigns.conn.kube_container == "app"
     assert s.assigns.conn.kube_binary == "/app/bin/one"
@@ -595,8 +595,8 @@ defmodule Beamdash.ConnectionBarTest do
     assert s.assigns.conn.method == :kubectl
     assert_receive :beamdash_restore_saved_kube
     {:halt, s} = Connection.handle_info(:beamdash_restore_saved_kube, s)
-    assert_receive {:beamdash_restore_kube, ref, ^cluster, "prod", result}, 10_000
-    {:halt, s} = Connection.handle_info({:beamdash_restore_kube, ref, cluster, "prod", result}, s)
+    assert_receive {:beamdash_kube_listed, ref, ^cluster, "prod", result}, 10_000
+    {:halt, s} = Connection.handle_info({:beamdash_kube_listed, ref, cluster, "prod", result}, s)
     assert s.assigns.conn.kube_pod == "pod-a"
     assert s.assigns.conn.kube_container == "app"
     assert s.assigns.conn.kube_binary == "/app/bin/one"
@@ -613,7 +613,7 @@ defmodule Beamdash.ConnectionBarTest do
     {:cont, s} = Connection.on_mount(:default, %{}, %{}, socket)
     assert_receive :beamdash_restore_saved_kube
     {:halt, s} = Connection.handle_info(:beamdash_restore_saved_kube, s)
-    refute_receive {:beamdash_restore_kube, _, _, _, _}, 300
+    refute_receive {:beamdash_kube_listed, _, _, _, _}, 300
     refute_receive {:beamdash_kube_namespaces, _, _}
     assert s.assigns.conn.kube_namespaces == ["default", "prod"]
     assert s.assigns.conn.kube_pods == ["pod-a", "pod-b"]
