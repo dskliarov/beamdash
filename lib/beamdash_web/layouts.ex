@@ -299,8 +299,6 @@ defmodule BeamdashWeb.Layouts do
                 do: " (container #{@conn.kube_container})"}.
             </p>
           </div>
-          <.progress_line :if={@conn[:connecting]} progress={@conn.connecting} />
-          <.progress_line :if={@conn[:kube_progress]} progress={@conn.kube_progress} />
         </div>
 
         <div :if={@conn.status == :connected} class="connected">
@@ -326,6 +324,15 @@ defmodule BeamdashWeb.Layouts do
         </div>
       </div>
     </header>
+    <div
+      :if={@conn && @conn.status != :connected && (@conn[:connecting] || @conn[:kube_progress])}
+      class="conn-progress-slot"
+    >
+      <div class="conn-progress-overlay">
+        <.progress_line :if={@conn[:connecting]} progress={@conn.connecting} />
+        <.progress_line :if={@conn[:kube_progress]} progress={@conn.kube_progress} />
+      </div>
+    </div>
     <p :if={@conn && @conn.error} class="error conn-error" role="alert">{@conn.error}</p>
     <div :if={(@ask && @ask_on) || (@conn && @conn.status == :connected)} class="subbar">
       <div :if={@ask && @ask_on} class="ask">
@@ -517,7 +524,7 @@ defmodule BeamdashWeb.Layouts do
         ?
       </button>
     </div>
-    <dialog id="shortcuts" class="shortcuts" aria-label="Keyboard shortcuts">
+    <dialog id="shortcuts" class="shortcuts" aria-label="Keyboard shortcuts" phx-update="ignore">
       <h3>Keyboard shortcuts</h3>
       <p class="muted small">Press <kbd>g</kbd> then a key. Not while typing in a field.</p>
       <div class="shortcut-groups">

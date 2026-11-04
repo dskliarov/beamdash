@@ -39,7 +39,8 @@ defmodule BeamdashWeb.AppsLive do
     if connected?(socket) do
       :ok = Target.subscribe()
       Process.send_after(self(), :refresh, @refresh_ms)
-      {:ok, load(socket)}
+      send(self(), :initial_load)
+      {:ok, socket}
     else
       {:ok, socket}
     end
@@ -48,6 +49,8 @@ defmodule BeamdashWeb.AppsLive do
   # ?app= opens that application
   @impl true
   def handle_params(%{"app" => app}, _uri, socket) do
+    socket = if socket.assigns.apps == [], do: load(socket), else: socket
+
     case Enum.find(socket.assigns.apps, &(Atom.to_string(&1.name) == app)) do
       %{name: name} -> {:noreply, socket |> assign(app: name, selected: nil) |> load_tree()}
       nil -> {:noreply, socket}
@@ -141,6 +144,8 @@ defmodule BeamdashWeb.AppsLive do
   def handle_event("refresh", _params, socket), do: {:noreply, load(socket)}
 
   @impl true
+  def handle_info(:initial_load, socket), do: {:noreply, load(socket)}
+
   def handle_info(:refresh, socket) do
     Process.send_after(self(), :refresh, @refresh_ms)
     {:noreply, load(socket)}

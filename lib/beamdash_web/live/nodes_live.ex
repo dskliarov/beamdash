@@ -38,7 +38,8 @@ defmodule BeamdashWeb.NodesLive do
     if connected?(socket) do
       :ok = Target.subscribe(target)
       Process.send_after(self(), :refresh, @refresh_ms)
-      {:ok, load(socket)}
+      send(self(), :initial_load)
+      {:ok, socket}
     else
       {:ok, socket}
     end
@@ -46,7 +47,7 @@ defmodule BeamdashWeb.NodesLive do
 
   @impl true
   def handle_params(%{"switch" => name} = params, _uri, socket) do
-    socket = assign(socket, return_to: return_path(params["return"]))
+    socket = socket |> assign(return_to: return_path(params["return"])) |> load_unless_loaded()
     nodes = socket.assigns.nodes
 
     cond do
@@ -74,6 +75,9 @@ defmodule BeamdashWeb.NodesLive do
   end
 
   defp load(socket), do: socket
+
+  defp load_unless_loaded(%{assigns: %{nodes: nil}} = socket), do: load(socket)
+  defp load_unless_loaded(socket), do: socket
 
   @impl true
   def handle_event("refresh", _params, socket), do: {:noreply, load(socket)}
@@ -133,6 +137,8 @@ defmodule BeamdashWeb.NodesLive do
   end
 
   @impl true
+  def handle_info(:initial_load, socket), do: {:noreply, load(socket)}
+
   def handle_info(:refresh, socket) do
     Process.send_after(self(), :refresh, @refresh_ms)
     {:noreply, load(socket)}

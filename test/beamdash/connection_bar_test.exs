@@ -730,6 +730,31 @@ defmodule Beamdash.ConnectionBarTest do
     assert s.assigns.conn.kube_restore_ref == nil
   end
 
+  test "switching to Direct clears a kubectl listing's progress line" do
+    s =
+      Phoenix.Component.assign(mounted_bar(),
+        conn:
+          Map.merge(mounted_bar().assigns.conn, %{
+            method: :kubectl,
+            kube_pods_listing: true,
+            kube_restore_ref: make_ref(),
+            kube_progress: %{
+              label: "Listing pods…",
+              command: "kubectl get pods",
+              since: 0,
+              elapsed: 1
+            }
+          })
+      )
+
+    {:halt, s} = Connection.handle_event("set_conn_method", %{"method" => "direct"}, s)
+
+    assert s.assigns.conn.method == :direct
+    assert s.assigns.conn.kube_progress == nil
+    assert s.assigns.conn.kube_restore_ref == nil
+    refute s.assigns.conn.kube_pods_listing
+  end
+
   defp flush_namespaces do
     receive do
       {:beamdash_kube_namespaces, _, _} -> flush_namespaces()

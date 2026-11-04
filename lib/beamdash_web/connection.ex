@@ -616,7 +616,7 @@ defmodule BeamdashWeb.Connection do
 
     socket =
       if switched?,
-        do: update(socket, kube_restore_ref: nil, kube_pods_listing: false),
+        do: update(socket, kube_restore_ref: nil, kube_pods_listing: false, kube_progress: nil),
         else: socket
 
     if method == :kubectl and switched?,

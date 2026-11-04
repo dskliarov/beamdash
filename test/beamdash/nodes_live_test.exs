@@ -33,6 +33,7 @@ defmodule Beamdash.NodesLiveTest do
     }
 
     {:ok, socket} = NodesLive.mount(%{}, %{"target" => ctx.target}, socket)
+    {:noreply, socket} = NodesLive.handle_info(:initial_load, socket)
     socket
   end
 
