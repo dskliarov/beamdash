@@ -164,6 +164,14 @@ defmodule BeamdashWeb.Connection do
     end
   end
 
+  def handle_event(
+        "select_kube_cluster",
+        _params,
+        %{assigns: %{conn: %{connecting: connecting}}} = socket
+      )
+      when connecting != nil,
+      do: {:halt, socket}
+
   # picking a different cluster invalidates everything listed under the old
   # one, same reset `"select_kube_pod"` does for a different pod.
   def handle_event("select_kube_cluster", %{"cluster" => cluster}, socket) do

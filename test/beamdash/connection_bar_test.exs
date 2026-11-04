@@ -500,6 +500,16 @@ defmodule Beamdash.ConnectionBarTest do
     assert_receive {:beamdash_kube_namespaces, ^new, _result}, 10_000
   end
 
+  test "picking another cluster is refused while a kubectl connect runs" do
+    old = empty_kubeconfig()
+    new = empty_kubeconfig()
+    connecting = %{label: "Connecting…", command: nil, since: 0, elapsed: 1}
+
+    s = on_cluster(old, %{method: :kubectl, connecting: connecting})
+
+    assert {:halt, ^s} = Connection.handle_event("select_kube_cluster", %{"cluster" => new}, s)
+  end
+
   test "a freshly mounted bar offers no namespaces yet" do
     assert mounted_bar().assigns.conn.kube_namespaces == []
   end

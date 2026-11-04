@@ -222,9 +222,10 @@ defmodule BeamdashWeb.MemoryLive do
     do: assign(socket, error: Format.error(r), busy: nil)
 
   defp apply_action(socket, :bin_leak, {:ok, leaks}),
-    do: socket |> assign(leaks: leaks) |> request_refresh()
+    do: socket |> assign(leaks: leaks, busy: nil) |> request_refresh()
 
-  defp apply_action(socket, :bin_leak, {:error, r}), do: assign(socket, error: Format.error(r))
+  defp apply_action(socket, :bin_leak, {:error, r}),
+    do: assign(socket, error: Format.error(r), busy: nil)
 
   # The investigation to open first: the biggest of processes, binaries
   # and ETS.
@@ -303,10 +304,16 @@ defmodule BeamdashWeb.MemoryLive do
 
   def handle_event("gc_all", _params, socket), do: {:noreply, socket}
 
-  def handle_event("bin_leak", _params, socket) do
+  def handle_event("bin_leak", _params, %{assigns: %{status: :connected, busy: nil}} = socket) do
     top_n = socket.assigns.top_n
-    {:noreply, action(socket, :bin_leak, &Memory.binary_leaks(&1, top_n))}
+
+    {:noreply,
+     socket
+     |> assign(busy: :bin_leak)
+     |> action(:bin_leak, &Memory.binary_leaks(&1, top_n))}
   end
+
+  def handle_event("bin_leak", _params, socket), do: {:noreply, socket}
 
   def handle_event("inspect", %{"pid" => pid_text}, socket) do
     with pid when is_pid(pid) <- Target.parse_pid(pid_text, socket.assigns.node),

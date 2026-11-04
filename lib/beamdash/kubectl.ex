@@ -506,7 +506,7 @@ defmodule Beamdash.Kubectl do
 
   defp close_port_forward(port) do
     case Port.info(port, :os_pid) do
-      {:os_pid, os_pid} -> System.cmd("kill", [Integer.to_string(os_pid)])
+      {:os_pid, os_pid} -> System.cmd("kill", [Integer.to_string(os_pid)], stderr_to_stdout: true)
       nil -> :ok
     end
 

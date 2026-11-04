@@ -163,7 +163,12 @@ defmodule BeamdashWeb.Layouts do
               class="conn-row"
             >
               <label class="field-label" for="kube-cluster">Cluster</label>
-              <select id="kube-cluster" class="wide" name="cluster">
+              <select
+                id="kube-cluster"
+                class="wide"
+                name="cluster"
+                disabled={not is_nil(@conn[:connecting])}
+              >
                 <option
                   :for={c <- @conn.kube_clusters}
                   value={c.path}

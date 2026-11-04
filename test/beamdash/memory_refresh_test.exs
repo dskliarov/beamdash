@@ -72,6 +72,12 @@ defmodule Beamdash.MemoryRefreshTest do
     assert {:noreply, ^socket} = MemoryLive.handle_event("gc_all", %{}, socket)
   end
 
+  test "a second binary leak search while one runs starts nothing" do
+    socket = Phoenix.Component.assign(connected_socket(), busy: :bin_leak)
+
+    assert {:noreply, ^socket} = MemoryLive.handle_event("bin_leak", %{}, socket)
+  end
+
   test "a GC all result from an earlier node clears the busy flag" do
     socket = Phoenix.Component.assign(connected_socket(), busy: :gc)
 
