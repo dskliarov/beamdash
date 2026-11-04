@@ -381,6 +381,10 @@ defmodule Beamdash.MemoryPanelTest do
     assert html =~
              ~r/<td class="ets-rows small">\s*<span[^>]*>only<\/span>\s*<\/td>\s*<td class="ets-rows small">\s*<\/td>/
 
+    bare = showing.(socket, {:ok, %{rows: [:a], stop: :complete, keypos: 1}}, "table")
+    html = bare.assigns |> MemoryLive.render() |> Phoenix.LiveViewTest.rendered_to_string()
+    assert html =~ ~r/<td class="ets-rows small">\s*<span[^>]*>a<\/span>\s*<\/td>/
+
     quoted = {:ok, %{rows: [{"{x}", 1}], stop: :complete, keypos: 1}}
     quoted_socket = showing.(socket, quoted, "raw")
 

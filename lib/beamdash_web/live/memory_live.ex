@@ -323,7 +323,8 @@ defmodule BeamdashWeb.MemoryLive do
 
   defp key_value_rows(rows, keypos, syntax) do
     Enum.map(rows, fn row ->
-      {key, rest} = row |> Tuple.to_list() |> List.pop_at(keypos - 1)
+      fields = if is_tuple(row), do: Tuple.to_list(row), else: [row]
+      {key, rest} = List.pop_at(fields, keypos - 1)
       {pretty_segments(Format.pretty(key, syntax, 1)), value_segments(rest, syntax)}
     end)
   end
