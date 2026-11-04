@@ -53,6 +53,18 @@ defmodule BeamdashWeb.Layouts do
     if Application.get_env(:beamdash, :has_k8s, false), do: "Kubernetes", else: "kubectl"
   end
 
+  attr :progress, :map, required: true, doc: "a step: label, command (or nil), elapsed seconds"
+
+  defp progress_line(assigns) do
+    ~H"""
+    <p class="conn-progress muted small" role="status">
+      <span class="dot dot-wait" aria-hidden="true"></span>
+      <span>{@progress.label} · {@progress.elapsed}s</span>
+      <code :if={@progress.command} class="conn-command" title={@progress.command}>{@progress.command}</code>
+    </p>
+    """
+  end
+
   attr :active, :any, required: true, doc: "a tab's key, or {:plugin, app, slug}"
   attr :syntax, :atom, required: true
   attr :conn, :map, default: nil, doc: "from BeamdashWeb.Connection; nil hides the bar"
@@ -151,7 +163,12 @@ defmodule BeamdashWeb.Layouts do
               class="conn-row"
             >
               <label class="field-label" for="kube-cluster">Cluster</label>
-              <select id="kube-cluster" class="wide" name="cluster">
+              <select
+                id="kube-cluster"
+                class="wide"
+                name="cluster"
+                disabled={not is_nil(@conn[:connecting])}
+              >
                 <option
                   :for={c <- @conn.kube_clusters}
                   value={c.path}
@@ -205,7 +222,7 @@ defmodule BeamdashWeb.Layouts do
                 type="submit"
                 class="secondary"
                 phx-disable-with="Listing…"
-                disabled={Map.get(@conn, :kube_pods_listing, false)}
+                disabled={Map.get(@conn, :kube_pods_listing, false) or not is_nil(@conn[:connecting])}
               >
                 List pods
               </button>
@@ -277,9 +294,9 @@ defmodule BeamdashWeb.Layouts do
               <button
                 type="submit"
                 phx-disable-with="Connecting…"
-                disabled={@conn.kube_binaries == []}
+                disabled={@conn.kube_binaries == [] or not is_nil(@conn[:connecting])}
               >
-                Connect
+                {if @conn[:connecting], do: "Connecting…", else: "Connect"}
               </button>
             </form>
             <p :if={@conn[:kube_binaries] == []} class="conn-hint muted small">
@@ -312,6 +329,15 @@ defmodule BeamdashWeb.Layouts do
         </div>
       </div>
     </header>
+    <div
+      :if={@conn && @conn.status != :connected && (@conn[:connecting] || @conn[:kube_progress])}
+      class="conn-progress-slot"
+    >
+      <div class="conn-progress-overlay">
+        <.progress_line :if={@conn[:connecting]} progress={@conn.connecting} />
+        <.progress_line :if={@conn[:kube_progress]} progress={@conn.kube_progress} />
+      </div>
+    </div>
     <p :if={@conn && @conn.error} class="error conn-error" role="alert">{@conn.error}</p>
     <div :if={(@ask && @ask_on) || (@conn && @conn.status == :connected)} class="subbar">
       <div :if={@ask && @ask_on} class="ask">
@@ -503,7 +529,7 @@ defmodule BeamdashWeb.Layouts do
         ?
       </button>
     </div>
-    <dialog id="shortcuts" class="shortcuts" aria-label="Keyboard shortcuts">
+    <dialog id="shortcuts" class="shortcuts" aria-label="Keyboard shortcuts" phx-update="ignore">
       <h3>Keyboard shortcuts</h3>
       <p class="muted small">Press <kbd>g</kbd> then a key. Not while typing in a field.</p>
       <div class="shortcut-groups">

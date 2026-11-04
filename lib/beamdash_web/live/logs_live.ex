@@ -196,10 +196,12 @@ defmodule BeamdashWeb.LogsLive do
     {:noreply, assign(socket, tree_open: toggle(tree_open(socket.assigns), id))}
   end
 
+  # One detail row is open at a time: the checks and parents below belong to it.
   defp event("tree_detail", %{"id" => id}, socket) do
-    detail = toggle(socket.assigns.tree_detail, id)
+    opening? = not MapSet.member?(socket.assigns.tree_detail, id)
+    detail = if opening?, do: MapSet.new([id]), else: toggle(socket.assigns.tree_detail, id)
     socket = assign(socket, tree_detail: detail)
-    {:noreply, if(MapSet.member?(detail, id), do: seed_parent(socket, id), else: socket)}
+    {:noreply, if(opening?, do: seed_parent(socket, id), else: socket)}
   end
 
   defp event("tree_check", %{"key" => key, "val" => value}, socket) do
@@ -1069,7 +1071,7 @@ defmodule BeamdashWeb.LogsLive do
         assign(socket, tree_parent: groups, tree_checked: checked)
 
       _ ->
-        assign(socket, tree_parent: [])
+        assign(socket, tree_parent: [], tree_checked: [])
     end
   end
 
@@ -1607,15 +1609,16 @@ defmodule BeamdashWeb.LogsLive do
               :if={row.node.kind == :template and MapSet.member?(@detail, row.node.id)}
               class="logs-tree-detail"
             >
+              <% detail_fields = tree_fields(row.node.sample) %>
               <td colspan="7" style={"padding-left: #{0.5 + (row.depth + 1) * 1.25}rem"}>
                 <p class="muted small">Fields of the newest line in this kind of line</p>
                 <table
-                  :if={tree_fields(row.node.sample) != []}
+                  :if={detail_fields != []}
                   class="logs-json"
                   aria-label="Fields of this message"
                 >
                   <tbody>
-                    <tr :for={{key, value} <- tree_fields(row.node.sample)}>
+                    <tr :for={{key, value} <- detail_fields}>
                       <th scope="row">
                         <label class="field-pick">
                           <input
@@ -1632,10 +1635,10 @@ defmodule BeamdashWeb.LogsLive do
                     </tr>
                   </tbody>
                 </table>
-                <p :if={tree_fields(row.node.sample) == []} class="muted small">
+                <p :if={detail_fields == []} class="muted small">
                   No key=value fields in this line.
                 </p>
-                <div :if={tree_fields(row.node.sample) != []} class="tree-field-actions">
+                <div :if={detail_fields != []} class="tree-field-actions">
                   <button
                     type="button"
                     class="secondary small-btn"

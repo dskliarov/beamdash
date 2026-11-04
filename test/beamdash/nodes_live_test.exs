@@ -26,13 +26,18 @@ defmodule Beamdash.NodesLiveTest do
     %{target: target, node: node, other: other}
   end
 
-  defp mount(ctx) do
+  defp bare_mount(ctx) do
     socket = %Socket{
       transport_pid: self(),
       private: %{lifecycle: %Lifecycle{}, live_temp: %{}}
     }
 
     {:ok, socket} = NodesLive.mount(%{}, %{"target" => ctx.target}, socket)
+    socket
+  end
+
+  defp mount(ctx) do
+    {:noreply, socket} = NodesLive.handle_info(:initial_load, bare_mount(ctx))
     socket
   end
 
@@ -97,6 +102,19 @@ defmodule Beamdash.NodesLiveTest do
     assert {:live, :redirect, %{to: "/plugins/riak/ring"}} = socket.redirected
     assert %{node: node} = Target.status(ctx.target)
     assert node == ctx.other
+  end
+
+  test "?switch= works before the page's first load has run", ctx do
+    socket =
+      ctx
+      |> bare_mount()
+      |> params(%{"switch" => Atom.to_string(ctx.other), "return" => "/plugins/riak/ring"})
+
+    assert socket.assigns.switching == ctx.other
+    assert socket.assigns.nodes != nil
+
+    socket = async_result(socket, :switch)
+    assert {:live, :redirect, %{to: "/plugins/riak/ring"}} = socket.redirected
   end
 
   test "?switch= to the attached node goes straight back; without return it stays", ctx do

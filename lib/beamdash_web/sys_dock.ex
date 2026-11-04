@@ -17,6 +17,7 @@ defmodule BeamdashWeb.SysDock do
 
   attr :active, :any, required: true, doc: "{kind, pid} of the maximized panel"
   attr :collapsed, :boolean, required: true
+  attr :pending, :any, default: nil, doc: "{pid, :enable | :disable} while sys:trace is switched"
   attr :syntax, :atom, required: true
 
   def dock(assigns) do
@@ -73,6 +74,7 @@ defmodule BeamdashWeb.SysDock do
             active={{p.kind, p.pid} == @active}
             pid={p.pid}
             label={p.label}
+            pending={pending(@pending, p.pid)}
             syntax={@syntax}
           />
           <.live_component
@@ -101,6 +103,10 @@ defmodule BeamdashWeb.SysDock do
     </section>
     """
   end
+
+  @doc "The switch in progress for `pid`: `:enable`, `:disable`, or nil."
+  def pending({pid, action}, pid), do: action
+  def pending(_pending, _pid), do: nil
 
   defp counts_text(panels) do
     [trace: "sys:trace", state: "state", tree: "supervisor tree"]

@@ -50,7 +50,9 @@ defmodule BeamdashWeb.TraceLive do
         graph: nil,
         graph_depth: 4,
         error: nil,
-        notice: nil
+        notice: nil,
+        in_flight: MapSet.new(),
+        link: nil
       )
       |> SourceTabs.init()
       |> stream(:entries, [])
@@ -59,10 +61,10 @@ defmodule BeamdashWeb.TraceLive do
       :ok = Target.subscribe()
       :ok = Tracer.subscribe()
       :ok = SeqTracer.subscribe()
-      {:ok, if(status == :connected, do: load(socket), else: socket)}
-    else
-      {:ok, socket}
+      if status == :connected, do: send(self(), :load)
     end
+
+    {:ok, socket}
   end
 
   defp load(socket) do
@@ -75,15 +77,53 @@ defmodule BeamdashWeb.TraceLive do
 
     socket = stream(socket, :entries, log_rows(socket), reset: true)
 
-    case Tracer.module_functions() do
-      {:ok, mods} -> assign(socket, modules: mods, error: nil)
-      {:error, reason} -> assign(socket, error: Format.error(reason))
+    request_modules(socket)
+  end
+
+  # read in a task so the page does not wait for the node
+  defp request_modules(socket) do
+    if MapSet.member?(socket.assigns.in_flight, :modules) do
+      socket
+    else
+      node = socket.assigns.node
+
+      socket
+      |> assign(in_flight: MapSet.put(socket.assigns.in_flight, :modules))
+      |> start_async(:modules, fn -> {node, Tracer.module_functions()} end)
     end
   end
 
+  defp cancel_modules(socket) do
+    socket
+    |> cancel_async(:modules)
+    |> assign(in_flight: MapSet.delete(socket.assigns.in_flight, :modules))
+  end
+
+  defp apply_modules(socket, {:ok, mods}) do
+    socket = assign(socket, modules: mods, error: nil)
+
+    case socket.assigns.link do
+      nil ->
+        socket
+
+      {params, uri} ->
+        {:noreply, socket} = handle_params(params, uri, assign(socket, link: nil))
+        socket
+    end
+  end
+
+  defp apply_modules(socket, {:error, reason}), do: assign(socket, error: Format.error(reason))
+
+  # a ?mod= link opened before the module list has arrived waits for it
+  defp defer_link(%{assigns: %{modules: [], link: nil}} = socket, params, uri),
+    do: assign(socket, link: {params, uri})
+
+  defp defer_link(socket, _params, _uri), do: socket
+
   # ?mod=&fun=&arity= also picks that function (a link from a log line)
   @impl true
-  def handle_params(%{"mod" => mod, "fun" => fun, "arity" => arity}, uri, socket) do
+  def handle_params(%{"mod" => mod, "fun" => fun, "arity" => arity} = params, uri, socket) do
+    socket = defer_link(socket, params, uri)
     {:noreply, socket} = handle_params(%{"mod" => mod}, uri, socket)
     selected = socket.assigns.selected
 
@@ -103,7 +143,9 @@ defmodule BeamdashWeb.TraceLive do
   end
 
   # ?mod= opens that module (a link from "Ask beamdash")
-  def handle_params(%{"mod" => mod}, _uri, socket) do
+  def handle_params(%{"mod" => mod} = params, uri, socket) do
+    socket = defer_link(socket, params, uri)
+
     case Enum.find(socket.assigns.modules, fn {m, _, _} -> Atom.to_string(m) == mod end) do
       {m, _, _} ->
         {:noreply, socket |> assign(selected: m, module_filter: mod) |> SourceTabs.check(m)}
@@ -365,6 +407,25 @@ defmodule BeamdashWeb.TraceLive do
   def handle_async(:call_graph, {:exit, reason}, socket),
     do: {:noreply, assign(socket, graph: {:error, Format.error(reason)})}
 
+  def handle_async(:modules, {:ok, {node, result}}, socket) do
+    socket = assign(socket, in_flight: MapSet.delete(socket.assigns.in_flight, :modules))
+
+    if node == socket.assigns.node,
+      do: {:noreply, apply_modules(socket, result)},
+      else: {:noreply, socket}
+  end
+
+  def handle_async({:source_check, mod}, result, socket),
+    do: {:noreply, SourceTabs.checked(socket, mod, result)}
+
+  def handle_async(:modules, {:exit, reason}, socket) do
+    {:noreply,
+     assign(socket,
+       in_flight: MapSet.delete(socket.assigns.in_flight, :modules),
+       error: Format.error(reason)
+     )}
+  end
+
   ## Messages
 
   @impl true
@@ -417,14 +478,23 @@ defmodule BeamdashWeb.TraceLive do
 
   def handle_info({:beamdash_seq, _other}, socket), do: {:noreply, socket}
 
+  def handle_info(:load, socket),
+    do: {:noreply, if(socket.assigns.status == :connected, do: load(socket), else: socket)}
+
   def handle_info({:beamdash_target, {:connected, node}}, socket),
     do:
-      {:noreply, socket |> assign(status: :connected, node: node) |> SourceTabs.init() |> load()}
+      {:noreply,
+       socket
+       |> assign(status: :connected, node: node)
+       |> SourceTabs.init()
+       |> cancel_modules()
+       |> load()}
 
   def handle_info({:beamdash_target, {:disconnected, _}}, socket) do
     {:noreply,
      socket
      |> SourceTabs.init()
+     |> cancel_modules()
      |> assign(
        status: :disconnected,
        modules: [],
@@ -432,7 +502,8 @@ defmodule BeamdashWeb.TraceLive do
        picked: [],
        traces: [],
        seq_traces: [],
-       graph: nil
+       graph: nil,
+       link: nil
      )}
   end
 

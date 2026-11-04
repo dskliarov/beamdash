@@ -183,6 +183,11 @@ defmodule Beamdash.Format do
     do:
       "Could not connect. Check the node name and cookie, and that both nodes use the same naming (-sname vs -name)."
 
+  def error({:connect_failed, _reason}), do: "Could not connect to the pod. Try again."
+
+  def error(:already_connecting),
+    do: "A connection attempt is still finishing. Try again in a moment."
+
   def error(:not_distributed), do: "This VM is not running distribution."
 
   def error({:pod_not_found, node, namespace}),

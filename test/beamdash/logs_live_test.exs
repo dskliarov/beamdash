@@ -1337,6 +1337,38 @@ defmodule Beamdash.LogsLiveTest do
     assert Enum.any?(tree_labels(html), &String.starts_with?(&1, "state"))
   end
 
+  test "opening another group's detail closes the open one and forgets its checks", ctx do
+    {_, socket} = ctx |> mount() |> render()
+    socket = event(socket, "tab", %{"tab" => "tree"})
+
+    lines = [
+      new_entry(72, "state #st{campaign_id = 1,flight_id = 10}"),
+      new_entry(73, "state #st{campaign_id = 2,flight_id = 10}")
+    ]
+
+    socket = socket |> info({:beamdash_logs, {:entries, lines}}) |> async_result(:tree_apps)
+    {_, socket} = socket |> event("tree_expand_all") |> render()
+
+    template = tree_node(socket, "state #st{campaign_id = #,flight_id = #}")
+    {_, socket} = socket |> event("tree_detail", %{"id" => template.id}) |> render()
+
+    {_, socket} =
+      socket |> event("tree_check", %{"key" => "campaign_id", "val" => "1"}) |> render()
+
+    {_, socket} = socket |> event("tree_regroup") |> render()
+    {_, socket} = socket |> event("tree_expand_all") |> render()
+
+    [first_template | _] = tree_node(socket, "campaign_id = 1").children
+    {_, socket} = socket |> event("tree_detail", %{"id" => first_template.id}) |> render()
+    assert socket.assigns.tree_checked != []
+
+    [second_template | _] = tree_node(socket, "campaign_id = 2").children
+    {_, socket} = socket |> event("tree_detail", %{"id" => second_template.id}) |> render()
+
+    assert socket.assigns.tree_detail == MapSet.new([second_template.id])
+    refute {"campaign_id", "1"} in socket.assigns.tree_checked
+  end
+
   test "regroup keeps a level a checked message has no value for", ctx do
     {_, socket} = ctx |> mount() |> render()
     socket = event(socket, "tab", %{"tab" => "tree"})

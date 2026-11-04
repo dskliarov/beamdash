@@ -27,7 +27,15 @@ defmodule BeamdashWeb.SysPanel do
   def mount(socket) do
     {:ok,
      socket
-     |> assign(count: 0, unseen: 0, dropped: 0, exited: nil, active: false, loaded_syntax: nil)
+     |> assign(
+       count: 0,
+       unseen: 0,
+       dropped: 0,
+       exited: nil,
+       active: false,
+       pending: nil,
+       loaded_syntax: nil
+     )
      |> stream(:events, [], limit: @max_events)}
   end
 
@@ -99,9 +107,12 @@ defmodule BeamdashWeb.SysPanel do
 
   def handle_event("stop", _params, socket) do
     # The page hears :disabled from SysTracer and drops this panel.
-    _ = SysTracer.disable(socket.assigns.pid)
-    {:noreply, socket}
+    pid = socket.assigns.pid
+    {:noreply, start_async(socket, :stop, fn -> SysTracer.disable(pid) end)}
   end
+
+  @impl true
+  def handle_async(:stop, _result, socket), do: {:noreply, socket}
 
   @impl true
   def render(assigns) do
@@ -157,6 +168,7 @@ defmodule BeamdashWeb.SysPanel do
             class="secondary small-btn"
             phx-click="stop"
             phx-target={@myself}
+            disabled={@pending != nil}
             title={"sys:trace(#{Format.pid(@pid, :erlang)}, false)"}
             aria-label={"Stop tracing #{@label}"}
           >
@@ -168,7 +180,10 @@ defmodule BeamdashWeb.SysPanel do
       <%!-- hidden rather than removed when minimized: streamed rows are not
            kept on the server, so a re-rendered list would come back empty --%>
       <div class="sys-panel-body" id={"sys-panel-body-#{@key}"} hidden={!@active}>
-        <p :if={@count == 0} class="muted small sys-panel-empty">
+        <p :if={@pending} class="muted small sys-panel-status" role="status">
+          {if @pending == :enable, do: "Enabling sys:trace…", else: "Disabling sys:trace…"} The target answers once {@label} gets to its next message.
+        </p>
+        <p :if={@count == 0 and @pending == nil} class="muted small sys-panel-empty">
           Waiting for events: each call, cast, message and reply {@label} handles shows here.
         </p>
         <ol id={"sys-events-#{@key}"} class="sys-events" phx-update="stream">

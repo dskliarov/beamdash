@@ -6,7 +6,7 @@
 %%% RPC per process from the GUI node.
 -module(beamdash_agent).
 
--export([version/0, node_info/0, system_info/0, processes/0]).
+-export([version/0, node_info/0, system_info/0, processes/0, process_list/0]).
 -export([load_sampler_start/2, load_sample/0]).
 -export([applications/0, app_tree/1, app_info/1, module_summary/1, module_source/1,
          source_available/1]).
@@ -16,7 +16,7 @@
 -export([log_levels/0, log_set_app_level/2, log_set_primary_level/1, module_apps/0,
          process_ancestors/1]).
 -export([tprof_available/0, tprof_start/4, tprof_collect/1, tprof_stop/0]).
--export([recon_available/0, memory_snapshot/0, top_processes/2, gc_all/0,
+-export([recon_available/0, memory_snapshot/0, top_processes/2, memory_page/2, gc_all/0,
          binary_leaks/1, ets_tables/0, process_state/2]).
 -export([get_state/1, supervision_tree/1]).
 -export([gc_snapshot/0, gc_trace_start/3]).
@@ -411,6 +411,9 @@ app_label(P) ->
         L -> unicode:characters_to_binary(io_lib:format("~0tp", [L]))
     catch _:_ -> undefined
     end.
+
+%% The processes page's refresh in one call: the list and the node's info.
+process_list() -> {?MODULE:processes(), node_info()}.
 
 %% One map per live process. Processes that exit while we walk the list
 %% are skipped. Module behaviours are looked up once per module per call.
@@ -1420,6 +1423,9 @@ memory_snapshot() ->
       word_size => erlang:system_info(wordsize),
       alloc => Alloc,
       recon => recon_available()}.
+
+%% The Memory page's periodic read in one call: the snapshot and the top list.
+memory_page(Attr, N) -> {memory_snapshot(), top_processes(Attr, N)}.
 
 ets_limit() ->
     try erlang:system_info(ets_limit) catch _:_ -> nil end.

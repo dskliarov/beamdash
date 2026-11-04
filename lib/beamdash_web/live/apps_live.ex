@@ -39,7 +39,8 @@ defmodule BeamdashWeb.AppsLive do
     if connected?(socket) do
       :ok = Target.subscribe()
       Process.send_after(self(), :refresh, @refresh_ms)
-      {:ok, load(socket)}
+      send(self(), :initial_load)
+      {:ok, socket}
     else
       {:ok, socket}
     end
@@ -48,22 +49,35 @@ defmodule BeamdashWeb.AppsLive do
   # ?app= opens that application
   @impl true
   def handle_params(%{"app" => app}, _uri, socket) do
-    case Enum.find(socket.assigns.apps, &(Atom.to_string(&1.name) == app)) do
-      %{name: name} -> {:noreply, socket |> assign(app: name, selected: nil) |> load_tree()}
-      nil -> {:noreply, socket}
-    end
+    socket =
+      if socket.assigns.apps == [] do
+        load(socket, app)
+      else
+        case Enum.find(socket.assigns.apps, &(Atom.to_string(&1.name) == app)) do
+          %{name: name} -> socket |> assign(app: name, selected: nil) |> load_tree()
+          nil -> socket
+        end
+      end
+
+    {:noreply, socket}
   end
 
   def handle_params(_params, _uri, socket), do: {:noreply, socket}
 
-  defp load(%{assigns: %{status: :connected, node: node}} = socket) do
+  defp load(socket, requested \\ nil)
+
+  defp load(%{assigns: %{status: :connected, node: node}} = socket, requested) do
     case Apps.list(node) do
       {:ok, apps} ->
         # as Observer: the first application listed (the latest started)
+        wanted = Enum.find(apps, &(requested != nil and Atom.to_string(&1.name) == requested))
+
         app =
-          if Enum.any?(apps, &(&1.name == socket.assigns.app)),
-            do: socket.assigns.app,
-            else: apps |> List.first() |> then(&(&1 && &1.name))
+          cond do
+            wanted -> wanted.name
+            Enum.any?(apps, &(&1.name == socket.assigns.app)) -> socket.assigns.app
+            true -> apps |> List.first() |> then(&(&1 && &1.name))
+          end
 
         socket |> assign(apps: apps, app: app, error: nil) |> load_tree()
 
@@ -72,7 +86,7 @@ defmodule BeamdashWeb.AppsLive do
     end
   end
 
-  defp load(socket), do: socket
+  defp load(socket, _requested), do: socket
 
   defp load_tree(%{assigns: %{app: nil}} = socket), do: assign(socket, tree: nil, info: nil)
 
@@ -141,6 +155,8 @@ defmodule BeamdashWeb.AppsLive do
   def handle_event("refresh", _params, socket), do: {:noreply, load(socket)}
 
   @impl true
+  def handle_info(:initial_load, socket), do: {:noreply, load(socket)}
+
   def handle_info(:refresh, socket) do
     Process.send_after(self(), :refresh, @refresh_ms)
     {:noreply, load(socket)}

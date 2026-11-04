@@ -20,7 +20,11 @@ defmodule Beamdash.Target do
   it was opened for ends, same as a direct connection's distribution link.
 
   Subscribers receive `{:beamdash_target, {:connected, node}}` and
-  `{:beamdash_target, {:disconnected, reason}}`.
+  `{:beamdash_target, {:disconnected, reason}}`. A kubectl connection runs
+  in the background: its steps go to the `subscribe_connecting/0` topic as
+  `{:beamdash_connecting, %{label: label, command: command | nil}}`, and
+  `{:beamdash_connecting, nil}` once it ends. Only the connection bar listens
+  there, so the pages and processes subscribed above never see them.
 
   With auto-reconnect on (`Beamdash.Settings.auto_reconnect?/0`), a
   connection lost to the node going down (or its kubectl tunnel failing)
@@ -43,6 +47,7 @@ defmodule Beamdash.Target do
   @rpc_timeout 5_000
   @connect_timeout 15_000
   @kubectl_connect_timeout 60_000
+  @connecting_topic "target:connecting"
 
   @reconnect_delays [1_000, 2_000, 5_000, 10_000, 15_000]
 
@@ -52,6 +57,7 @@ defmodule Beamdash.Target do
             source: nil,
             params: nil,
             reconnect: nil,
+            pending: nil,
             auto_reconnect: nil,
             reconnect_delays: @reconnect_delays
 
@@ -153,7 +159,13 @@ defmodule Beamdash.Target do
   @doc "Subscribes the calling process to connection events (again: no-op)."
   def subscribe(server \\ __MODULE__), do: GenServer.call(server, {:subscribe, self()})
 
+  @doc "Subscribes the calling process to the steps of a kubectl connect (see the moduledoc)."
+  def subscribe_connecting, do: Phoenix.PubSub.subscribe(Beamdash.PubSub, @connecting_topic)
+
   def processes(server \\ __MODULE__), do: call_agent(server, :processes, [])
+
+  @doc "The process list and the node's info in one call: `{:ok, {procs, info}}`."
+  def process_list(server \\ __MODULE__), do: call_agent(server, :process_list, [])
 
   def node_info(server \\ __MODULE__), do: call_agent(server, :node_info, [])
 
@@ -237,25 +249,46 @@ defmodule Beamdash.Target do
   end
 
   @impl true
+  def handle_call({:connect, _node_input, _cookie}, _from, %{pending: pending} = state)
+      when pending != nil,
+      do: {:reply, {:error, :already_connecting}, state}
+
   def handle_call({:connect, node_input, cookie}, _from, state) do
     state = state |> cancel_reconnect() |> drop_current(:reconnect)
 
     with {:ok, node} <- parse_node(node_input),
-         {:ok, connection} <- establish({:direct, node, cookie}, self()) do
+         {:ok, connection} <- establish({:direct, node, cookie}, self(), &no_progress/2) do
       {:reply, {:ok, connection.info}, connected(state, connection)}
     else
       {:error, _} = error -> {:reply, error, state}
     end
   end
 
-  def handle_call({:connect_kubectl, kubeconfig, namespace, pod, container, binary}, _from, state) do
+  def handle_call(
+        {:connect_kubectl, _kubeconfig, _namespace, _pod, _container, _binary},
+        _from,
+        %{pending: pending} = state
+      )
+      when pending != nil,
+      do: {:reply, {:error, :already_connecting}, state}
+
+  # The connection is made in a task, so the GenServer keeps answering status
+  # calls (other pages' bars poll it) while kubectl runs; the reply goes out
+  # when the task reports back.
+  def handle_call({:connect_kubectl, kubeconfig, namespace, pod, container, binary}, from, state) do
     state = state |> cancel_reconnect() |> drop_current(:reconnect)
     params = {:kubectl, kubeconfig, namespace, pod, container, binary}
+    owner = self()
+    ref = make_ref()
+    progress = fn label, command -> send(owner, {:connect_progress, ref, label, command}) end
 
-    case establish(params, self()) do
-      {:ok, connection} -> {:reply, {:ok, connection.info}, connected(state, connection)}
-      {:error, _} = error -> {:reply, error, state}
-    end
+    {:ok, pid} =
+      Task.start(fn ->
+        send(owner, {:connect_result, ref, establish(params, owner, progress)})
+      end)
+
+    pending = %{ref: ref, from: from, pid: pid, monitor: Process.monitor(pid), cancelled: false}
+    {:noreply, %{state | pending: pending}}
   end
 
   def handle_call({:switch, _node}, _from, %{node: nil} = state),
@@ -292,6 +325,11 @@ defmodule Beamdash.Target do
       end
 
     handle_call({:connect, node, cookie}, from, state)
+  end
+
+  def handle_call(:disconnect, _from, %{pending: %{} = pending} = state) do
+    publish_connecting(nil)
+    {:reply, :ok, %{state | pending: %{pending | cancelled: true}}}
   end
 
   def handle_call(:disconnect, _from, state) do
@@ -337,6 +375,44 @@ defmodule Beamdash.Target do
 
   def handle_info({:nodedown, _other}, state), do: {:noreply, state}
 
+  def handle_info(
+        {:connect_progress, ref, label, command},
+        %{pending: %{ref: ref, cancelled: false}} = state
+      ) do
+    publish_connecting(%{label: label, command: command})
+    {:noreply, state}
+  end
+
+  def handle_info({:connect_progress, _stale, _label, _command}, state), do: {:noreply, state}
+
+  def handle_info({:connect_result, ref, result}, %{pending: %{ref: ref} = pending} = state) do
+    Process.demonitor(pending.monitor, [:flush])
+    state = %{state | pending: nil}
+    publish_connecting(nil)
+
+    case {result, pending.cancelled} do
+      {{:ok, connection}, true} ->
+        Kubectl.close(connection.tunnel)
+        Node.disconnect(connection.node)
+        GenServer.reply(pending.from, {:error, :cancelled})
+        {:noreply, state}
+
+      {{:ok, connection}, false} ->
+        GenServer.reply(pending.from, {:ok, connection.info})
+        {:noreply, connected(state, connection)}
+
+      {{:error, _} = error, _} ->
+        GenServer.reply(pending.from, error)
+        {:noreply, state}
+    end
+  end
+
+  def handle_info({:DOWN, _ref, :process, pid, reason}, %{pending: %{pid: pid} = pending} = state) do
+    GenServer.reply(pending.from, {:error, {:connect_failed, reason}})
+    publish_connecting(nil)
+    {:noreply, %{state | pending: nil}}
+  end
+
   def handle_info({:DOWN, ref, :process, _pid, _reason}, state) do
     {:noreply, %{state | subscribers: Map.delete(state.subscribers, ref)}}
   end
@@ -360,7 +436,9 @@ defmodule Beamdash.Target do
       owner = self()
 
       {:ok, _} =
-        Task.start(fn -> send(owner, {:reconnect_result, ref, establish(r.params, owner)}) end)
+        Task.start(fn ->
+          send(owner, {:reconnect_result, ref, establish(r.params, owner, &no_progress/2)})
+        end)
 
       {:noreply, state}
     else
@@ -423,17 +501,21 @@ defmodule Beamdash.Target do
   end
 
   # Makes the connection `params` describes: `{:direct, node, cookie}` or
-  # `{:kubectl, kubeconfig, namespace, pod, container, binary}`. Run in the
-  # GenServer or, for a reconnect, in a task: kubectl's port-forwards are
-  # then handed to `owner`, which watches them.
-  defp establish({:direct, node, cookie} = params, _owner) do
+  # `{:kubectl, kubeconfig, namespace, pod, container, binary}`. Run in a task
+  # for kubectl: its port-forwards are then handed to `owner`, which watches
+  # them. `progress` is called as `progress.(label, command)` at each step.
+  defp establish({:direct, node, cookie} = params, _owner, _progress) do
     with {:ok, info} <- attach(node, cookie),
          do: {:ok, %{node: node, info: info, tunnel: nil, source: :direct, params: params}}
   end
 
-  defp establish({:kubectl, kubeconfig, namespace, pod, container, binary} = params, owner) do
+  defp establish(
+         {:kubectl, kubeconfig, namespace, pod, container, binary} = params,
+         owner,
+         progress
+       ) do
     with {:ok, %{node: node, cookie: cookie, tunnel: tunnel}} <-
-           Kubectl.connect(kubeconfig, namespace, pod, container, binary) do
+           Kubectl.connect(kubeconfig, namespace, pod, container, binary, progress: progress) do
       if owner != self() do
         for port <- [tunnel.epmd_port, tunnel.dist_port] do
           Port.connect(port, owner)
@@ -441,7 +523,17 @@ defmodule Beamdash.Target do
         end
       end
 
-      case attach(node, cookie) do
+      progress.("Connecting to #{node}", nil)
+
+      # the ports now belong to the GenServer, so a crash here must still close them
+      result =
+        try do
+          attach(node, cookie)
+        catch
+          kind, reason -> {:error, {kind, reason}}
+        end
+
+      case result do
         {:ok, info} ->
           source =
             {:kubectl,
@@ -460,6 +552,8 @@ defmodule Beamdash.Target do
       end
     end
   end
+
+  defp no_progress(_label, _command), do: :ok
 
   defp attach(node, cookie) do
     with :ok <- ensure_distributed(node),
@@ -529,6 +623,9 @@ defmodule Beamdash.Target do
   defp notify(state, event) do
     Enum.each(state.subscribers, fn {_ref, pid} -> send(pid, {:beamdash_target, event}) end)
   end
+
+  defp publish_connecting(step),
+    do: Phoenix.PubSub.broadcast(Beamdash.PubSub, @connecting_topic, {:beamdash_connecting, step})
 
   @doc """
   Rewrites a pid string as printed *on the target* (`"<0.86.0>"`, what

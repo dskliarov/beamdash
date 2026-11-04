@@ -154,6 +154,14 @@ defmodule Beamdash.ModuleSourceTest do
       socket
     end
 
+    # the source check runs in a task; its answer is applied here as the task would return it
+    defp answer(socket, mod) do
+      node = socket.assigns.node
+      answer = {:ok, {node, Beamdash.ModuleSource.available?(node, mod)}}
+      {:noreply, socket} = socket.view.handle_async({:source_check, mod}, answer, socket)
+      socket
+    end
+
     defp html(socket) do
       socket.assigns
       |> Map.put(:socket, socket)
@@ -168,7 +176,7 @@ defmodule Beamdash.ModuleSourceTest do
       socket = %{page(TraceLive, node, modules) | view: TraceLive}
 
       # the Source button next to the selected module
-      socket = event(socket, "select_module", %{"mod" => "src_tab_a"})
+      socket = socket |> event("select_module", %{"mod" => "src_tab_a"}) |> answer(:src_tab_a)
       assert html(socket) =~ ~r/<button[^>]*phx-click="open_source"[^>]*phx-value-mod="src_tab_a"/
       refute html(socket) =~ "src-tabs"
 
@@ -220,24 +228,54 @@ defmodule Beamdash.ModuleSourceTest do
       modules = [{:src_tab_none, [hello: 1], []}, {:src_tab_ok, [hello: 1], []}]
 
       trace = %{page(TraceLive, node, modules) | view: TraceLive}
-      trace = event(trace, "select_module", %{"mod" => "src_tab_none"})
+      trace = trace |> event("select_module", %{"mod" => "src_tab_none"}) |> answer(:src_tab_none)
       refute html(trace) =~ ~s(phx-click="open_source")
-      trace = event(trace, "select_module", %{"mod" => "src_tab_ok"})
+      trace = trace |> event("select_module", %{"mod" => "src_tab_ok"}) |> answer(:src_tab_ok)
       assert html(trace) =~ ~r/<button[^>]*phx-click="open_source"[^>]*phx-value-mod="src_tab_ok"/
       # asked once per module
       assert trace.assigns.source_known == %{src_tab_none: false, src_tab_ok: true}
 
       profile = %{page(ProfileLive, node, modules) | view: ProfileLive}
       profile = Phoenix.Component.assign(profile, available: true)
-      profile = event(profile, "pick_module", %{"mod" => "src_tab_none"})
+
+      profile =
+        profile |> event("pick_module", %{"mod" => "src_tab_none"}) |> answer(:src_tab_none)
+
       refute html(profile) =~ ~s(phx-click="open_source")
+    end
+
+    test "a source check answered for another node is ignored", %{node: node} do
+      trace = %{page(TraceLive, node, [{:src_tab_ok, [hello: 1], []}]) | view: TraceLive}
+
+      {:noreply, trace} =
+        TraceLive.handle_async({:source_check, :src_tab_ok}, {:ok, {:other@host, true}}, trace)
+
+      assert trace.assigns.source_known == %{}
+    end
+
+    test "the source check runs in a task, and its answer lands on the page", %{node: node} do
+      load(node, :src_task_demo)
+      modules = [{:src_task_demo, [hello: 1], []}]
+      socket = %{page(TraceLive, node, modules) | view: TraceLive, transport_pid: self()}
+
+      socket = event(socket, "select_module", %{"mod" => "src_task_demo"})
+      assert socket.assigns.source_known == %{src_task_demo: :pending}
+      refute html(socket) =~ ~s(phx-click="open_source")
+
+      assert_receive {:phoenix, :async_result, {:start, {_ref, nil, key, result}}}, 15_000
+      {:noreply, socket} = TraceLive.handle_async(key, result, socket)
+
+      assert socket.assigns.source_known == %{src_task_demo: true}
+
+      assert html(socket) =~
+               ~r/<button[^>]*phx-click="open_source"[^>]*phx-value-mod="src_task_demo"/
     end
 
     test "the Profile tab has the same Source button and tabs", %{node: node} do
       load(node, :src_tab_p)
       socket = %{page(ProfileLive, node, [{:src_tab_p, [hello: 1], []}]) | view: ProfileLive}
       socket = Phoenix.Component.assign(socket, available: true)
-      socket = event(socket, "pick_module", %{"mod" => "src_tab_p"})
+      socket = socket |> event("pick_module", %{"mod" => "src_tab_p"}) |> answer(:src_tab_p)
 
       assert html(socket) =~ ~r/<button[^>]*phx-click="open_source"[^>]*phx-value-mod="src_tab_p"/
 
@@ -303,7 +341,21 @@ defmodule Beamdash.ModuleSourceTest do
       socket = Phoenix.Component.assign(socket, syntax: :erlang, status: :connected, node: node)
 
       socket = event(socket, "select", %{"pid" => Beamdash.Format.pid(server, :erlang)})
-      {:noreply, socket} = BeamdashWeb.HomeLive.handle_info({:detail_tick, server}, socket)
+
+      {:noreply, socket} =
+        BeamdashWeb.HomeLive.handle_info(
+          {:detail_tick, server, socket.assigns.detail_ref},
+          socket
+        )
+
+      {:ok, details} = Target.process_details(server, socket.assigns.message_limit)
+
+      {:noreply, socket} =
+        BeamdashWeb.HomeLive.handle_async(:detail, {:ok, {server, {:ok, details}}}, socket)
+
+      assert_received {:module_info, ^server, ^details} = message
+      {:noreply, socket} = BeamdashWeb.HomeLive.handle_info(message, socket)
+
       assert %{module: :code_server, application: :kernel} = socket.assigns.module_info
 
       # the Source button opens only that module
@@ -348,7 +400,13 @@ defmodule Beamdash.ModuleSourceTest do
 
     test "a new node closes the sources" do
       socket = SourceTabs.init(%Phoenix.LiveView.Socket{})
-      socket = Phoenix.Component.assign(socket, sources: [%{mod: :x}], source_tab: :x)
+
+      socket =
+        Phoenix.Component.assign(socket,
+          sources: [%{mod: :x}],
+          source_tab: :x,
+          in_flight: MapSet.new()
+        )
 
       {:noreply, socket} =
         TraceLive.handle_info({:beamdash_target, {:disconnected, :closed}}, %{

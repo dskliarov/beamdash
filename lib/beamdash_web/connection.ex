@@ -21,6 +21,10 @@ defmodule BeamdashWeb.Connection do
   connection is being tried again: the bar says so, with a Stop button
   (`stop_reconnect`).
 
+  `@conn.connecting` and `@conn.kube_progress` are the step a kubectl connect
+  or a pod listing is on (label, command, elapsed seconds), shown in the bar
+  while it runs.
+
   The form starts with the last node and cookie that connected
   (`Beamdash.LastConnection`, kept across restarts); a node typed in this
   session that failed to connect is offered instead until one succeeds.
@@ -36,6 +40,7 @@ defmodule BeamdashWeb.Connection do
   # bar of each page mounted soon after fills without running kubectl again
   @kube_cache {__MODULE__, :kube_cache}
   @kube_cache_ms 60_000
+  @progress_ms 1_000
 
   def on_mount(:default, _params, _session, socket) do
     %{status: status, node: node} = Target.status()
@@ -74,7 +79,9 @@ defmodule BeamdashWeb.Connection do
           kube_container: nil,
           kube_binaries: nil,
           kube_binary: nil,
-          kube_listing: false,
+          connecting: nil,
+          kube_progress: nil,
+          progress_timer: false,
           reconnecting: if(status == :connected, do: nil, else: Target.reconnecting()),
           plugins: active_plugins()
         })
@@ -84,6 +91,7 @@ defmodule BeamdashWeb.Connection do
 
     if connected?(socket) do
       :ok = Target.subscribe()
+      :ok = Target.subscribe_connecting()
       :ok = Phoenix.PubSub.subscribe(Beamdash.PubSub, "plugins")
       send(self(), :beamdash_conn_tick)
 
@@ -135,7 +143,8 @@ defmodule BeamdashWeb.Connection do
        node: nil,
        info: nil,
        kube_target: nil,
-       reconnecting: nil
+       reconnecting: nil,
+       connecting: nil
      )
      |> to_root()}
   end
@@ -155,6 +164,14 @@ defmodule BeamdashWeb.Connection do
     end
   end
 
+  def handle_event(
+        "select_kube_cluster",
+        _params,
+        %{assigns: %{conn: %{connecting: connecting}}} = socket
+      )
+      when connecting != nil,
+      do: {:halt, socket}
+
   # picking a different cluster invalidates everything listed under the old
   # one, same reset `"select_kube_pod"` does for a different pod.
   def handle_event("select_kube_cluster", %{"cluster" => cluster}, socket) do
@@ -164,6 +181,7 @@ defmodule BeamdashWeb.Connection do
      socket
      |> update(
        kube_cluster: cluster,
+       kube_progress: nil,
        kube_namespace: "",
        kube_namespaces: [],
        kube_pods: nil,
@@ -178,6 +196,14 @@ defmodule BeamdashWeb.Connection do
      )
      |> list_namespaces()}
   end
+
+  def handle_event(
+        "list_kube_pods",
+        _params,
+        %{assigns: %{conn: %{connecting: connecting}}} = socket
+      )
+      when connecting != nil,
+      do: {:halt, socket}
 
   def handle_event("list_kube_pods", %{"namespace" => namespace}, socket) do
     namespace = String.trim(namespace)
@@ -195,7 +221,6 @@ defmodule BeamdashWeb.Connection do
       update(socket,
         kube_namespace: namespace,
         kube_pods_listing: true,
-        kube_restore_ref: nil,
         kube_pods: nil,
         kube_pod: "",
         kube_containers: nil,
@@ -205,22 +230,7 @@ defmodule BeamdashWeb.Connection do
         error: nil
       )
 
-    case Kubectl.list_pods(cluster, namespace) do
-      {:ok, pods} ->
-        socket = update(socket, kube_pods: pods, kube_pods_listing: false)
-
-        case pods do
-          [] ->
-            {:halt, socket}
-
-          [first | _] ->
-            pod = if saved["pod"] in pods, do: saved["pod"], else: first
-            {:halt, list_containers(socket, cluster, namespace, pod)}
-        end
-
-      {:error, reason} ->
-        {:halt, update(socket, error: Format.error(reason), kube_pods_listing: false)}
-    end
+    {:halt, start_kube_listing(socket, cluster, namespace, :pods, saved)}
   end
 
   # picking a different pod from the dropdown re-lists its containers and
@@ -237,6 +247,7 @@ defmodule BeamdashWeb.Connection do
 
     socket =
       update(socket,
+        kube_pod: pod,
         kube_containers: nil,
         kube_container: nil,
         kube_binaries: nil,
@@ -244,7 +255,14 @@ defmodule BeamdashWeb.Connection do
         error: nil
       )
 
-    {:halt, list_containers(socket, socket.assigns.conn.kube_cluster, namespace, pod)}
+    {:halt,
+     start_kube_listing(
+       socket,
+       socket.assigns.conn.kube_cluster,
+       namespace,
+       {:pod, pod},
+       Settings.kube_selection()
+     )}
   end
 
   # the container dropdown only shows for a pod with more than one
@@ -265,16 +283,16 @@ defmodule BeamdashWeb.Connection do
       "container" => container
     })
 
-    socket = update(socket, kube_listing: true, kube_binaries: nil, kube_binary: nil, error: nil)
+    socket =
+      update(socket, kube_container: container, kube_binaries: nil, kube_binary: nil, error: nil)
 
     {:halt,
-     list_binaries(
+     start_kube_listing(
        socket,
        socket.assigns.conn.kube_cluster,
        namespace,
-       pod,
-       container,
-       socket.assigns.conn.kube_containers
+       {:container, pod, socket.assigns.conn.kube_containers, container},
+       Settings.kube_selection()
      )}
   end
 
@@ -294,43 +312,29 @@ defmodule BeamdashWeb.Connection do
         %{"namespace" => namespace, "container" => container, "binary" => binary},
         socket
       ) do
-    namespace = String.trim(namespace)
-    pod = socket.assigns.conn.kube_pod
-    container = String.trim(container)
-    cluster = socket.assigns.conn.kube_cluster
-    save_kube_selection(socket, binary)
+    if socket.assigns.conn.connecting do
+      {:halt, socket}
+    else
+      namespace = String.trim(namespace)
+      pod = socket.assigns.conn.kube_pod
+      container = String.trim(container)
+      cluster = socket.assigns.conn.kube_cluster
+      save_kube_selection(socket, binary)
 
-    case Target.connect_via_kubectl(cluster, namespace, pod, container, binary) do
-      {:ok, info} ->
-        # the page hears {:connected, node} from Target as well
-        {:halt,
-         socket
-         |> update(
-           status: :connected,
-           node: info.node,
-           info: info,
-           error: nil,
-           kube_namespace: namespace,
-           kube_pod: pod,
-           kube_container: container,
-           kube_binary: binary,
-           kube_target:
-             kube_target(
-               {:kubectl, %{kubeconfig: cluster, namespace: namespace, pod: pod}},
-               socket.assigns.conn.kube_clusters
-             )
-         )
-         |> to_system()}
+      ctx = %{
+        cluster: cluster,
+        namespace: namespace,
+        pod: pod,
+        container: container,
+        binary: binary
+      }
 
-      {:error, reason} ->
-        {:halt,
-         update(socket,
-           error: Format.error(reason),
-           kube_namespace: namespace,
-           kube_pod: pod,
-           kube_container: container,
-           kube_binary: binary
-         )}
+      pid = self()
+
+      {:ok, _} =
+        Task.start(fn -> send(pid, {:beamdash_kube_connected, ctx, connect_kubectl(ctx)}) end)
+
+      {:halt, put_progress(socket, :connecting, progress_step("Connecting…", nil))}
     end
   end
 
@@ -396,6 +400,7 @@ defmodule BeamdashWeb.Connection do
       socket
       |> update(
         kube_namespaces: [],
+        kube_progress: nil,
         kube_pods: nil,
         kube_pods_listing: false,
         kube_restore_ref: nil,
@@ -428,20 +433,15 @@ defmodule BeamdashWeb.Connection do
     end
   end
 
-  def handle_info({:beamdash_restore_kube, ref, cluster, namespace, result}, socket) do
-    conn = socket.assigns.conn
-
-    if conn.kube_restore_ref == ref and conn.method == :kubectl and conn.kube_cluster == cluster and
-         conn.kube_namespace == namespace and conn.kube_pods_listing and is_nil(conn.kube_pods) do
+  def handle_info({:beamdash_kube_listed, ref, cluster, namespace, result}, socket) do
+    if socket.assigns.conn.kube_restore_ref == ref do
       case result do
-        {status, %{pods: _} = restored} when status in [:ok, :partial] ->
-          if status == :ok,
-            do:
-              kube_cache_put({:restore, cluster, namespace, Settings.kube_selection()}, restored)
+        {status, %{} = listed} when status in [:ok, :partial] ->
+          if status == :ok and Map.has_key?(listed, :pods),
+            do: kube_cache_put({:restore, cluster, namespace, Settings.kube_selection()}, listed)
 
-          socket = apply_restored(socket, status, restored)
-
-          if status == :ok and restored[:pod], do: save_kube_selection(socket, restored[:binary])
+          socket = apply_listed(socket, status, listed)
+          if status == :ok and listed[:pod], do: save_kube_selection(socket, listed[:binary])
           {:halt, socket}
 
         {:error, reason} ->
@@ -449,11 +449,77 @@ defmodule BeamdashWeb.Connection do
            update(socket,
              kube_pods_listing: false,
              kube_restore_ref: nil,
+             kube_progress: nil,
              error: Format.error(reason)
            )}
       end
     else
       {:halt, socket}
+    end
+  end
+
+  def handle_info({:beamdash_kube_progress, ref, label, command}, socket) do
+    if socket.assigns.conn.kube_restore_ref == ref,
+      do: {:halt, put_progress(socket, :kube_progress, progress_step(label, command))},
+      else: {:halt, socket}
+  end
+
+  def handle_info({:beamdash_kube_connected, ctx, result}, socket) do
+    case result do
+      {:error, :cancelled} ->
+        {:halt, update(socket, connecting: nil)}
+
+      {:ok, info} ->
+        # the page hears {:connected, node} from Target as well
+        {:halt,
+         socket
+         |> update(
+           status: :connected,
+           node: info.node,
+           info: info,
+           error: nil,
+           connecting: nil,
+           kube_namespace: ctx.namespace,
+           kube_pod: ctx.pod,
+           kube_container: ctx.container,
+           kube_binary: ctx.binary,
+           kube_target:
+             kube_target(
+               {:kubectl, %{kubeconfig: ctx.cluster, namespace: ctx.namespace, pod: ctx.pod}},
+               socket.assigns.conn.kube_clusters
+             )
+         )
+         |> to_system()}
+
+      {:error, reason} ->
+        {:halt,
+         update(socket,
+           error: Format.error(reason),
+           connecting: nil,
+           kube_namespace: ctx.namespace,
+           kube_pod: ctx.pod,
+           kube_container: ctx.container,
+           kube_binary: ctx.binary
+         )}
+    end
+  end
+
+  def handle_info({:beamdash_connecting, step}, socket) do
+    step = if step, do: progress_step(step.label, step.command)
+    {:halt, put_progress(socket, :connecting, step)}
+  end
+
+  def handle_info(:beamdash_progress_tick, socket) do
+    socket =
+      socket
+      |> tick_progress(:connecting)
+      |> tick_progress(:kube_progress)
+
+    if active_progress?(socket) do
+      Process.send_after(self(), :beamdash_progress_tick, @progress_ms)
+      {:halt, socket}
+    else
+      {:halt, update(socket, progress_timer: false)}
     end
   end
 
@@ -525,20 +591,6 @@ defmodule BeamdashWeb.Connection do
     update(socket, kube_namespaces: [])
   end
 
-  defp apply_restored(socket, status, restored) do
-    update(socket,
-      kube_pods: restored.pods,
-      kube_pods_listing: false,
-      kube_restore_ref: nil,
-      kube_pod: restored[:pod] || "",
-      kube_containers: restored[:containers],
-      kube_container: restored[:container],
-      kube_binaries: restored[:binaries],
-      kube_binary: restored[:binary],
-      error: if(status == :partial, do: Format.error(restored.error), else: nil)
-    )
-  end
-
   # A listing from the last @kube_cache_ms, or :none. (persistent_term:
   # written only when kubectl answers, read by every page's bar.)
   defp kube_cache_get(key) do
@@ -574,7 +626,7 @@ defmodule BeamdashWeb.Connection do
 
     socket =
       if switched?,
-        do: update(socket, kube_restore_ref: nil, kube_pods_listing: false),
+        do: update(socket, kube_restore_ref: nil, kube_pods_listing: false, kube_progress: nil),
         else: socket
 
     if method == :kubectl and switched?,
@@ -596,7 +648,7 @@ defmodule BeamdashWeb.Connection do
 
     case cluster && is_nil(socket.assigns.conn[:kube_pods]) &&
            kube_cache_get({:restore, cluster, namespace, Settings.kube_selection()}) do
-      {:ok, restored} -> apply_restored(socket, :ok, restored)
+      {:ok, restored} -> apply_listed(socket, :ok, restored)
       _ -> restore_saved_kube_listing(socket)
     end
   end
@@ -605,132 +657,163 @@ defmodule BeamdashWeb.Connection do
     if socket.assigns.conn.kube_cluster &&
          Map.get(socket.assigns.conn, :kube_namespace, "") != "" &&
          is_nil(socket.assigns.conn[:kube_pods]) do
-      cluster = socket.assigns.conn.kube_cluster
-      namespace = socket.assigns.conn.kube_namespace
-      saved = Settings.kube_selection()
-      ref = make_ref()
-      pid = self()
-
-      {:ok, _} =
-        Task.start(fn ->
-          send(
-            pid,
-            {:beamdash_restore_kube, ref, cluster, namespace,
-             restore_kube(cluster, namespace, saved)}
-          )
-        end)
-
-      update(socket, kube_pods_listing: true, kube_restore_ref: ref)
+      start_kube_listing(
+        socket,
+        socket.assigns.conn.kube_cluster,
+        socket.assigns.conn.kube_namespace,
+        :pods,
+        Settings.kube_selection()
+      )
+      |> update(kube_pods_listing: true)
     else
       socket
     end
   end
 
-  # All kubectl calls run in the task, since a pod or container can be slow to answer.
-  defp restore_kube(cluster, namespace, saved) do
-    with {:ok, pods} <- Kubectl.list_pods(cluster, namespace) do
-      if pods == [] do
+  # The listing runs in a task, since a pod or container can be slow to answer.
+  # Its steps report what they run as `{:beamdash_kube_progress, ref, label, command}`
+  # and the result comes back as `{:beamdash_kube_listed, ref, cluster, namespace, result}`;
+  # a result for a ref no longer current is dropped.
+  defp start_kube_listing(socket, cluster, namespace, stage, saved) do
+    ref = make_ref()
+    pid = self()
+    report = fn label, command -> send(pid, {:beamdash_kube_progress, ref, label, command}) end
+
+    {:ok, _} =
+      Task.start(fn ->
+        listed = kube_listing(cluster, namespace, stage, saved, report)
+        send(pid, {:beamdash_kube_listed, ref, cluster, namespace, listed})
+      end)
+
+    update(socket, kube_restore_ref: ref)
+  end
+
+  defp kube_listing(cluster, namespace, :pods, saved, report) do
+    case Kubectl.list_pods(cluster, namespace, reported(report, "Listing pods in #{namespace}")) do
+      {:ok, []} ->
         {:ok, %{pods: []}}
-      else
+
+      {:ok, pods} ->
         same_namespace = saved["cluster"] == cluster and saved["namespace"] == namespace
         pod = if same_namespace and saved["pod"] in pods, do: saved["pod"], else: List.first(pods)
+        container_listing(cluster, namespace, pod, %{pods: pods}, saved, report)
 
-        case Kubectl.list_containers(cluster, namespace, pod) do
-          {:error, reason} ->
-            {:partial, %{pods: pods, pod: pod, error: reason}}
-
-          {:ok, containers} ->
-            same_pod = same_namespace and saved["pod"] == pod
-
-            container =
-              if same_pod and saved["container"] in containers,
-                do: saved["container"],
-                else: List.first(containers)
-
-            case Kubectl.list_binaries(cluster, namespace, pod, container) do
-              {:error, reason} ->
-                {:partial,
-                 %{
-                   pods: pods,
-                   pod: pod,
-                   containers: containers,
-                   container: container,
-                   error: reason
-                 }}
-
-              {:ok, binaries} ->
-                binary =
-                  if same_pod and saved["container"] == container and saved["binary"] in binaries,
-                    do: saved["binary"],
-                    else: List.first(binaries)
-
-                {:ok,
-                 %{
-                   pods: pods,
-                   pod: pod,
-                   containers: containers,
-                   container: container,
-                   binaries: binaries,
-                   binary: binary
-                 }}
-            end
-        end
-      end
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 
-  # Lists `pod`'s containers and then the release binaries in the first one, storing
-  # `pod` itself (shared by the initial pod listing and picking a different
-  # pod from the dropdown).
-  defp list_containers(socket, cluster, namespace, pod) do
-    socket = update(socket, kube_pod: pod, kube_listing: true)
+  defp kube_listing(cluster, namespace, {:pod, pod}, saved, report),
+    do: container_listing(cluster, namespace, pod, %{}, saved, report)
 
-    case Kubectl.list_containers(cluster, namespace, pod) do
+  defp kube_listing(cluster, namespace, {:container, pod, containers, container}, saved, report) do
+    listed = %{pod: pod, containers: containers, container: container}
+    binary_listing(cluster, namespace, pod, container, listed, saved, report)
+  end
+
+  defp container_listing(cluster, namespace, pod, listed, saved, report) do
+    case Kubectl.list_containers(
+           cluster,
+           namespace,
+           pod,
+           reported(report, "Listing containers of #{pod}")
+         ) do
       {:ok, containers} ->
-        saved = Settings.kube_selection()
+        same_pod =
+          saved["cluster"] == cluster and saved["namespace"] == namespace and saved["pod"] == pod
 
         container =
-          if saved["cluster"] == cluster and saved["namespace"] == namespace and
-               saved["pod"] == pod and saved["container"] in containers,
-             do: saved["container"],
-             else: List.first(containers)
+          if same_pod and saved["container"] in containers,
+            do: saved["container"],
+            else: List.first(containers)
 
-        list_binaries(socket, cluster, namespace, pod, container, containers)
+        listed = Map.merge(listed, %{pod: pod, containers: containers, container: container})
+        binary_listing(cluster, namespace, pod, container, listed, saved, report)
 
       {:error, reason} ->
-        update(socket, error: Format.error(reason), kube_listing: false)
+        {:partial, Map.merge(listed, %{pod: pod, error: reason})}
     end
   end
 
-  # Lists the release binaries in `container` and fills `kube_binaries`/`kube_binary`,
-  # also storing the full container list and the one picked (shared by
-  # `list_containers/4` and "select_kube_container").
-  defp list_binaries(socket, cluster, namespace, pod, container, containers) do
-    socket = update(socket, kube_containers: containers, kube_container: container)
+  defp binary_listing(cluster, namespace, pod, container, listed, saved, report) do
+    label = "Listing release binaries in #{container}"
 
-    case Kubectl.list_binaries(cluster, namespace, pod, container) do
+    case Kubectl.list_binaries(cluster, namespace, pod, container, reported(report, label)) do
       {:ok, binaries} ->
-        saved = Settings.kube_selection()
+        same_container =
+          saved["cluster"] == cluster and saved["namespace"] == namespace and
+            saved["pod"] == pod and saved["container"] == container
 
         binary =
-          if saved["cluster"] == cluster and saved["namespace"] == namespace and
-               saved["pod"] == pod and saved["container"] == container and
-               saved["binary"] in binaries,
-             do: saved["binary"],
-             else: List.first(binaries)
+          if same_container and saved["binary"] in binaries,
+            do: saved["binary"],
+            else: List.first(binaries)
 
-        socket =
-          update(socket,
-            kube_binaries: binaries,
-            kube_binary: binary,
-            kube_listing: false
-          )
-
-        save_kube_selection(socket, binary)
-        socket
+        {:ok, Map.merge(listed, %{binaries: binaries, binary: binary})}
 
       {:error, reason} ->
-        update(socket, error: Format.error(reason), kube_listing: false)
+        {:partial, Map.put(listed, :error, reason)}
+    end
+  end
+
+  defp reported(report, label) do
+    fn args ->
+      report.(label, Kubectl.command_line(args))
+      Kubectl.run_kubectl(args)
+    end
+  end
+
+  defp apply_listed(socket, status, listed) do
+    fields =
+      %{pod: nil, containers: [], container: nil, binaries: [], binary: nil}
+      |> Map.merge(listed)
+      |> Map.take([:pods, :pod, :containers, :container, :binaries, :binary])
+      |> Map.new(fn {key, value} -> {:"kube_#{key}", value} end)
+
+    update(
+      socket,
+      Map.merge(fields, %{
+        kube_pods_listing: false,
+        kube_restore_ref: nil,
+        kube_progress: nil,
+        error: if(status == :partial, do: Format.error(listed.error))
+      })
+    )
+  end
+
+  defp connect_kubectl(ctx) do
+    Target.connect_via_kubectl(ctx.cluster, ctx.namespace, ctx.pod, ctx.container, ctx.binary)
+  catch
+    :exit, reason -> {:error, {:connect_failed, reason}}
+  end
+
+  # One tick chain at a time: it runs while any progress is active and clears
+  # `progress_timer` when it stops, so a step set later starts a new chain.
+  defp put_progress(socket, key, step) do
+    socket = update(socket, [{key, step}])
+
+    if step && !socket.assigns.conn.progress_timer do
+      Process.send_after(self(), :beamdash_progress_tick, @progress_ms)
+      update(socket, progress_timer: true)
+    else
+      socket
+    end
+  end
+
+  defp progress_step(label, command),
+    do: %{label: label, command: command, since: System.monotonic_time(:millisecond), elapsed: 0}
+
+  defp active_progress?(socket),
+    do: Enum.any?([:connecting, :kube_progress], fn key -> socket.assigns.conn[key] end)
+
+  defp tick_progress(socket, key) do
+    case socket.assigns.conn[key] do
+      nil ->
+        socket
+
+      step ->
+        elapsed = div(System.monotonic_time(:millisecond) - step.since, 1000)
+        update(socket, [{key, %{step | elapsed: elapsed}}])
     end
   end
 

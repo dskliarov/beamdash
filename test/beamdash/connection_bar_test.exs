@@ -485,6 +485,31 @@ defmodule Beamdash.ConnectionBarTest do
     assert_receive {:beamdash_kube_namespaces, ^new, _result}, 10_000
   end
 
+  test "picking another cluster clears a listing's progress line" do
+    fake_kubectl()
+    old = empty_kubeconfig()
+    new = empty_kubeconfig()
+
+    progress = %{label: "Listing pods…", command: "kubectl get pods", since: 0, elapsed: 1}
+
+    s =
+      on_cluster(old, %{method: :kubectl, kube_progress: progress, kube_restore_ref: make_ref()})
+
+    {:halt, s} = Connection.handle_event("select_kube_cluster", %{"cluster" => new}, s)
+    assert s.assigns.conn.kube_progress == nil
+    assert_receive {:beamdash_kube_namespaces, ^new, _result}, 10_000
+  end
+
+  test "picking another cluster is refused while a kubectl connect runs" do
+    old = empty_kubeconfig()
+    new = empty_kubeconfig()
+    connecting = %{label: "Connecting…", command: nil, since: 0, elapsed: 1}
+
+    s = on_cluster(old, %{method: :kubectl, connecting: connecting})
+
+    assert {:halt, ^s} = Connection.handle_event("select_kube_cluster", %{"cluster" => new}, s)
+  end
+
   test "a freshly mounted bar offers no namespaces yet" do
     assert mounted_bar().assigns.conn.kube_namespaces == []
   end
@@ -541,21 +566,21 @@ defmodule Beamdash.ConnectionBarTest do
     assert s.assigns.conn.kube_cluster == cluster
     assert s.assigns.conn.kube_namespace == "prod"
     {:halt, s} = Connection.handle_event("set_conn_method", %{"method" => "kubectl"}, s)
-    assert_receive {:beamdash_restore_kube, ref, ^cluster, "prod", result}, 10_000
+    assert_receive {:beamdash_kube_listed, ref, ^cluster, "prod", result}, 10_000
 
     {:halt, stale} =
-      Connection.handle_info({:beamdash_restore_kube, make_ref(), cluster, "prod", result}, s)
+      Connection.handle_info({:beamdash_kube_listed, make_ref(), cluster, "prod", result}, s)
 
     assert stale.assigns.conn.kube_pods == nil
     partial = {:partial, %{pods: ["pod-a", "pod-b"], pod: "pod-b", error: :timeout}}
 
     {:halt, failed} =
-      Connection.handle_info({:beamdash_restore_kube, ref, cluster, "prod", partial}, s)
+      Connection.handle_info({:beamdash_kube_listed, ref, cluster, "prod", partial}, s)
 
     assert failed.assigns.conn.kube_pods == ["pod-a", "pod-b"]
     assert failed.assigns.conn.kube_pod == "pod-b"
     assert failed.assigns.conn.error != nil
-    {:halt, s} = Connection.handle_info({:beamdash_restore_kube, ref, cluster, "prod", result}, s)
+    {:halt, s} = Connection.handle_info({:beamdash_kube_listed, ref, cluster, "prod", result}, s)
     assert s.assigns.conn.kube_pod == "pod-b"
     assert s.assigns.conn.kube_container == "sidecar"
     assert s.assigns.conn.kube_binary == "/app/bin/two"
@@ -577,8 +602,8 @@ defmodule Beamdash.ConnectionBarTest do
 
     {:halt, s} = Connection.handle_info(:beamdash_restore_saved_kube, mounted_bar())
 
-    assert_receive {:beamdash_restore_kube, ref, ^cluster, "prod", result}, 10_000
-    {:halt, s} = Connection.handle_info({:beamdash_restore_kube, ref, cluster, "prod", result}, s)
+    assert_receive {:beamdash_kube_listed, ref, ^cluster, "prod", result}, 10_000
+    {:halt, s} = Connection.handle_info({:beamdash_kube_listed, ref, cluster, "prod", result}, s)
     assert s.assigns.conn.kube_pod == "pod-a"
     assert s.assigns.conn.kube_container == "app"
     assert s.assigns.conn.kube_binary == "/app/bin/one"
@@ -595,8 +620,8 @@ defmodule Beamdash.ConnectionBarTest do
     assert s.assigns.conn.method == :kubectl
     assert_receive :beamdash_restore_saved_kube
     {:halt, s} = Connection.handle_info(:beamdash_restore_saved_kube, s)
-    assert_receive {:beamdash_restore_kube, ref, ^cluster, "prod", result}, 10_000
-    {:halt, s} = Connection.handle_info({:beamdash_restore_kube, ref, cluster, "prod", result}, s)
+    assert_receive {:beamdash_kube_listed, ref, ^cluster, "prod", result}, 10_000
+    {:halt, s} = Connection.handle_info({:beamdash_kube_listed, ref, cluster, "prod", result}, s)
     assert s.assigns.conn.kube_pod == "pod-a"
     assert s.assigns.conn.kube_container == "app"
     assert s.assigns.conn.kube_binary == "/app/bin/one"
@@ -613,12 +638,146 @@ defmodule Beamdash.ConnectionBarTest do
     {:cont, s} = Connection.on_mount(:default, %{}, %{}, socket)
     assert_receive :beamdash_restore_saved_kube
     {:halt, s} = Connection.handle_info(:beamdash_restore_saved_kube, s)
-    refute_receive {:beamdash_restore_kube, _, _, _, _}, 300
+    refute_receive {:beamdash_kube_listed, _, _, _, _}, 300
     refute_receive {:beamdash_kube_namespaces, _, _}
     assert s.assigns.conn.kube_namespaces == ["default", "prod"]
     assert s.assigns.conn.kube_pods == ["pod-a", "pod-b"]
     assert s.assigns.conn.kube_pod == "pod-a"
     assert s.assigns.conn.kube_binary == "/app/bin/one"
+  end
+
+  test "a partial kubectl listing clears the containers and binaries of the old pod" do
+    ref = make_ref()
+    s = mounted_bar()
+
+    s =
+      Phoenix.Component.assign(s,
+        conn:
+          Map.merge(s.assigns.conn, %{
+            kube_restore_ref: ref,
+            kube_pod: "pod-a",
+            kube_containers: ["app"],
+            kube_container: "app",
+            kube_binaries: ["/app/bin/one"],
+            kube_binary: "/app/bin/one"
+          })
+      )
+
+    partial = {:partial, %{pods: ["pod-a", "pod-b"], pod: "pod-b", error: :timeout}}
+    {:halt, s} = Connection.handle_info({:beamdash_kube_listed, ref, "c", "prod", partial}, s)
+
+    assert s.assigns.conn.kube_pod == "pod-b"
+    assert s.assigns.conn.kube_containers == []
+    assert s.assigns.conn.kube_container == nil
+    assert s.assigns.conn.kube_binaries == []
+    assert s.assigns.conn.kube_binary == nil
+  end
+
+  test "List pods is disabled while a kubectl connect runs, and a list request is ignored" do
+    step = %{label: "Connecting…", command: nil, since: 0, elapsed: 0}
+
+    conn = %{
+      status: :disconnected,
+      node: nil,
+      info: nil,
+      node_input: "",
+      error: nil,
+      method: :kubectl,
+      kube_clusters: [%{name: "prod", path: "/kube/prod"}],
+      kube_cluster: "/kube/prod",
+      kube_namespace: "shop",
+      kube_namespaces: [],
+      kube_pods_listing: false,
+      kube_restore_ref: nil,
+      kube_pods: ["app-1"],
+      kube_pod: "app-1",
+      kube_containers: nil,
+      kube_container: nil,
+      kube_binaries: nil,
+      kube_binary: nil,
+      kube_progress: nil,
+      connecting: step
+    }
+
+    html = bar(%{assigns: %{conn: conn}})
+    assert html =~ ~r/<button[^>]*disabled[^>]*>\s*List pods/s
+
+    s = Phoenix.Component.assign(mounted_bar(), conn: conn)
+    {:halt, s} = Connection.handle_event("list_kube_pods", %{"namespace" => "shop"}, s)
+    refute s.assigns.conn.kube_pods_listing
+    assert s.assigns.conn.kube_restore_ref == nil
+  end
+
+  test "a list request after a real connect click starts no listing while the connect runs" do
+    dir =
+      Path.join(System.tmp_dir!(), "beamdash-slow-kubectl-#{System.unique_integer([:positive])}")
+
+    File.mkdir_p!(dir)
+    File.write!(Path.join(dir, "kubectl"), "#!/bin/sh\nsleep 3\n")
+    File.chmod!(Path.join(dir, "kubectl"), 0o755)
+    path = System.get_env("PATH")
+    System.put_env("PATH", dir <> ":" <> path)
+
+    on_exit(fn ->
+      System.put_env("PATH", path)
+      Target.disconnect()
+      File.rm_rf!(dir)
+    end)
+
+    s =
+      Phoenix.Component.assign(mounted_bar(),
+        conn:
+          Map.merge(mounted_bar().assigns.conn, %{
+            method: :kubectl,
+            kube_cluster: "/tmp/prod.yaml",
+            kube_namespace: "shop",
+            kube_pods: ["app-1"],
+            kube_pod: "app-1",
+            kube_containers: [],
+            kube_container: "",
+            kube_binaries: ["/app/bin/a"],
+            kube_binary: "/app/bin/a"
+          })
+      )
+
+    {:halt, s} =
+      Connection.handle_event(
+        "connect_kubectl",
+        %{"namespace" => "shop", "container" => "", "binary" => "/app/bin/a"},
+        s
+      )
+
+    assert s.assigns.conn.connecting
+
+    {:halt, s} = Connection.handle_event("list_kube_pods", %{"namespace" => "other"}, s)
+    refute s.assigns.conn.kube_pods_listing
+    assert s.assigns.conn.kube_pods == ["app-1"]
+    assert s.assigns.conn.kube_restore_ref == nil
+  end
+
+  test "switching to Direct clears a kubectl listing's progress line" do
+    s =
+      Phoenix.Component.assign(mounted_bar(),
+        conn:
+          Map.merge(mounted_bar().assigns.conn, %{
+            method: :kubectl,
+            kube_pods_listing: true,
+            kube_restore_ref: make_ref(),
+            kube_progress: %{
+              label: "Listing pods…",
+              command: "kubectl get pods",
+              since: 0,
+              elapsed: 1
+            }
+          })
+      )
+
+    {:halt, s} = Connection.handle_event("set_conn_method", %{"method" => "direct"}, s)
+
+    assert s.assigns.conn.method == :direct
+    assert s.assigns.conn.kube_progress == nil
+    assert s.assigns.conn.kube_restore_ref == nil
+    refute s.assigns.conn.kube_pods_listing
   end
 
   defp flush_namespaces do
