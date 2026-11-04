@@ -297,8 +297,19 @@ defmodule Beamdash.MemoryPanelTest do
       examples: nil,
       key_pick: 0,
       spec_pick: 0,
-      view: :raw
+      view: :raw,
+      output: %{segments: [], pairs: []}
     }
+
+    showing = fn socket, result, view ->
+      socket =
+        Phoenix.Component.assign(socket,
+          ets_browse: %{socket.assigns.ets_browse | result: result}
+        )
+
+      {:noreply, socket} = MemoryLive.handle_event("ets_view", %{"view" => view}, socket)
+      socket
+    end
 
     socket =
       Phoenix.Component.assign(socket,
@@ -342,26 +353,36 @@ defmodule Beamdash.MemoryPanelTest do
 
     long_row = {:long_key, Enum.map(1..60, &{:"key_#{&1}", &1})}
     result = {:ok, %{rows: [long_row], stop: :complete, keypos: 1}}
-    shown = Phoenix.Component.assign(socket, ets_browse: %{browse | result: result})
+    shown = showing.(socket, result, "raw")
     html = shown.assigns |> MemoryLive.render() |> Phoenix.LiveViewTest.rendered_to_string()
     assert html =~ "key_60"
+    assert html =~ "long_key"
     assert html =~ ~s(<span class="tok-curly">{</span>)
     assert html =~ ~s(<span class="tok-square">[</span>)
     assert html =~ ~s(<span class="tok-comma">,</span>)
     refute html =~ ~s(class="ets-kv")
 
-    table_shown =
-      Phoenix.Component.assign(socket, ets_browse: %{browse | result: result, view: :table})
+    table_shown = showing.(socket, result, "table")
 
     html = table_shown.assigns |> MemoryLive.render() |> Phoenix.LiveViewTest.rendered_to_string()
     assert html =~ ~s(class="ets-kv")
     assert html =~ "<th>Key</th>"
     assert html =~ "<th>Value</th>"
-    assert html =~ "long_key"
-    assert html =~ ~s(<span class="tok-square">[</span>)
+
+    swapped = showing.(socket, {:ok, %{rows: [{:v, :k}], stop: :complete, keypos: 2}}, "table")
+    html = swapped.assigns |> MemoryLive.render() |> Phoenix.LiveViewTest.rendered_to_string()
+
+    assert html =~
+             ~r/<td class="ets-rows small">\s*<span[^>]*>k<\/span>\s*<\/td>\s*<td class="ets-rows small">\s*<span[^>]*>v<\/span>/
+
+    single = showing.(socket, {:ok, %{rows: [{:only}], stop: :complete, keypos: 1}}, "table")
+    html = single.assigns |> MemoryLive.render() |> Phoenix.LiveViewTest.rendered_to_string()
+
+    assert html =~
+             ~r/<td class="ets-rows small">\s*<span[^>]*>only<\/span>\s*<\/td>\s*<td class="ets-rows small">\s*<\/td>/
 
     quoted = {:ok, %{rows: [{"{x}", 1}], stop: :complete, keypos: 1}}
-    quoted_socket = Phoenix.Component.assign(socket, ets_browse: %{browse | result: quoted})
+    quoted_socket = showing.(socket, quoted, "raw")
 
     html =
       quoted_socket.assigns |> MemoryLive.render() |> Phoenix.LiveViewTest.rendered_to_string()

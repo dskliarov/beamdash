@@ -15,6 +15,7 @@ defmodule BeamdashWeb.MemoryLive do
   @trend_history 301
   @ets_refresh_ms 5_000
   @browse_rows 1
+  @empty_output %{segments: [], pairs: []}
   @browse_max_rows 5_000
   @browse_ms 2_000
   @example_rows 5
@@ -237,10 +238,6 @@ defmodule BeamdashWeb.MemoryLive do
     end
   end
 
-  defp browse_request("top", %{rows: rows}) do
-    {:ok, &Memory.ets_browse(&1, &2, [{:_, [], [:"$_"]}], rows, @browse_ms)}
-  end
-
   defp browse_request("select", %{spec: spec, rows: rows}) do
     spec = if String.trim(spec) == "", do: "[{'_', [], ['$_']}]", else: spec
 
@@ -327,12 +324,35 @@ defmodule BeamdashWeb.MemoryLive do
   defp key_value_rows(rows, keypos, syntax) do
     Enum.map(rows, fn row ->
       {key, rest} = row |> Tuple.to_list() |> List.pop_at(keypos - 1)
-      value = if match?([_], rest), do: hd(rest), else: List.to_tuple(rest)
-
-      {pretty_segments(Format.pretty(key, syntax, 1)),
-       pretty_segments(Format.pretty(value, syntax, 1))}
+      {pretty_segments(Format.pretty(key, syntax, 1)), value_segments(rest, syntax)}
     end)
   end
+
+  defp value_segments([], _syntax), do: []
+  defp value_segments([value], syntax), do: pretty_segments(Format.pretty(value, syntax, 1))
+
+  defp value_segments(rest, syntax),
+    do: pretty_segments(Format.pretty(List.to_tuple(rest), syntax, 1))
+
+  defp put_output(
+         %{
+           assigns: %{
+             syntax: syntax,
+             ets_browse: %{result: {:ok, %{rows: rows, keypos: keypos}}} = browse
+           }
+         } =
+           socket
+       ) do
+    assign(socket, ets_browse: %{browse | output: output(browse.view, rows, keypos, syntax)})
+  end
+
+  defp put_output(socket), do: socket
+
+  defp output(:table, rows, keypos, syntax),
+    do: %{segments: [], pairs: key_value_rows(rows, keypos, syntax)}
+
+  defp output(view, rows, _keypos, syntax),
+    do: %{segments: rows_segments(rows, syntax, view), pairs: []}
 
   # Quoted strings and atoms are kept whole, so braces inside them stay plain.
   defp pretty_segments(text) do
@@ -643,7 +663,8 @@ defmodule BeamdashWeb.MemoryLive do
           examples: nil,
           key_pick: 0,
           spec_pick: 0,
-          view: :raw
+          view: :raw,
+          output: @empty_output
         }
 
         node = socket.assigns.node
@@ -688,7 +709,7 @@ defmodule BeamdashWeb.MemoryLive do
 
         {:noreply,
          socket
-         |> assign(ets_browse: %{browse | result: nil})
+         |> assign(ets_browse: %{browse | result: nil, output: @empty_output})
          |> cancel_async(:ets_browse)
          |> start_async(:ets_browse, fn -> {node, table, read.(node, table)} end)}
 
@@ -715,10 +736,12 @@ defmodule BeamdashWeb.MemoryLive do
   def handle_event("ets_view", %{"view" => view}, %{assigns: %{ets_browse: browse}} = socket)
       when browse != nil do
     view = %{"table" => :table, "pretty" => :pretty}[view] || :raw
-    {:noreply, assign(socket, ets_browse: %{browse | view: view})}
+    {:noreply, socket |> assign(ets_browse: %{browse | view: view}) |> put_output()}
   end
 
   def handle_event("ets_view", _params, socket), do: {:noreply, socket}
+
+  def syntax_changed(socket), do: put_output(socket)
 
   @impl true
   def handle_async({:memory, kind}, {:ok, {node, value}}, %{assigns: %{node: node}} = socket) do
@@ -752,9 +775,9 @@ defmodule BeamdashWeb.MemoryLive do
       ),
       do:
         {:noreply,
-         assign(socket,
-           ets_browse: %{browse | result: result |> browse_result() |> browse_rows()}
-         )}
+         socket
+         |> assign(ets_browse: %{browse | result: result |> browse_result() |> browse_rows()})
+         |> put_output()}
 
   def handle_async(:ets_browse, _stale_or_exit, socket), do: {:noreply, socket}
 
@@ -1629,11 +1652,11 @@ defmodule BeamdashWeb.MemoryLive do
   attr :syntax, :atom, required: true
 
   defp ets_browse(assigns) do
-    {rows, stop, keypos, error} =
+    {rows, stop, error} =
       case assigns.browse.result do
-        {:ok, %{rows: rows, stop: stop, keypos: keypos}} -> {rows, stop, keypos, nil}
-        {:error, msg} -> {[], nil, nil, msg}
-        nil -> {[], nil, nil, nil}
+        {:ok, %{rows: rows, stop: stop}} -> {rows, stop, nil}
+        {:error, msg} -> {[], nil, msg}
+        nil -> {[], nil, nil}
       end
 
     {example_keys, example_specs, examples_error} =
@@ -1646,16 +1669,8 @@ defmodule BeamdashWeb.MemoryLive do
     assigns =
       assign(assigns,
         rows: rows,
-        segments:
-          if(assigns.browse.view == :table,
-            do: [],
-            else: rows_segments(rows, assigns.syntax, assigns.browse.view)
-          ),
-        pairs:
-          if(assigns.browse.view == :table,
-            do: key_value_rows(rows, keypos, assigns.syntax),
-            else: []
-          ),
+        segments: assigns.browse.output.segments,
+        pairs: assigns.browse.output.pairs,
         error: error,
         summary: browse_summary(stop, length(rows)),
         limit: "Reads at most #{assigns.browse.rows} rows, for #{@browse_ms} ms per search.",

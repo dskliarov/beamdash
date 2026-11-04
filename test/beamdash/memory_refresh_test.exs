@@ -128,7 +128,8 @@ defmodule Beamdash.MemoryRefreshTest do
       examples: nil,
       key_pick: 0,
       spec_pick: 0,
-      view: :raw
+      view: :raw,
+      output: %{segments: [], pairs: []}
     }
 
     Phoenix.Component.assign(connected_socket(),
