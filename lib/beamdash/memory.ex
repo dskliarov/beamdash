@@ -70,6 +70,26 @@ defmodule Beamdash.Memory do
 
   def ets_tables(node), do: call(node, :ets_tables, [])
 
+  @doc "Up to `limit` rows of an ETS table matching `spec`, within `ms` milliseconds (see `beamdash_agent:ets_browse/4`)."
+  def ets_browse(node, table, spec, limit, ms),
+    do: call(node, :ets_browse, [table, spec, limit, ms])
+
+  @doc "Up to `limit` rows of an ETS table stored under `key` (see `beamdash_agent:ets_lookup/3`)."
+  def ets_lookup(node, table, key, limit), do: call(node, :ets_lookup, [table, key, limit])
+
+  @doc "The keys of up to `limit` rows of an ETS table, with its key position and row size (see `beamdash_agent:ets_examples/3`)."
+  def ets_examples(node, table, limit, ms), do: call(node, :ets_examples, [table, limit, ms])
+
+  @doc "Reads an Erlang term typed by a user. The text is parsed, never evaluated."
+  def parse_term(text) do
+    with {:ok, tokens, _end} <- :erl_scan.string(String.to_charlist(text <> " .")),
+         {:ok, term} <- :erl_parse.parse_term(tokens) do
+      {:ok, term}
+    else
+      _ -> {:error, "Not a valid Erlang term."}
+    end
+  end
+
   @doc "A process's stack (and with `status?`, `sys:get_status/2`)."
   def process_state(node, pid, status?), do: call(node, :process_state, [pid, status?])
 

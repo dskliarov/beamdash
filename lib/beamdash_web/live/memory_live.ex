@@ -14,6 +14,10 @@ defmodule BeamdashWeb.MemoryLive do
   @history 150
   @trend_history 301
   @ets_refresh_ms 5_000
+  @browse_rows 1
+  @browse_max_rows 5_000
+  @browse_ms 2_000
+  @example_rows 5
   @trend_windows [30, 60, 120, 300, 600]
 
   # The parts erlang:memory() splits `total` into, in this (fixed) order;
@@ -50,6 +54,7 @@ defmodule BeamdashWeb.MemoryLive do
         trend_window: 300,
         recon: nil,
         error: nil,
+        page: :leak,
         tab: nil,
         attr: :memory,
         top_n: 10,
@@ -63,6 +68,7 @@ defmodule BeamdashWeb.MemoryLive do
         ets_prev: %{},
         ets_sort: {:memory, :desc},
         ets_filter: "",
+        ets_browse: nil,
         inspect: nil,
         # Nx: where memory and the limits are heading
         forecast: nil,
@@ -113,7 +119,9 @@ defmodule BeamdashWeb.MemoryLive do
     |> Enum.reduce(socket, &cancel_async(&2, {:memory, &1}))
     |> cancel_async({:memory_action, :gc_all})
     |> cancel_async({:memory_action, :bin_leak})
-    |> assign(in_flight: MapSet.new(), busy: nil)
+    |> cancel_async(:ets_browse)
+    |> cancel_async(:ets_examples)
+    |> assign(in_flight: MapSet.new(), busy: nil, ets_browse: nil)
   end
 
   defp request_recon(socket), do: fetch(socket, :recon, &Memory.recon_status/1)
@@ -215,6 +223,226 @@ defmodule BeamdashWeb.MemoryLive do
     start_async(socket, {:memory_action, kind}, fn -> {node, run.(node)} end)
   end
 
+  defp browse_limit(text) do
+    case Integer.parse(text || "") do
+      {n, ""} -> n |> max(1) |> min(@browse_max_rows)
+      _ -> @browse_rows
+    end
+  end
+
+  defp browse_request("lookup", %{key: key, rows: rows}) do
+    case Memory.parse_term(key) do
+      {:ok, term} -> {:ok, &Memory.ets_lookup(&1, &2, term, rows)}
+      {:error, msg} -> {:error, msg}
+    end
+  end
+
+  defp browse_request("top", %{rows: rows}) do
+    {:ok, &Memory.ets_browse(&1, &2, [{:_, [], [:"$_"]}], rows, @browse_ms)}
+  end
+
+  defp browse_request("select", %{spec: spec, rows: rows}) do
+    spec = if String.trim(spec) == "", do: "[{'_', [], ['$_']}]", else: spec
+
+    case Memory.parse_term(spec) do
+      {:ok, term} when is_list(term) ->
+        {:ok, &Memory.ets_browse(&1, &2, term, rows, @browse_ms)}
+
+      {:ok, _} ->
+        {:error, "The match spec must be a list, like [{'_', [], ['$_']}]."}
+
+      {:error, msg} ->
+        {:error, msg}
+    end
+  end
+
+  defp browse_result({:ok, found}) when is_map(found), do: {:ok, found}
+  defp browse_result({:ok, {:error, reason}}), do: {:error, browse_message(reason)}
+  defp browse_result({:error, reason}), do: {:error, Format.error(reason)}
+
+  defp browse_message(:no_table), do: "This table is gone."
+  defp browse_message(:private), do: "This table is private: only its owner can read it."
+
+  defp browse_message(:badarg),
+    do: "The table could not be read: it may have been deleted, or the match spec is not valid."
+
+  defp browse_message(other), do: Format.error(other)
+
+  defp browse_rows({:ok, %{rows: rows} = found}),
+    do: {:ok, %{found | rows: Enum.map(rows, &mask_secrets/1)}}
+
+  defp browse_rows(result), do: result
+
+  # a value right after a secret-looking name (tuple element or map key) is hidden
+  @masked "***"
+
+  defp mask_secrets(term) when is_tuple(term),
+    do: term |> Tuple.to_list() |> mask_items() |> List.to_tuple()
+
+  defp mask_secrets(term) when is_map(term) do
+    Map.new(:maps.to_list(term), fn {k, v} ->
+      if secret_name?(k), do: {k, @masked}, else: {mask_secrets(k), mask_secrets(v)}
+    end)
+  end
+
+  defp mask_secrets([head | tail]), do: [mask_secrets(head) | mask_secrets(tail)]
+  defp mask_secrets(term), do: term
+
+  defp mask_items([name, value | rest]) do
+    if secret_name?(name),
+      do: [mask_secrets(name), @masked | mask_items(rest)],
+      else: [mask_secrets(name) | mask_items([value | rest])]
+  end
+
+  defp mask_items([last]), do: [mask_secrets(last)]
+  defp mask_items([]), do: []
+
+  defp secret_name?(name) when is_atom(name), do: secret_name?(Atom.to_string(name))
+
+  defp secret_name?(name) when is_binary(name),
+    do: Regex.match?(~r/secret|passw|token|credential|api_?key|private_?key/i, name)
+
+  defp secret_name?(_name), do: false
+
+  defp browse_summary(nil, _n), do: nil
+  defp browse_summary(:complete, 0), do: "Nothing found."
+  defp browse_summary(:complete, n), do: "Found #{Format.number(n)}."
+  defp browse_summary(:rows, n), do: "First #{Format.number(n)} shown: more may match."
+
+  defp browse_summary(:time, n),
+    do:
+      "Stopped after #{@browse_ms} ms with #{Format.number(n)} rows: narrow the match spec to see the rest."
+
+  defp rows_segments(rows, syntax, view) do
+    rows
+    |> Enum.map(&pretty_segments(row_text(&1, syntax, view)))
+    |> Enum.intersperse([{nil, "\n\n"}])
+    |> Enum.concat()
+  end
+
+  # Format.term cuts lists after 20 elements; a huge width keeps the whole row on one line.
+  defp row_text(row, syntax, :raw), do: Format.pretty(row, syntax, 1_000_000)
+  defp row_text(row, syntax, :pretty), do: Format.pretty(row, syntax)
+
+  defp key_value_rows(rows, keypos, syntax) do
+    Enum.map(rows, fn row ->
+      {key, rest} = row |> Tuple.to_list() |> List.pop_at(keypos - 1)
+      value = if match?([_], rest), do: hd(rest), else: List.to_tuple(rest)
+
+      {pretty_segments(Format.pretty(key, syntax, 1)),
+       pretty_segments(Format.pretty(value, syntax, 1))}
+    end)
+  end
+
+  # Quoted strings and atoms are kept whole, so braces inside them stay plain.
+  defp pretty_segments(text) do
+    ~r/("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|[{}\[\](),])/
+    |> Regex.split(text, include_captures: true)
+    |> Enum.map(&{punct_class(&1), &1})
+  end
+
+  defp punct_class("{"), do: "tok-curly"
+  defp punct_class("}"), do: "tok-curly"
+  defp punct_class("["), do: "tok-square"
+  defp punct_class("]"), do: "tok-square"
+  defp punct_class("("), do: "tok-round"
+  defp punct_class(")"), do: "tok-round"
+  defp punct_class(","), do: "tok-comma"
+  defp punct_class(_text), do: nil
+
+  defp examples_result(result) do
+    case browse_result(result) do
+      {:ok, found} -> {:ok, browse_examples(found)}
+      {:error, msg} -> {:error, msg}
+    end
+  end
+
+  defp browse_examples(%{keys: keys, keypos: keypos, arity: arity}) do
+    texts =
+      keys
+      |> Enum.map(&Format.term(&1, :erlang, 10_000))
+      |> Enum.filter(&match?({:ok, _}, Memory.parse_term(&1)))
+
+    %{keys: texts, specs: example_specs(keys, keypos, arity)}
+  end
+
+  defp example_specs(_keys, _keypos, nil), do: []
+
+  defp example_specs(keys, keypos, arity) do
+    all = {"[{'_', [], ['$_']}]", "All rows, with no filter."}
+    [all | exact_key_spec(keys, keypos, arity) ++ key_specs(keys, keypos, arity)]
+  end
+
+  defp exact_key_spec([k | _], keypos, arity) do
+    text = Format.term(k, :erlang, 10_000)
+
+    case Memory.parse_term(text) do
+      {:ok, _} ->
+        [{"[{#{keyed(arity, keypos, text)}, [], ['$_']}]", "Only the row whose key is #{text}."}]
+
+      {:error, _} ->
+        []
+    end
+  end
+
+  defp exact_key_spec([], _keypos, _arity), do: []
+
+  defp key_specs(keys, keypos, arity) do
+    case keys do
+      [k | _] when is_integer(k) ->
+        [
+          {spec(arity, keypos, "{'>', '$1', #{k}}"), "Whole rows whose key is above #{k}."},
+          {spec(arity, keypos, "{'=<', '$1', #{k}}"), "Whole rows whose key is at most #{k}."}
+        ]
+
+      [k | _] when is_atom(k) ->
+        [{spec(arity, keypos, "{is_atom, '$1'}"), "Whole rows whose key is an atom."}]
+
+      [k | _] when is_binary(k) ->
+        [
+          {spec(arity, keypos, "{is_binary, '$1'}"), "Whole rows whose key is a binary."},
+          {spec(arity, keypos, "{'>', {byte_size, '$1'}, 8}"),
+           "Whole rows whose key is longer than 8 bytes."}
+        ]
+
+      [k | _] when is_tuple(k) ->
+        [
+          {spec(arity, keypos, "{is_tuple, '$1'}"), "Whole rows whose key is a tuple."},
+          {spec(arity, keypos, "{'=:=', {size, '$1'}, #{tuple_size(k)}}"),
+           "Whole rows whose key is a tuple of #{tuple_size(k)} elements."}
+        ]
+
+      _ ->
+        []
+    end
+  end
+
+  defp spec(arity, keypos, guard),
+    do: "[{#{keyed(arity, keypos, "'$1'")}, [#{guard}], ['$_']}]"
+
+  defp keyed(arity, keypos, bind),
+    do: "{" <> Enum.map_join(1..arity, ", ", &if(&1 == keypos, do: bind, else: "'_'")) <> "}"
+
+  defp pick_example(browse, examples, "key", index) do
+    with {i, ""} <- Integer.parse(index),
+         {:ok, text} <- Enum.fetch(examples.keys, i) do
+      {:ok, %{browse | key: text, key_pick: browse.key_pick + 1}}
+    else
+      _ -> :error
+    end
+  end
+
+  defp pick_example(browse, examples, "spec", index) do
+    with {i, ""} <- Integer.parse(index),
+         {:ok, {text, _description}} <- Enum.fetch(examples.specs, i) do
+      {:ok, %{browse | spec: text, spec_pick: browse.spec_pick + 1}}
+    else
+      _ -> :error
+    end
+  end
+
+  defp pick_example(_browse, _examples, _kind, _index), do: :error
+
   defp apply_action(socket, :gc_all, {:ok, gc}),
     do: socket |> assign(gc: gc, busy: nil) |> request_refresh()
 
@@ -241,7 +469,13 @@ defmodule BeamdashWeb.MemoryLive do
     socket =
       case params["tab"] do
         tab when tab in ~w(processes binary ets) ->
-          socket = assign(socket, tab: String.to_existing_atom(tab), inspect: nil, top: nil)
+          socket =
+            assign(socket,
+              page: :leak,
+              tab: String.to_existing_atom(tab),
+              inspect: nil,
+              top: nil
+            )
 
           if socket.assigns.status == :connected and connected?(socket),
             do: load_tab(socket),
@@ -257,9 +491,22 @@ defmodule BeamdashWeb.MemoryLive do
   ## Events
 
   @impl true
+  def handle_event("page", %{"page" => page}, socket) when page in ~w(forecast leak),
+    do: {:noreply, assign(socket, page: String.to_existing_atom(page))}
+
   def handle_event("tab", %{"tab" => tab}, socket) when tab in ~w(processes binary ets) do
     {:noreply,
-     socket |> assign(tab: String.to_existing_atom(tab), inspect: nil, top: nil) |> load_tab()}
+     socket
+     |> cancel_async(:ets_browse)
+     |> cancel_async(:ets_examples)
+     |> assign(
+       page: :leak,
+       tab: String.to_existing_atom(tab),
+       inspect: nil,
+       ets_browse: nil,
+       top: nil
+     )
+     |> load_tab()}
   end
 
   def handle_event("toggle_trend", %{"kind" => kind}, socket) do
@@ -318,7 +565,7 @@ defmodule BeamdashWeb.MemoryLive do
   def handle_event("inspect", %{"pid" => pid_text}, socket) do
     with pid when is_pid(pid) <- Target.parse_pid(pid_text, socket.assigns.node),
          {:ok, %{} = state} <- Memory.process_state(socket.assigns.node, pid, false) do
-      {:noreply, assign(socket, inspect: Map.put(state, :pid, pid))}
+      {:noreply, assign(socket, inspect: Map.put(state, :pid, pid), ets_browse: nil)}
     else
       {:ok, :undefined} ->
         {:noreply, assign(socket, inspect: nil, error: "The process has exited.")}
@@ -380,6 +627,99 @@ defmodule BeamdashWeb.MemoryLive do
   def handle_event("ets_reset", _params, socket),
     do: {:noreply, assign(socket, ets_base: Map.new(socket.assigns.ets || [], &{&1.id, &1}))}
 
+  def handle_event("ets_open", %{"id" => id}, socket) do
+    case Enum.find(socket.assigns.ets || [], &(inspect(&1.id) == id)) do
+      nil ->
+        {:noreply, socket}
+
+      table ->
+        browse = %{
+          table: table.id,
+          label: table_name(table),
+          key: "",
+          spec: "",
+          rows: @browse_rows,
+          result: nil,
+          examples: nil,
+          key_pick: 0,
+          spec_pick: 0,
+          view: :raw
+        }
+
+        node = socket.assigns.node
+        id = table.id
+
+        {:noreply,
+         socket
+         |> cancel_async(:ets_browse)
+         |> cancel_async(:ets_examples)
+         |> start_async(:ets_examples, fn ->
+           {node, id, Memory.ets_examples(node, id, @example_rows, @browse_ms)}
+         end)
+         |> assign(ets_browse: browse, inspect: nil)}
+    end
+  end
+
+  def handle_event("ets_close", _params, socket),
+    do:
+      {:noreply,
+       socket
+       |> cancel_async(:ets_browse)
+       |> cancel_async(:ets_examples)
+       |> assign(ets_browse: nil)}
+
+  def handle_event(
+        "ets_run",
+        %{"mode" => mode} = params,
+        %{assigns: %{ets_browse: browse}} = socket
+      )
+      when browse != nil do
+    browse = %{
+      browse
+      | key: params["key"] || "",
+        spec: params["spec"] || "",
+        rows: browse_limit(params["rows"])
+    }
+
+    case browse_request(mode, browse) do
+      {:ok, read} ->
+        node = socket.assigns.node
+        table = browse.table
+
+        {:noreply,
+         socket
+         |> assign(ets_browse: %{browse | result: nil})
+         |> cancel_async(:ets_browse)
+         |> start_async(:ets_browse, fn -> {node, table, read.(node, table)} end)}
+
+      {:error, msg} ->
+        {:noreply, assign(socket, ets_browse: %{browse | result: {:error, msg}})}
+    end
+  end
+
+  def handle_event("ets_run", _params, socket), do: {:noreply, socket}
+
+  def handle_event(
+        "ets_pick",
+        %{"kind" => kind, "index" => index},
+        %{assigns: %{ets_browse: %{examples: {:ok, examples}} = browse}} = socket
+      ) do
+    case pick_example(browse, examples, kind, index) do
+      {:ok, browse} -> {:noreply, assign(socket, ets_browse: browse)}
+      :error -> {:noreply, socket}
+    end
+  end
+
+  def handle_event("ets_pick", _params, socket), do: {:noreply, socket}
+
+  def handle_event("ets_view", %{"view" => view}, %{assigns: %{ets_browse: browse}} = socket)
+      when browse != nil do
+    view = %{"table" => :table, "pretty" => :pretty}[view] || :raw
+    {:noreply, assign(socket, ets_browse: %{browse | view: view})}
+  end
+
+  def handle_event("ets_view", _params, socket), do: {:noreply, socket}
+
   @impl true
   def handle_async({:memory, kind}, {:ok, {node, value}}, %{assigns: %{node: node}} = socket) do
     socket = assign(socket, in_flight: MapSet.delete(socket.assigns.in_flight, kind))
@@ -404,6 +744,28 @@ defmodule BeamdashWeb.MemoryLive do
 
   def handle_async({:memory_action, _kind}, _exit, socket),
     do: {:noreply, assign(socket, busy: nil)}
+
+  def handle_async(
+        :ets_browse,
+        {:ok, {node, table, result}},
+        %{assigns: %{node: node, ets_browse: %{table: table} = browse}} = socket
+      ),
+      do:
+        {:noreply,
+         assign(socket,
+           ets_browse: %{browse | result: result |> browse_result() |> browse_rows()}
+         )}
+
+  def handle_async(:ets_browse, _stale_or_exit, socket), do: {:noreply, socket}
+
+  def handle_async(
+        :ets_examples,
+        {:ok, {node, table, result}},
+        %{assigns: %{node: node, ets_browse: %{table: table} = browse}} = socket
+      ),
+      do: {:noreply, assign(socket, ets_browse: %{browse | examples: examples_result(result)})}
+
+  def handle_async(:ets_examples, _stale_or_exit, socket), do: {:noreply, socket}
 
   def handle_async({:memory_advisor, _} = request, result, socket) do
     if request == socket.assigns.health.request do
@@ -575,7 +937,10 @@ defmodule BeamdashWeb.MemoryLive do
               <td>
                 <button
                   type="button"
-                  class={["mem-trend-toggle", !MapSet.member?(@visible_trends, key) && "muted-trend"]}
+                  class={[
+                    "mem-trend-toggle",
+                    !MapSet.member?(@visible_trends, key) && "muted-trend"
+                  ]}
                   phx-click="toggle_trend"
                   phx-value-kind={key}
                   aria-pressed={to_string(MapSet.member?(@visible_trends, key))}
@@ -627,8 +992,6 @@ defmodule BeamdashWeb.MemoryLive do
           </div>
         </div>
 
-        <.forecast forecast={@forecast} />
-
         <div :if={BeamdashWeb.JevSection.show?(@jev_enabled)} class="jev-card">
           <BeamdashWeb.JevSection.section
             id="jev-memory"
@@ -655,144 +1018,181 @@ defmodule BeamdashWeb.MemoryLive do
           </p>
         </div>
 
-        <h2 class="mem-h2">Look for a leak</h2>
-        <p class="muted small recon-status">{recon_text(@recon)}</p>
-
-        <nav class="seg mem-tabs" role="tablist">
+        <nav class="seg mem-pages" role="tablist" aria-label="Memory pages">
           <button
-            :for={
-              {tab, label, part} <-
-                [
-                  processes: {"Processes", :processes},
-                  binary: {"Binaries", :binary},
-                  ets: {"ETS tables", :ets}
-                ]
-                |> Enum.map(fn {t, {l, p}} -> {t, l, p} end)
-            }
+            :for={{page, label} <- [leak: "Look for a leak", forecast: "Forecast"]}
             type="button"
             role="tab"
-            aria-selected={to_string(@tab == tab)}
-            class={["seg-btn", @tab == tab && "active"]}
-            phx-click="tab"
-            phx-value-tab={tab}
+            aria-selected={to_string(@page == page)}
+            class={["seg-btn", @page == page && "active"]}
+            phx-click="page"
+            phx-value-page={page}
           >
-            <span class={["mem-swatch", "mem-#{part}"]}></span>{label}
-            <span class="muted">{Format.bytes(Map.fetch!(@snap.memory, part))}</span>
+            {label}
           </button>
         </nav>
 
-        <div class={["proc-layout", "memory-layout", @inspect && "with-panel"]}>
-          <div class="proc-table">
-            <div :if={@tab == :processes} class="mem-panel">
-              <p class="guide">
-                Memory held by processes: usually messages piling up in a mailbox nobody reads,
-                or a process whose state keeps growing. Find the biggest ones, then look at what
-                they are doing and holding.
-              </p>
-              <form phx-change="attr" class="top-form">
-                <label class="muted small">
-                  Top
-                  <select name="n">
-                    <option :for={n <- [5, 10, 20, 50]} value={n} selected={n == @top_n}>{n}</option>
-                  </select>
-                  by
-                  <select name="attr">
-                    <option
-                      :for={{a, label} <- @attrs}
-                      :if={a != :binary_memory}
-                      value={a}
-                      selected={a == @attr}
-                    >
-                      {label}
-                    </option>
-                  </select>
-                </label>
-                <button type="button" class="secondary small-btn" phx-click="refresh_top">Refresh</button>
-                <span :if={@top} class="muted small mono">{source_call(@top)}</span>
-              </form>
-              <.top_table :if={@top} top={@top} prev={@top_prev} syntax={@syntax} />
-            </div>
+        <div :if={@page == :forecast}>
+          <.forecast forecast={@forecast} />
+        </div>
 
-            <div :if={@tab == :binary} class="mem-panel">
-              <p class="guide">
-                Binaries over 64 bytes live in a shared heap and are freed only when no process
-                refers to them. A process that keeps a small slice of a big binary keeps all of it;
-                a process that rarely collects keeps binaries it has finished with.
-              </p>
-              <div id="gc-action" class="mem-action">
-                <button
-                  class={["secondary", @gc && "mem-action-selected"]}
-                  phx-click="gc_all"
-                  phx-disable-with="Collecting…"
-                >
-                  Garbage collect every process
-                </button>
-                <section :if={@gc} class="mem-result" aria-labelledby="gc-result-heading">
-                  <h3 id="gc-result-heading" class="mem-h3">
-                    Garbage collect every process — result
+        <div :if={@page == :leak}>
+          <h2 class="mem-h2">Look for a leak</h2>
+          <p class="muted small recon-status">{recon_text(@recon)}</p>
+
+          <nav class="seg mem-tabs" role="tablist">
+            <button
+              :for={
+                {tab, label, part} <-
+                  [
+                    processes: {"Processes", :processes},
+                    binary: {"Binaries", :binary},
+                    ets: {"ETS tables", :ets}
+                  ]
+                  |> Enum.map(fn {t, {l, p}} -> {t, l, p} end)
+              }
+              type="button"
+              role="tab"
+              aria-selected={to_string(@tab == tab)}
+              class={["seg-btn", @tab == tab && "active"]}
+              phx-click="tab"
+              phx-value-tab={tab}
+            >
+              <span class={["mem-swatch", "mem-#{part}"]}></span>{label}
+              <span class="muted">{Format.bytes(Map.fetch!(@snap.memory, part))}</span>
+            </button>
+          </nav>
+
+          <div class={["proc-layout", "memory-layout", (@inspect || @ets_browse) && "with-panel"]}>
+            <div class="proc-table">
+              <div :if={@tab == :processes} class="mem-panel">
+                <p class="guide">
+                  Memory held by processes: usually messages piling up in a mailbox nobody reads,
+                  or a process whose state keeps growing. Find the biggest ones, then look at what
+                  they are doing and holding.
+                </p>
+                <form phx-change="attr" class="top-form">
+                  <label class="muted small">
+                    Top
+                    <select name="n">
+                      <option :for={n <- [5, 10, 20, 50]} value={n} selected={n == @top_n}>
+                        {n}
+                      </option>
+                    </select>
+                    by
+                    <select name="attr">
+                      <option
+                        :for={{a, label} <- @attrs}
+                        :if={a != :binary_memory}
+                        value={a}
+                        selected={a == @attr}
+                      >
+                        {label}
+                      </option>
+                    </select>
+                  </label>
+                  <button type="button" class="secondary small-btn" phx-click="refresh_top">Refresh</button>
+                  <span :if={@top} class="muted small mono">{source_call(@top)}</span>
+                </form>
+                <.top_table :if={@top} top={@top} prev={@top_prev} syntax={@syntax} />
+              </div>
+
+              <div :if={@tab == :binary} class="mem-panel">
+                <p class="guide">
+                  Binaries over 64 bytes live in a shared heap and are freed only when no process
+                  refers to them. A process that keeps a small slice of a big binary keeps all of it;
+                  a process that rarely collects keeps binaries it has finished with.
+                </p>
+                <div id="gc-action" class="mem-action">
+                  <button
+                    class={["secondary", @gc && "mem-action-selected"]}
+                    phx-click="gc_all"
+                    phx-disable-with="Collecting…"
+                  >
+                    Garbage collect every process
+                  </button>
+                  <section :if={@gc} class="mem-result" aria-labelledby="gc-result-heading">
+                    <h3 id="gc-result-heading" class="mem-h3">
+                      Garbage collect every process — result
+                    </h3>
+                    <p class="muted small">
+                      Memory before and after the collection started by this button.
+                    </p>
+                    <.gc_result gc={@gc} />
+                  </section>
+                </div>
+                <div id="binary-leak-action" class="mem-action">
+                  <button
+                    class={["secondary", @leaks && "mem-action-selected"]}
+                    phx-click="bin_leak"
+                    phx-disable-with="Collecting…"
+                  >
+                    Find binary leaks <span class="mono small">recon:bin_leak({@top_n})</span>
+                  </button>
+                  <section
+                    :if={@leaks}
+                    class="mem-result leaks"
+                    aria-labelledby="binary-leaks-heading"
+                  >
+                    <h3 id="binary-leaks-heading" class="mem-h3">Find binary leaks — result</h3>
+                    <p class={["small", leak_class(@leaks)]}>
+                      Binary memory {Format.bytes(@leaks.binary_before)} → {Format.bytes(
+                        @leaks.binary_after
+                      )} ({drop_text(
+                        @leaks.binary_before,
+                        @leaks.binary_after
+                      )}) after collecting every process.
+                      Processes that released the most binary references <span class="muted">({if @leaks.source == :recon, do: "recon:bin_leak", else: "built-in"})</span>:
+                    </p>
+                    <.top_table
+                      top={%{attr: :binary_refs, source: @leaks.source, entries: @leaks.processes}}
+                      prev={%{}}
+                      syntax={@syntax}
+                    />
+                  </section>
+                </div>
+                <section class="mem-result" aria-labelledby="binary-current-heading">
+                  <h3 id="binary-current-heading" class="mem-h3">
+                    Holding the most binary memory now
                   </h3>
                   <p class="muted small">
-                    Memory before and after the collection started by this button.
+                    Current snapshot, shown independently of the actions above.
                   </p>
-                  <.gc_result gc={@gc} />
+                  <.top_table :if={@top} top={@top} prev={@top_prev} syntax={@syntax} />
+                  <p class="guide small">
+                    The fix for a slice that keeps a big binary alive: copy it out before keeping it,
+                    <code>binary:copy/1</code>
+                    (Elixir <code>:binary.copy/1</code>).
+                  </p>
                 </section>
               </div>
-              <div id="binary-leak-action" class="mem-action">
-                <button
-                  class={["secondary", @leaks && "mem-action-selected"]}
-                  phx-click="bin_leak"
-                  phx-disable-with="Collecting…"
-                >
-                  Find binary leaks <span class="mono small">recon:bin_leak({@top_n})</span>
-                </button>
-                <section :if={@leaks} class="mem-result leaks" aria-labelledby="binary-leaks-heading">
-                  <h3 id="binary-leaks-heading" class="mem-h3">Find binary leaks — result</h3>
-                  <p class={["small", leak_class(@leaks)]}>
-                    Binary memory {Format.bytes(@leaks.binary_before)} → {Format.bytes(
-                      @leaks.binary_after
-                    )} ({drop_text(
-                      @leaks.binary_before,
-                      @leaks.binary_after
-                    )}) after collecting every process.
-                    Processes that released the most binary references <span class="muted">({if @leaks.source == :recon, do: "recon:bin_leak", else: "built-in"})</span>:
-                  </p>
-                  <.top_table
-                    top={%{attr: :binary_refs, source: @leaks.source, entries: @leaks.processes}}
-                    prev={%{}}
-                    syntax={@syntax}
-                  />
-                </section>
-              </div>
-              <section class="mem-result" aria-labelledby="binary-current-heading">
-                <h3 id="binary-current-heading" class="mem-h3">Holding the most binary memory now</h3>
-                <p class="muted small">Current snapshot, shown independently of the actions above.</p>
-                <.top_table :if={@top} top={@top} prev={@top_prev} syntax={@syntax} />
-                <p class="guide small">
-                  The fix for a slice that keeps a big binary alive: copy it out before keeping it,
-                  <code>binary:copy/1</code>
-                  (Elixir <code>:binary.copy/1</code>).
-                </p>
-              </section>
-            </div>
 
-            <div :if={@tab == :ets} class="mem-panel">
-              <p class="guide">
-                ETS tables are never garbage collected: rows stay until deleted or the owner dies.
-                A table that keeps growing is the leak. Growth is counted from when you opened this
-                page (or reset it); the list refreshes every 5 s.
-              </p>
-              <.ets_table
-                :if={@ets}
-                tables={@ets}
-                base={@ets_base}
-                sort={@ets_sort}
-                filter={@ets_filter}
+              <div :if={@tab == :ets} class="mem-panel">
+                <p class="guide">
+                  ETS tables are never garbage collected: rows stay until deleted or the owner dies.
+                  A table that keeps growing is the leak. Growth is counted from when you opened this
+                  page (or reset it); the list refreshes every 5 s.
+                </p>
+                <.ets_table
+                  :if={@ets}
+                  tables={@ets}
+                  base={@ets_base}
+                  sort={@ets_sort}
+                  filter={@ets_filter}
+                  syntax={@syntax}
+                />
+              </div>
+            </div>
+            <div :if={@inspect} class="proc-side memory-inspect-side">
+              <.inspect_panel p={@inspect} syntax={@syntax} />
+            </div>
+            <div :if={@ets_browse} class="proc-side memory-inspect-side">
+              <.ets_browse
+                browse={@ets_browse}
+                table={Enum.find(@ets || [], &(&1.id == @ets_browse.table))}
                 syntax={@syntax}
               />
             </div>
-          </div>
-          <div :if={@inspect} class="proc-side memory-inspect-side">
-            <.inspect_panel p={@inspect} syntax={@syntax} />
           </div>
         </div>
       </section>
@@ -1195,6 +1595,7 @@ defmodule BeamdashWeb.MemoryLive do
           <th class="num sortable" phx-click="ets_sort" phx-value-col="growth">
             Growth{arrow(@sort, :growth)}
           </th>
+          <th></th>
         </tr>
       </thead>
       <tbody>
@@ -1212,9 +1613,223 @@ defmodule BeamdashWeb.MemoryLive do
               ({if t.rows_growth > 0, do: "+"}{Format.number(t.rows_growth)} rows)
             </span>
           </td>
+          <td>
+            <button class="secondary small-btn" phx-click="ets_open" phx-value-id={inspect(t.id)}>
+              Browse
+            </button>
+          </td>
         </tr>
       </tbody>
     </table>
+    """
+  end
+
+  attr :browse, :map, required: true
+  attr :table, :map, default: nil
+  attr :syntax, :atom, required: true
+
+  defp ets_browse(assigns) do
+    {rows, stop, keypos, error} =
+      case assigns.browse.result do
+        {:ok, %{rows: rows, stop: stop, keypos: keypos}} -> {rows, stop, keypos, nil}
+        {:error, msg} -> {[], nil, nil, msg}
+        nil -> {[], nil, nil, nil}
+      end
+
+    {example_keys, example_specs, examples_error} =
+      case assigns.browse.examples do
+        {:ok, examples} -> {examples.keys, examples.specs, nil}
+        {:error, msg} -> {[], [], msg}
+        nil -> {[], [], nil}
+      end
+
+    assigns =
+      assign(assigns,
+        rows: rows,
+        segments:
+          if(assigns.browse.view == :table,
+            do: [],
+            else: rows_segments(rows, assigns.syntax, assigns.browse.view)
+          ),
+        pairs:
+          if(assigns.browse.view == :table,
+            do: key_value_rows(rows, keypos, assigns.syntax),
+            else: []
+          ),
+        error: error,
+        summary: browse_summary(stop, length(rows)),
+        limit: "Reads at most #{assigns.browse.rows} rows, for #{@browse_ms} ms per search.",
+        max_rows: @browse_max_rows,
+        example_keys: example_keys,
+        example_specs: example_specs,
+        examples_error: examples_error,
+        examples_loading: is_nil(assigns.browse.examples)
+      )
+
+    ~H"""
+    <aside
+      class="proc-panel memory-inspect ets-browse"
+      id="ets-browse-panel"
+      aria-label={"Rows of #{@browse.label}"}
+    >
+      <div
+        id="ets-browse-resizer"
+        class="resizer resizer-x"
+        phx-hook="Resizer"
+        phx-update="ignore"
+        data-var="--panel-w"
+        data-axis="x"
+        data-target="#ets-browse-panel"
+        data-container=".memory-layout"
+        data-keep="320"
+        data-min="300"
+        data-max="1400"
+        role="separator"
+        aria-orientation="vertical"
+        aria-label="Resize the table panel"
+        tabindex="0"
+        title="Drag to resize · double-click to reset"
+      >
+      </div>
+      <div class="inspect-head">
+        <h3 class="mono">{@browse.label}</h3>
+        <span class="muted small">{@limit}</span>
+        <button class="secondary small-btn" phx-click="ets_close" aria-label="Close">×</button>
+      </div>
+      <p :if={@table} class="muted small ets-details">
+        {@table.type}, {@table.protection} · owner {owner_text(@table, @syntax)} · {Format.number(
+          @table.size
+        )} rows · {Format.bytes(@table.memory)}
+      </p>
+      <p :if={@examples_loading} class="muted small">Reading the table…</p>
+      <p :if={@examples_error} class="error small" role="alert">{@examples_error}</p>
+      <form phx-submit="ets_run" class="ets-browse-form">
+        <div class="ets-group">
+          <h4>Key lookup <span class="muted mono small">:ets.lookup/2</span></h4>
+          <div :if={@example_keys != []} class="ets-samples">
+            <span class="muted small">Sample keys</span>
+            <button
+              :for={{text, i} <- Enum.with_index(@example_keys)}
+              type="button"
+              class="ets-sample"
+              phx-click="ets_pick"
+              phx-value-kind="key"
+              phx-value-index={i}
+              title="Use this key"
+            >
+              <code class="mono small">{text}</code>
+            </button>
+          </div>
+          <div class="ets-row">
+            <label class="ets-field">
+              Key
+              <input
+                type="text"
+                name="key"
+                id={"ets-key-#{@browse.key_pick}"}
+                value={@browse.key}
+                placeholder="42 or {user, 7}"
+                autocomplete="off"
+                class="mono"
+              />
+            </label>
+            <button type="submit" name="mode" value="lookup" class="secondary ets-action">
+              Lookup key
+            </button>
+          </div>
+        </div>
+        <div class="ets-group">
+          <h4>Search <span class="muted mono small">:ets.select/3</span></h4>
+          <div :if={@example_specs != []} class="ets-samples">
+            <span class="muted small">Sample match specs</span>
+            <button
+              :for={{{text, description}, i} <- Enum.with_index(@example_specs)}
+              type="button"
+              class="ets-sample"
+              phx-click="ets_pick"
+              phx-value-kind="spec"
+              phx-value-index={i}
+              title="Use this match spec"
+            >
+              <code class="mono small">{text}</code>
+              <span class="muted small">{description}</span>
+            </button>
+          </div>
+          <label>
+            Match spec <textarea
+              name="spec"
+              id={"ets-spec-#{@browse.spec_pick}"}
+              rows="3"
+              placeholder="[{{'$1', '$2'}, [{'>', '$1', 10}], ['$_']}]"
+              class="mono"
+            >{@browse.spec}</textarea>
+          </label>
+          <div class="ets-row">
+            <label class="ets-field">
+              Rows
+              <input
+                type="number"
+                name="rows"
+                min="1"
+                max={@max_rows}
+                value={@browse.rows}
+              />
+            </label>
+            <button type="submit" name="mode" value="select" class="secondary ets-action">
+              Search
+            </button>
+          </div>
+        </div>
+      </form>
+      <p :if={@error} class="error small" role="alert">{@error}</p>
+      <p :if={@summary} class="muted small">{@summary}</p>
+      <div :if={@rows != []}>
+        <nav class="seg ets-view" role="tablist" aria-label="Output format">
+          <button
+            :for={{view, label} <- [raw: "Raw", pretty: "Pretty", table: "Table"]}
+            type="button"
+            role="tab"
+            class={["seg-btn", @browse.view == view && "active"]}
+            aria-selected={to_string(@browse.view == view)}
+            phx-click="ets_view"
+            phx-value-view={view}
+          >
+            {label}
+          </button>
+        </nav>
+        <.pretty_text :if={@browse.view != :table} segments={@segments} />
+        <table :if={@browse.view == :table} class="ets-kv">
+          <thead>
+            <tr>
+              <th>Key</th>
+              <th>Value</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr :for={{key, value} <- @pairs}>
+              <td class="ets-rows small"><.spans segments={key} /></td>
+              <td class="ets-rows small"><.spans segments={value} /></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </aside>
+    """
+  end
+
+  attr :segments, :list, required: true
+
+  defp pretty_text(assigns) do
+    ~H"""
+    <pre class="small ets-rows"><.spans segments={@segments} /></pre>
+    """
+  end
+
+  attr :segments, :list, required: true
+
+  defp spans(assigns) do
+    ~H"""
+    <span :for={{class, text} <- @segments} class={class}>{text}</span>
     """
   end
 

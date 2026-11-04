@@ -31,6 +31,7 @@ defmodule Beamdash.MemoryTest do
       holder() -> receive {bin, _} -> holder() end.
       owner() ->
           ets:new(leaky_table, [named_table, public]),
+          ets:new(private_table, [named_table, private]),
           [ets:insert(leaky_table, {I, lists:duplicate(20, I)}) || I <- lists:seq(1, 500)],
           receive stop -> ok end.
       """)
@@ -100,6 +101,64 @@ defmodule Beamdash.MemoryTest do
     t = Enum.find(tables, &(&1.name == :leaky_table))
     assert %{named: true, size: 500, owner_name: :table_owner, type: :set} = t
     assert t.memory > 500 * 20
+  end
+
+  test "browse: rows matching a match spec, at most the limit", ctx do
+    spec = [{{:"$1", :_}, [{:>, :"$1", 490}], [:"$_"]}]
+
+    assert {:ok, %{rows: rows, stop: :complete}} =
+             Memory.ets_browse(ctx.node, :leaky_table, spec, 100, 2_000)
+
+    assert rows |> Enum.map(&elem(&1, 0)) |> Enum.sort() == Enum.to_list(491..500)
+
+    all = [{:_, [], [:"$_"]}]
+
+    assert {:ok, %{rows: rows, stop: :rows}} =
+             Memory.ets_browse(ctx.node, :leaky_table, all, 10, 2_000)
+
+    assert length(rows) == 10
+  end
+
+  test "browse: a zero time budget stops the scan early", ctx do
+    all = [{:_, [], [:"$_"]}]
+    assert {:ok, %{stop: :time}} = Memory.ets_browse(ctx.node, :leaky_table, all, 1_000, 0)
+  end
+
+  test "lookup: the rows under one key", ctx do
+    assert {:ok, %{rows: [{42, _}], stop: :complete}} =
+             Memory.ets_lookup(ctx.node, :leaky_table, 42, 10)
+
+    assert {:ok, %{rows: [], stop: :complete}} =
+             Memory.ets_lookup(ctx.node, :leaky_table, 9_999, 10)
+  end
+
+  test "examples: some keys of a table, its key position and row size", ctx do
+    assert {:ok, %{keys: keys, keypos: 1, arity: 2}} =
+             Memory.ets_examples(ctx.node, :leaky_table, 3, 2_000)
+
+    assert length(keys) == 3 and Enum.all?(keys, &is_integer/1)
+    assert {:ok, {:error, :no_table}} = Memory.ets_examples(ctx.node, :no_such_table, 3, 2_000)
+  end
+
+  test "browse refuses a missing or private table, and a bad match spec", ctx do
+    all = [{:_, [], [:"$_"]}]
+
+    assert {:ok, {:error, :no_table}} =
+             Memory.ets_browse(ctx.node, :no_such_table, all, 10, 2_000)
+
+    assert {:ok, {:error, :private}} = Memory.ets_browse(ctx.node, :private_table, all, 10, 2_000)
+
+    assert {:ok, {:error, :badarg}} =
+             Memory.ets_browse(ctx.node, :leaky_table, [:not_a_spec], 10, 2_000)
+
+    assert {:ok, {:error, :no_table}} = Memory.ets_lookup(ctx.node, :no_such_table, 1, 10)
+  end
+
+  test "parse_term reads a typed Erlang term and refuses the rest" do
+    assert {:ok, {:user, 7}} = Memory.parse_term("{user, 7}")
+    assert {:ok, [{{:"$1", :_}, [], [:"$_"]}]} = Memory.parse_term("[{{'$1', '_'}, [], ['$_']}]")
+    assert {:error, _} = Memory.parse_term("1 +")
+    assert {:error, _} = Memory.parse_term("")
   end
 
   test "process state: stack, and sys:get_status on request", ctx do
