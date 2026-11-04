@@ -82,46 +82,23 @@ defmodule Beamdash.SysTracer do
   def handle_call({:enable, _pid}, _from, %{node: nil} = state),
     do: {:reply, {:error, :not_connected}, state}
 
-  def handle_call({:enable, pid}, _from, state) do
-    case Target.rpc(state.node, :beamdash_agent, :sys_trace, [pid, true, self()], @rpc_timeout) do
-      {:ok, :ok} ->
-        entry = Map.get(state.traced, pid, new_entry())
-        state = put_in(state.traced[pid], %{entry | exited: nil})
-        notify(state, pid, :enabled)
-        {:reply, :ok, state}
-
-      {:ok, {:error, reason}} ->
-        {:reply, {:error, reason}, state}
-
-      {:error, reason} ->
-        {:reply, {:error, reason}, state}
-    end
+  def handle_call({:enable, pid}, from, state) do
+    sys_async(state, from, pid, true)
+    {:noreply, state}
   end
 
-  def handle_call({:disable, pid}, _from, state) do
-    result =
-      if state.node do
-        case Target.rpc(
-               state.node,
-               :beamdash_agent,
-               :sys_trace,
-               [pid, false, self()],
-               @rpc_timeout
-             ) do
-          {:ok, :ok} -> :ok
-          {:ok, {:error, :noproc}} -> :ok
-          {:ok, {:error, reason}} -> {:error, reason}
-          {:error, reason} -> {:error, reason}
-        end
-      else
-        :ok
-      end
-
+  def handle_call({:disable, pid}, from, state) do
     # Forget it either way: on a timeout the agent switches tracing off as
     # soon as the process gets to the request.
     state = %{state | traced: Map.delete(state.traced, pid)}
     notify(state, pid, :disabled)
-    {:reply, result, state}
+
+    if state.node do
+      sys_async(state, from, pid, false)
+      {:noreply, state}
+    else
+      {:reply, :ok, state}
+    end
   end
 
   def handle_call(:traced, _from, state), do: {:reply, Map.keys(state.traced), state}
@@ -228,9 +205,51 @@ defmodule Beamdash.SysTracer do
   def handle_info({:DOWN, ref, :process, _pid, _reason}, state),
     do: {:noreply, %{state | subscribers: Map.delete(state.subscribers, ref)}}
 
+  def handle_info({:sys_done, from, pid, true, result}, state) do
+    case sys_result(result) do
+      :ok ->
+        entry = Map.get(state.traced, pid, new_entry())
+        state = put_in(state.traced[pid], %{entry | exited: nil})
+        notify(state, pid, :enabled)
+        GenServer.reply(from, :ok)
+        {:noreply, state}
+
+      error ->
+        GenServer.reply(from, error)
+        {:noreply, state}
+    end
+  end
+
+  def handle_info({:sys_done, from, _pid, false, result}, state) do
+    reply =
+      case sys_result(result) do
+        {:error, :noproc} -> :ok
+        other -> other
+      end
+
+    GenServer.reply(from, reply)
+    {:noreply, state}
+  end
+
   ## Helpers
 
   defp new_entry, do: %{events: :queue.new(), count: 0, dropped: 0, exited: nil}
+
+  # Outside this process: a target process slow to answer sys requests must
+  # not hold up the other calls here. The agent's events go to this process.
+  defp sys_async(state, from, pid, on?) do
+    server = self()
+
+    spawn(fn ->
+      result =
+        Target.rpc(state.node, :beamdash_agent, :sys_trace, [pid, on?, server], @rpc_timeout)
+
+      send(server, {:sys_done, from, pid, on?, result})
+    end)
+  end
+
+  defp sys_result({:ok, result}), do: result
+  defp sys_result({:error, reason}), do: {:error, reason}
 
   defp push(%{events: q, count: n} = e, ev) when n >= @max_events,
     do: %{e | events: :queue.in(ev, :queue.drop(q))}

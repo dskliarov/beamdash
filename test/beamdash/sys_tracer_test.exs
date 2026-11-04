@@ -142,4 +142,30 @@ defmodule Beamdash.SysTracerTest do
     assert {:error, :timeout} = SysTracer.enable(pid, ctx.sys)
     assert [] = SysTracer.traced(ctx.sys)
   end
+
+  test "a slow sys:trace does not hold up other calls to the tracer", ctx do
+    :ok =
+      Fixture.load_module(ctx.node, :fixture_slow, """
+      -module(fixture_slow).
+      -behaviour(gen_server).
+      -export([init/1, handle_call/3, handle_cast/2]).
+      init([]) -> {ok, nil}.
+      handle_call({sleep, Ms}, _From, S) -> timer:sleep(Ms), {reply, ok, S}.
+      handle_cast(_, S) -> {noreply, S}.
+      """)
+
+    {:ok, pid} = :erpc.call(ctx.node, :gen_server, :start, [:fixture_slow, [], []])
+    busy = Task.async(fn -> :erpc.call(ctx.node, :gen_server, :call, [pid, {:sleep, 3_000}]) end)
+    Process.sleep(200)
+
+    enabling = Task.async(fn -> SysTracer.enable(pid, ctx.sys) end)
+    Process.sleep(200)
+
+    {micros, traced} = :timer.tc(fn -> SysTracer.traced(ctx.sys) end)
+    assert traced == []
+    assert micros < 1_000_000
+
+    assert :ok = Task.await(busy, 10_000)
+    assert :ok = Task.await(enabling, 10_000)
+  end
 end

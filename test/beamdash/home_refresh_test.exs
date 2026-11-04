@@ -81,4 +81,71 @@ defmodule Beamdash.HomeRefreshTest do
     refute socket.assigns.refreshing?
     assert socket.assigns.procs == []
   end
+
+  test "a sys:trace click is pending at once, and a second click starts nothing" do
+    me = self()
+
+    socket =
+      Phoenix.Component.assign(%{connected_socket() | transport_pid: self()},
+        selected: me,
+        sys_traced: MapSet.new(),
+        sys_pending: nil
+      )
+
+    {:noreply, socket} = HomeLive.handle_event("sys_trace", %{}, socket)
+    assert socket.assigns.sys_pending == {me, :enable}
+    assert socket.assigns.dock_active == {:trace, me}
+
+    assert {:noreply, ^socket} = HomeLive.handle_event("sys_trace", %{}, socket)
+  end
+
+  test "a sys:trace click on a traced process is a switch off, and opens no panel" do
+    me = self()
+
+    socket =
+      Phoenix.Component.assign(%{connected_socket() | transport_pid: self()},
+        selected: me,
+        sys_traced: MapSet.new([me]),
+        sys_pending: nil,
+        dock_active: nil
+      )
+
+    {:noreply, socket} = HomeLive.handle_event("sys_trace", %{}, socket)
+    assert socket.assigns.sys_pending == {me, :disable}
+    assert socket.assigns.dock_active == nil
+  end
+
+  test "a failed sys:trace click shows its error and clears the pending flag" do
+    me = self()
+
+    socket =
+      Phoenix.Component.assign(connected_socket(),
+        selected: me,
+        sys_pending: {me, :enable},
+        sys_error: nil
+      )
+
+    {:noreply, socket} =
+      HomeLive.handle_async({:sys_trace, me}, {:ok, {false, {:error, :timeout}}}, socket)
+
+    assert socket.assigns.sys_pending == nil
+    assert socket.assigns.sys_error
+  end
+
+  test "a sys:trace result for a process no longer selected is not shown" do
+    me = self()
+
+    socket =
+      Phoenix.Component.assign(connected_socket(),
+        selected: make_ref(),
+        sys_pending: {me, :enable},
+        sys_error: nil
+      )
+
+    {:noreply, socket} =
+      HomeLive.handle_async({:sys_trace, me}, {:ok, {false, {:error, :timeout}}}, socket)
+
+    assert socket.assigns.sys_pending == nil
+    assert socket.assigns.sys_error == nil
+  end
 end

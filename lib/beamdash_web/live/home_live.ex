@@ -90,6 +90,7 @@ defmodule BeamdashWeb.HomeLive do
         message_limit: @message_limit,
         sys_traced: MapSet.new(),
         sys_error: nil,
+        sys_pending: nil,
         dock_collapsed: false,
         # {kind, pid} of the maximized dock panel
         dock_active: nil,
@@ -320,16 +321,26 @@ defmodule BeamdashWeb.HomeLive do
        )}
 
   # sys:trace(Pid, true | false) on the selected process.
-  def handle_event("sys_trace", _params, %{assigns: %{selected: pid}} = socket)
+  # The target can take seconds to answer sys requests, so the toggle runs in a task
+  # and its panel opens at once, saying what is being done.
+  def handle_event("sys_trace", _params, %{assigns: %{selected: pid, sys_pending: nil}} = socket)
       when is_pid(pid) do
     on? = MapSet.member?(socket.assigns.sys_traced, pid)
-    result = if on?, do: SysTracer.disable(pid), else: SysTracer.enable(pid)
 
-    case result do
-      :ok -> {:noreply, assign(socket, sys_error: nil)}
-      {:error, reason} -> {:noreply, assign(socket, sys_error: sys_error(reason, on?))}
-    end
+    {action, toggle} =
+      if on?, do: {:disable, &SysTracer.disable/1}, else: {:enable, &SysTracer.enable/1}
+
+    socket = assign(socket, sys_pending: {pid, action})
+
+    socket =
+      if action == :enable,
+        do: assign(socket, dock_active: {:trace, pid}, dock_collapsed: false),
+        else: socket
+
+    {:noreply, start_async(socket, {:sys_trace, pid}, fn -> {on?, toggle.(pid)} end)}
   end
+
+  def handle_event("sys_trace", _params, socket), do: {:noreply, socket}
 
   ## Dock: sys:trace, state and supervisor-tree panels
 
@@ -559,6 +570,23 @@ defmodule BeamdashWeb.HomeLive do
   end
 
   def handle_async(:detail, _result, socket), do: {:noreply, assign(socket, detail_busy: false)}
+
+  def handle_async({:sys_trace, pid}, result, socket) do
+    socket = assign(socket, sys_pending: nil)
+    traced? = MapSet.member?(socket.assigns.sys_traced, pid)
+
+    error =
+      case result do
+        {:ok, {_on?, :ok}} -> nil
+        {:ok, {on?, {:error, reason}}} -> sys_error(reason, on?)
+        {:exit, {:timeout, _}} -> sys_error(:timeout, traced?)
+        {:exit, reason} -> sys_error(reason, traced?)
+      end
+
+    if socket.assigns.selected == pid,
+      do: {:noreply, assign(socket, sys_error: error)},
+      else: {:noreply, socket}
+  end
 
   def handle_async({:triage, _} = request, result, socket) do
     if request == socket.assigns.triage.request do
@@ -903,7 +931,7 @@ defmodule BeamdashWeb.HomeLive do
       )
 
     dock_panels =
-      dock_panels(assigns.procs, assigns.sys_traced, assigns.dock_extra, assigns.syntax)
+      dock_panels(assigns.procs, dock_traced(assigns), assigns.dock_extra, assigns.syntax)
 
     assigns =
       assign(assigns,
@@ -1220,6 +1248,7 @@ defmodule BeamdashWeb.HomeLive do
               sys_traced={MapSet.member?(@sys_traced, @selected)}
               names={proc_names(@procs)}
               sys_error={@sys_error}
+              sys_pending={BeamdashWeb.SysDock.pending(@sys_pending, @selected)}
               flag={BeamdashWeb.JevSection.show?(@jev_enabled) && flag(@triage, @selected)}
               jev={
                 %{
@@ -1241,6 +1270,7 @@ defmodule BeamdashWeb.HomeLive do
         panels={@dock_panels}
         active={@dock_active_pid}
         collapsed={@dock_collapsed}
+        pending={@sys_pending}
         syntax={@syntax}
       />
     </main>
@@ -1288,6 +1318,10 @@ defmodule BeamdashWeb.HomeLive do
 
     socket
   end
+
+  # The traced processes, plus one whose sys:trace is being switched on or off.
+  defp dock_traced(%{sys_traced: traced, sys_pending: {pid, _}}), do: MapSet.put(traced, pid)
+  defp dock_traced(%{sys_traced: traced}), do: traced
 
   # The maximized panel: the chosen one while it is open, else the first.
   defp dock_active([], _chosen), do: nil
