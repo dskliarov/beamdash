@@ -467,6 +467,10 @@ defmodule BeamdashWeb.HomeLive do
     do: "The process did not answer within 5 s; tracing switches off as soon as it does."
 
   defp sys_error(:noproc, _), do: "The process has exited."
+
+  defp sys_error(:busy, _),
+    do: "sys:trace is still switching for this process. Try again in a moment."
+
   defp sys_error(reason, _), do: "sys:trace failed: #{Format.error(reason)}"
 
   @impl true

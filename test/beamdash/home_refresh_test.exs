@@ -132,6 +132,22 @@ defmodule Beamdash.HomeRefreshTest do
     assert socket.assigns.sys_error
   end
 
+  test "a sys:trace change refused as busy says to try again" do
+    me = self()
+
+    socket =
+      Phoenix.Component.assign(connected_socket(),
+        selected: me,
+        sys_pending: {me, :disable},
+        sys_error: nil
+      )
+
+    {:noreply, socket} =
+      HomeLive.handle_async({:sys_trace, me}, {:ok, {true, {:error, :busy}}}, socket)
+
+    assert socket.assigns.sys_error =~ "Try again"
+  end
+
   test "a sys:trace result for a process no longer selected is not shown" do
     me = self()
 
