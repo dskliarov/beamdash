@@ -73,7 +73,8 @@ defmodule Beamdash.MemoryRefreshTest do
   end
 
   test "a second binary leak search while one runs starts nothing" do
-    socket = Phoenix.Component.assign(connected_socket(), busy: :bin_leak)
+    socket =
+      Phoenix.Component.assign(%{connected_socket() | transport_pid: self()}, busy: :bin_leak)
 
     assert {:noreply, ^socket} = MemoryLive.handle_event("bin_leak", %{}, socket)
   end
