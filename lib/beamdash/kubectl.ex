@@ -548,12 +548,34 @@ defmodule Beamdash.Kubectl do
         {"kubectl not found on PATH", 127}
 
       kubectl ->
-        task = Task.async(fn -> System.cmd(kubectl, args, stderr_to_stdout: true) end)
+        port =
+          Port.open({:spawn_executable, kubectl}, [
+            :binary,
+            :exit_status,
+            :stderr_to_stdout,
+            args: Enum.map(args, &String.to_charlist/1)
+          ])
 
-        case Task.yield(task, timeout) || Task.shutdown(task, :brutal_kill) do
-          {:ok, result} -> result
-          _ -> {"kubectl did not answer within #{div(timeout, 1000)} s", 124}
+        case collect_output(port, System.monotonic_time(:millisecond) + timeout, []) do
+          {:ok, output, status} ->
+            {output, status}
+
+          :timeout ->
+            close_port_forward(port)
+            {"kubectl did not answer within #{div(timeout, 1000)} s", 124}
         end
+    end
+  end
+
+  defp collect_output(port, deadline, acc) do
+    receive do
+      {^port, {:data, data}} ->
+        collect_output(port, deadline, [acc | data])
+
+      {^port, {:exit_status, status}} ->
+        {:ok, IO.iodata_to_binary(acc), status}
+    after
+      max(deadline - System.monotonic_time(:millisecond), 0) -> :timeout
     end
   end
 

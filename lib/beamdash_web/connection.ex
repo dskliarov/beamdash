@@ -173,6 +173,7 @@ defmodule BeamdashWeb.Connection do
      socket
      |> update(
        kube_cluster: cluster,
+       kube_progress: nil,
        kube_namespace: "",
        kube_namespaces: [],
        kube_pods: nil,
@@ -391,6 +392,7 @@ defmodule BeamdashWeb.Connection do
       socket
       |> update(
         kube_namespaces: [],
+        kube_progress: nil,
         kube_pods: nil,
         kube_pods_listing: false,
         kube_restore_ref: nil,

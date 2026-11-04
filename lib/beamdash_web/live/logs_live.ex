@@ -196,10 +196,12 @@ defmodule BeamdashWeb.LogsLive do
     {:noreply, assign(socket, tree_open: toggle(tree_open(socket.assigns), id))}
   end
 
+  # One detail row is open at a time: the checks and parents below belong to it.
   defp event("tree_detail", %{"id" => id}, socket) do
-    detail = toggle(socket.assigns.tree_detail, id)
+    opening? = not MapSet.member?(socket.assigns.tree_detail, id)
+    detail = if opening?, do: MapSet.new([id]), else: toggle(socket.assigns.tree_detail, id)
     socket = assign(socket, tree_detail: detail)
-    {:noreply, if(MapSet.member?(detail, id), do: seed_parent(socket, id), else: socket)}
+    {:noreply, if(opening?, do: seed_parent(socket, id), else: socket)}
   end
 
   defp event("tree_check", %{"key" => key, "val" => value}, socket) do
@@ -1069,7 +1071,7 @@ defmodule BeamdashWeb.LogsLive do
         assign(socket, tree_parent: groups, tree_checked: checked)
 
       _ ->
-        assign(socket, tree_parent: [])
+        assign(socket, tree_parent: [], tree_checked: [])
     end
   end
 

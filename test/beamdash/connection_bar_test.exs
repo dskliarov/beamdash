@@ -485,6 +485,21 @@ defmodule Beamdash.ConnectionBarTest do
     assert_receive {:beamdash_kube_namespaces, ^new, _result}, 10_000
   end
 
+  test "picking another cluster clears a listing's progress line" do
+    fake_kubectl()
+    old = empty_kubeconfig()
+    new = empty_kubeconfig()
+
+    progress = %{label: "Listing pods…", command: "kubectl get pods", since: 0, elapsed: 1}
+
+    s =
+      on_cluster(old, %{method: :kubectl, kube_progress: progress, kube_restore_ref: make_ref()})
+
+    {:halt, s} = Connection.handle_event("select_kube_cluster", %{"cluster" => new}, s)
+    assert s.assigns.conn.kube_progress == nil
+    assert_receive {:beamdash_kube_namespaces, ^new, _result}, 10_000
+  end
+
   test "a freshly mounted bar offers no namespaces yet" do
     assert mounted_bar().assigns.conn.kube_namespaces == []
   end

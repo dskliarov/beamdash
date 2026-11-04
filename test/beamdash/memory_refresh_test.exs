@@ -80,4 +80,32 @@ defmodule Beamdash.MemoryRefreshTest do
 
     assert socket.assigns.busy == nil
   end
+
+  test "GC all is refused while not connected" do
+    socket = Phoenix.Component.assign(connected_socket(), status: :disconnected)
+
+    {:noreply, socket} = MemoryLive.handle_event("gc_all", %{}, socket)
+
+    assert socket.assigns.busy == nil
+  end
+
+  test "a disconnect forgets the reads and the GC all that were running" do
+    socket =
+      Phoenix.Component.assign(connected_socket(), busy: :gc, in_flight: MapSet.new([:snapshot]))
+
+    {:noreply, socket} =
+      MemoryLive.handle_info({:beamdash_target, {:disconnected, :fake@host}}, socket)
+
+    assert socket.assigns.busy == nil
+    assert socket.assigns.in_flight == MapSet.new()
+  end
+
+  test "connecting to another node clears a GC all still running on the old one" do
+    socket = Phoenix.Component.assign(connected_socket(), busy: :gc)
+
+    {:noreply, socket} =
+      MemoryLive.handle_info({:beamdash_target, {:connected, :other@host}}, socket)
+
+    assert socket.assigns.busy == nil
+  end
 end

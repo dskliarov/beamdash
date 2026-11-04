@@ -107,6 +107,15 @@ defmodule BeamdashWeb.MemoryLive do
     end
   end
 
+  # Stops the reads and actions still running against the previous node.
+  defp cancel_reads(socket) do
+    socket.assigns.in_flight
+    |> Enum.reduce(socket, &cancel_async(&2, {:memory, &1}))
+    |> cancel_async({:memory_action, :gc_all})
+    |> cancel_async({:memory_action, :bin_leak})
+    |> assign(in_flight: MapSet.new(), busy: nil)
+  end
+
   defp request_recon(socket), do: fetch(socket, :recon, &Memory.recon_status/1)
   defp request_snapshot(socket), do: fetch(socket, :snapshot, &Memory.snapshot/1)
   defp request_ets(socket), do: fetch(socket, :ets, &Memory.ets_tables/1)
@@ -289,10 +298,10 @@ defmodule BeamdashWeb.MemoryLive do
 
   def handle_event("refresh_top", _params, socket), do: {:noreply, request_top(socket)}
 
-  def handle_event("gc_all", _params, %{assigns: %{busy: :gc}} = socket), do: {:noreply, socket}
-
-  def handle_event("gc_all", _params, socket),
+  def handle_event("gc_all", _params, %{assigns: %{status: :connected, busy: nil}} = socket),
     do: {:noreply, socket |> assign(busy: :gc) |> action(:gc_all, &Memory.gc_all/1)}
+
+  def handle_event("gc_all", _params, socket), do: {:noreply, socket}
 
   def handle_event("bin_leak", _params, socket) do
     top_n = socket.assigns.top_n
@@ -470,19 +479,16 @@ defmodule BeamdashWeb.MemoryLive do
     do:
       {:noreply,
        socket
-       |> assign(
-         status: :connected,
-         node: node,
-         history: [],
-         trend_history: [],
-         in_flight: MapSet.new()
-       )
+       |> cancel_reads()
+       |> assign(status: :connected, node: node, history: [], trend_history: [])
        |> start()}
 
   def handle_info({:beamdash_target, {:disconnected, _}}, socket),
     do:
       {:noreply,
-       assign(socket,
+       socket
+       |> cancel_reads()
+       |> assign(
          status: :disconnected,
          snap: nil,
          top: nil,
