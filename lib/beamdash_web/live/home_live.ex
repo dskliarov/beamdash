@@ -1248,7 +1248,7 @@ defmodule BeamdashWeb.HomeLive do
               sys_traced={MapSet.member?(@sys_traced, @selected)}
               names={proc_names(@procs)}
               sys_error={@sys_error}
-              sys_pending={BeamdashWeb.SysDock.pending(@sys_pending, @selected)}
+              sys_pending={@sys_pending}
               flag={BeamdashWeb.JevSection.show?(@jev_enabled) && flag(@triage, @selected)}
               jev={
                 %{

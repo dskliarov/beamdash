@@ -143,7 +143,9 @@ defmodule Beamdash.SysTracerTest do
     assert [] = SysTracer.traced(ctx.sys)
   end
 
-  test "a slow sys:trace does not hold up other calls to the tracer", ctx do
+  # A gen_server that stays busy for `ms` before it answers anything, sys
+  # requests included. Returns its pid and the task holding its busy call.
+  defp busy_server(ctx, ms) do
     :ok =
       Fixture.load_module(ctx.node, :fixture_slow, """
       -module(fixture_slow).
@@ -155,9 +157,13 @@ defmodule Beamdash.SysTracerTest do
       """)
 
     {:ok, pid} = :erpc.call(ctx.node, :gen_server, :start, [:fixture_slow, [], []])
-    busy = Task.async(fn -> :erpc.call(ctx.node, :gen_server, :call, [pid, {:sleep, 3_000}]) end)
+    busy = Task.async(fn -> :erpc.call(ctx.node, :gen_server, :call, [pid, {:sleep, ms}]) end)
     Process.sleep(200)
+    {pid, busy}
+  end
 
+  test "a slow sys:trace does not hold up other calls to the tracer", ctx do
+    {pid, busy} = busy_server(ctx, 3_000)
     enabling = Task.async(fn -> SysTracer.enable(pid, ctx.sys) end)
     Process.sleep(200)
 
@@ -167,5 +173,30 @@ defmodule Beamdash.SysTracerTest do
 
     assert :ok = Task.await(busy, 10_000)
     assert :ok = Task.await(enabling, 10_000)
+  end
+
+  test "a change for a process still being switched is refused", ctx do
+    {pid, busy} = busy_server(ctx, 1_000)
+    enabling = Task.async(fn -> SysTracer.enable(pid, ctx.sys) end)
+    Process.sleep(200)
+
+    assert {:error, :busy} = SysTracer.disable(pid, ctx.sys)
+    assert {:error, :busy} = SysTracer.enable(pid, ctx.sys)
+
+    assert :ok = Task.await(busy, 10_000)
+    assert :ok = Task.await(enabling, 10_000)
+    assert [^pid] = SysTracer.traced(ctx.sys)
+  end
+
+  test "a connection change while sys:trace is answering leaves nothing traced", ctx do
+    {pid, busy} = busy_server(ctx, 1_000)
+    enabling = Task.async(fn -> SysTracer.enable(pid, ctx.sys) end)
+    Process.sleep(200)
+
+    send(ctx.sys, {:beamdash_target, {:disconnected, ctx.node}})
+
+    assert {:error, :not_connected} = Task.await(enabling, 10_000)
+    assert [] = SysTracer.traced(ctx.sys)
+    assert :ok = Task.await(busy, 10_000)
   end
 end

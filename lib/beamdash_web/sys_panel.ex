@@ -107,9 +107,12 @@ defmodule BeamdashWeb.SysPanel do
 
   def handle_event("stop", _params, socket) do
     # The page hears :disabled from SysTracer and drops this panel.
-    _ = SysTracer.disable(socket.assigns.pid)
-    {:noreply, socket}
+    pid = socket.assigns.pid
+    {:noreply, start_async(socket, :stop, fn -> SysTracer.disable(pid) end)}
   end
+
+  @impl true
+  def handle_async(:stop, _result, socket), do: {:noreply, socket}
 
   @impl true
   def render(assigns) do

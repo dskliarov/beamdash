@@ -146,4 +146,35 @@ defmodule Beamdash.ProcessDetailsTest do
     refute html =~ ~r/<dt>Links<\/dt>/
     Port.close(port)
   end
+
+  test "the sys:trace switch is disabled while any sys:trace change runs" do
+    detail =
+      Map.merge(Beamdash.Test.Fixture.gc_detail(), %{
+        reductions: 1,
+        links: [],
+        monitors: [],
+        monitored_by: [],
+        current_stacktrace: [],
+        trap_exit: false,
+        priority: :normal
+      })
+
+    switch = fn pending ->
+      html =
+        render_component(&ProcessDetails.panel/1,
+          details: detail,
+          history: [],
+          syntax: :erlang,
+          kind: :gen_server,
+          sys_pending: pending
+        )
+
+      [tag] = Regex.run(~r/<button[^>]*role="switch"[^>]*>/, html)
+      tag
+    end
+
+    refute switch.(nil) =~ "disabled"
+    assert switch.({self(), :enable}) =~ "disabled"
+    assert switch.({make_ref(), :disable}) =~ "disabled"
+  end
 end

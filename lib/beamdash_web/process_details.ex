@@ -19,7 +19,11 @@ defmodule BeamdashWeb.ProcessDetails do
   attr :kind, :atom, default: nil
   attr :sys_traced, :boolean, default: false
   attr :sys_error, :string, default: nil
-  attr :sys_pending, :any, default: nil, doc: ":enable | :disable while the switch is in progress"
+
+  attr :sys_pending, :any,
+    default: nil,
+    doc: "{pid, :enable | :disable} while a sys:trace change runs"
+
   attr :names, :map, default: %{}, doc: "pid => registered name, for labelling linked processes"
 
   attr :flag, :map,
