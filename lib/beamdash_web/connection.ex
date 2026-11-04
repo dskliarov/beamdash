@@ -188,6 +188,14 @@ defmodule BeamdashWeb.Connection do
      |> list_namespaces()}
   end
 
+  def handle_event(
+        "list_kube_pods",
+        _params,
+        %{assigns: %{conn: %{connecting: connecting}}} = socket
+      )
+      when connecting != nil,
+      do: {:halt, socket}
+
   def handle_event("list_kube_pods", %{"namespace" => namespace}, socket) do
     namespace = String.trim(namespace)
     cluster = socket.assigns.conn.kube_cluster
@@ -747,7 +755,8 @@ defmodule BeamdashWeb.Connection do
 
   defp apply_listed(socket, status, listed) do
     fields =
-      listed
+      %{pod: nil, containers: [], container: nil, binaries: [], binary: nil}
+      |> Map.merge(listed)
       |> Map.take([:pods, :pod, :containers, :container, :binaries, :binary])
       |> Map.new(fn {key, value} -> {:"kube_#{key}", value} end)
 

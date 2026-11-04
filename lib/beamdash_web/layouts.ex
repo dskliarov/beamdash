@@ -217,7 +217,7 @@ defmodule BeamdashWeb.Layouts do
                 type="submit"
                 class="secondary"
                 phx-disable-with="Listing…"
-                disabled={Map.get(@conn, :kube_pods_listing, false)}
+                disabled={Map.get(@conn, :kube_pods_listing, false) or not is_nil(@conn[:connecting])}
               >
                 List pods
               </button>
@@ -299,7 +299,6 @@ defmodule BeamdashWeb.Layouts do
                 do: " (container #{@conn.kube_container})"}.
             </p>
           </div>
-
           <.progress_line :if={@conn[:connecting]} progress={@conn.connecting} />
           <.progress_line :if={@conn[:kube_progress]} progress={@conn.kube_progress} />
         </div>

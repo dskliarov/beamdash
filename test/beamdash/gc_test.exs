@@ -122,7 +122,7 @@ defmodule Beamdash.GCTest do
 
     # the panel loads (and then refreshes) on a detail tick, as on Processes;
     # the read runs in a task, so its result is applied here as the task returns it
-    assert_receive {:detail_tick, ^pid} = tick
+    assert_receive {:detail_tick, ^pid, _} = tick
     {:noreply, socket} = view.handle_info(tick, socket)
     result = Beamdash.Target.rpc(node, :beamdash_agent, :process_details, [pid, -1])
     {:noreply, socket} = view.handle_async(:detail, {:ok, {pid, result}}, socket)
@@ -160,7 +160,7 @@ defmodule Beamdash.GCTest do
     {:noreply, socket} =
       view.handle_event("select", %{"pid" => Beamdash.Format.pid(pid, :erlang)}, socket)
 
-    assert_receive {:detail_tick, ^pid} = tick
+    assert_receive {:detail_tick, ^pid, _} = tick
     {:noreply, socket} = view.handle_info(tick, socket)
     {:noreply, socket} = view.handle_info({:beamdash_target, {:disconnected, :user}}, socket)
     assert socket.assigns.selected == nil

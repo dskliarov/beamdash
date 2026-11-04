@@ -80,4 +80,38 @@ defmodule Beamdash.TraceProfileRefreshTest do
     assert socket.assigns.available == nil
     refute MapSet.member?(socket.assigns.in_flight, :available)
   end
+
+  test "a ?mod=&fun=&arity= link keeps its function while the module list loads" do
+    params = %{"mod" => "lists", "fun" => "seq", "arity" => "2"}
+    uri = "/profile?mod=lists&fun=seq&arity=2"
+    {:noreply, socket} = ProfileLive.handle_params(params, uri, connected(ProfileLive))
+    assert socket.assigns.link == {params, uri}
+
+    {:noreply, socket} =
+      ProfileLive.handle_async(:modules, {:ok, {:fake@host, {:ok, @modules}}}, socket)
+
+    assert {:lists, :seq, 2} in socket.assigns.picked
+  end
+
+  test "a ?mod= link waiting for the module list is dropped when the list fails" do
+    {:noreply, socket} =
+      ProfileLive.handle_params(%{"mod" => "lists"}, "/profile?mod=lists", connected(ProfileLive))
+
+    assert socket.assigns.link != nil
+
+    {:noreply, socket} =
+      ProfileLive.handle_async(:modules, {:ok, {:fake@host, {:error, :boom}}}, socket)
+
+    assert socket.assigns.link == nil
+  end
+
+  test "the newest ?mod= link replaces one still waiting for the module list" do
+    {:noreply, socket} =
+      ProfileLive.handle_params(%{"mod" => "lists"}, "/profile?mod=lists", connected(ProfileLive))
+
+    {:noreply, socket} =
+      ProfileLive.handle_params(%{"mod" => "other"}, "/profile?mod=other", socket)
+
+    assert socket.assigns.link == {%{"mod" => "other"}, "/profile?mod=other"}
+  end
 end

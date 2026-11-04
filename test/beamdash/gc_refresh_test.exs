@@ -36,6 +36,42 @@ defmodule Beamdash.GCRefreshTest do
     assert socket.assigns.error == nil
   end
 
+  test "a detail tick schedules the next tick and starts one read" do
+    me = self()
+    ref = make_ref()
+
+    socket =
+      Phoenix.Component.assign(connected_socket(),
+        selected: me,
+        detail_ref: ref,
+        detail_busy: false
+      )
+
+    {:noreply, socket} = GCLive.handle_info({:detail_tick, me, ref}, socket)
+
+    assert socket.assigns.detail_busy
+    assert_receive {:detail_tick, ^me, ^ref}, 2000
+  end
+
+  test "a crashed detail read frees the next tick to read again" do
+    socket = Phoenix.Component.assign(connected_socket(), selected: self(), detail_busy: true)
+
+    {:noreply, socket} = GCLive.handle_async(:detail, {:exit, :boom}, socket)
+
+    refute socket.assigns.detail_busy
+  end
+
+  test "a tick from an earlier selection schedules nothing" do
+    me = self()
+
+    socket =
+      Phoenix.Component.assign(connected_socket(), selected: me, detail_ref: make_ref())
+
+    {:noreply, _socket} = GCLive.handle_info({:detail_tick, me, make_ref()}, socket)
+
+    refute_receive {:detail_tick, ^me, _}, 1100
+  end
+
   test "a detail read for a process that is no longer selected is dropped" do
     socket = Phoenix.Component.assign(connected_socket(), selected: self())
 

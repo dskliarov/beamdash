@@ -35,14 +35,22 @@ defmodule Beamdash.MemoryRefreshTest do
     assert socket.assigns.error
   end
 
-  test "a read finished for a node that is no longer connected is dropped" do
+  test "a read finished for a node that is no longer connected is dropped, and keeps the flag" do
     socket = Phoenix.Component.assign(connected_socket(), in_flight: MapSet.new([:snapshot]))
 
     {:noreply, socket} =
       MemoryLive.handle_async({:memory, :snapshot}, {:ok, {:other@host, {:error, :boom}}}, socket)
 
-    refute MapSet.member?(socket.assigns.in_flight, :snapshot)
+    assert MapSet.member?(socket.assigns.in_flight, :snapshot)
     assert socket.assigns.error == nil
+  end
+
+  test "a crashed read clears its flag" do
+    socket = Phoenix.Component.assign(connected_socket(), in_flight: MapSet.new([:snapshot]))
+
+    {:noreply, socket} = MemoryLive.handle_async({:memory, :snapshot}, {:exit, :boom}, socket)
+
+    refute MapSet.member?(socket.assigns.in_flight, :snapshot)
   end
 
   test "top processes for an attribute the page no longer shows are dropped" do
@@ -56,5 +64,20 @@ defmodule Beamdash.MemoryRefreshTest do
       )
 
     assert socket.assigns.top == nil
+  end
+
+  test "a second GC all while one runs starts nothing" do
+    socket = Phoenix.Component.assign(connected_socket(), busy: :gc)
+
+    assert {:noreply, ^socket} = MemoryLive.handle_event("gc_all", %{}, socket)
+  end
+
+  test "a GC all result from an earlier node clears the busy flag" do
+    socket = Phoenix.Component.assign(connected_socket(), busy: :gc)
+
+    {:noreply, socket} =
+      MemoryLive.handle_async({:memory_action, :gc_all}, {:ok, {:other@host, :done}}, socket)
+
+    assert socket.assigns.busy == nil
   end
 end

@@ -621,6 +621,115 @@ defmodule Beamdash.ConnectionBarTest do
     assert s.assigns.conn.kube_binary == "/app/bin/one"
   end
 
+  test "a partial kubectl listing clears the containers and binaries of the old pod" do
+    ref = make_ref()
+    s = mounted_bar()
+
+    s =
+      Phoenix.Component.assign(s,
+        conn:
+          Map.merge(s.assigns.conn, %{
+            kube_restore_ref: ref,
+            kube_pod: "pod-a",
+            kube_containers: ["app"],
+            kube_container: "app",
+            kube_binaries: ["/app/bin/one"],
+            kube_binary: "/app/bin/one"
+          })
+      )
+
+    partial = {:partial, %{pods: ["pod-a", "pod-b"], pod: "pod-b", error: :timeout}}
+    {:halt, s} = Connection.handle_info({:beamdash_kube_listed, ref, "c", "prod", partial}, s)
+
+    assert s.assigns.conn.kube_pod == "pod-b"
+    assert s.assigns.conn.kube_containers == []
+    assert s.assigns.conn.kube_container == nil
+    assert s.assigns.conn.kube_binaries == []
+    assert s.assigns.conn.kube_binary == nil
+  end
+
+  test "List pods is disabled while a kubectl connect runs, and a list request is ignored" do
+    step = %{label: "Connecting…", command: nil, since: 0, elapsed: 0}
+
+    conn = %{
+      status: :disconnected,
+      node: nil,
+      info: nil,
+      node_input: "",
+      error: nil,
+      method: :kubectl,
+      kube_clusters: [%{name: "prod", path: "/kube/prod"}],
+      kube_cluster: "/kube/prod",
+      kube_namespace: "shop",
+      kube_namespaces: [],
+      kube_pods_listing: false,
+      kube_restore_ref: nil,
+      kube_pods: ["app-1"],
+      kube_pod: "app-1",
+      kube_containers: nil,
+      kube_container: nil,
+      kube_binaries: nil,
+      kube_binary: nil,
+      kube_progress: nil,
+      connecting: step
+    }
+
+    html = bar(%{assigns: %{conn: conn}})
+    assert html =~ ~r/<button[^>]*disabled[^>]*>\s*List pods/s
+
+    s = Phoenix.Component.assign(mounted_bar(), conn: conn)
+    {:halt, s} = Connection.handle_event("list_kube_pods", %{"namespace" => "shop"}, s)
+    refute s.assigns.conn.kube_pods_listing
+    assert s.assigns.conn.kube_restore_ref == nil
+  end
+
+  test "a list request after a real connect click starts no listing while the connect runs" do
+    dir =
+      Path.join(System.tmp_dir!(), "beamdash-slow-kubectl-#{System.unique_integer([:positive])}")
+
+    File.mkdir_p!(dir)
+    File.write!(Path.join(dir, "kubectl"), "#!/bin/sh\nsleep 3\n")
+    File.chmod!(Path.join(dir, "kubectl"), 0o755)
+    path = System.get_env("PATH")
+    System.put_env("PATH", dir <> ":" <> path)
+
+    on_exit(fn ->
+      System.put_env("PATH", path)
+      Target.disconnect()
+      File.rm_rf!(dir)
+    end)
+
+    s =
+      Phoenix.Component.assign(mounted_bar(),
+        conn:
+          Map.merge(mounted_bar().assigns.conn, %{
+            method: :kubectl,
+            kube_cluster: "/tmp/prod.yaml",
+            kube_namespace: "shop",
+            kube_pods: ["app-1"],
+            kube_pod: "app-1",
+            kube_containers: [],
+            kube_container: "",
+            kube_binaries: ["/app/bin/a"],
+            kube_binary: "/app/bin/a"
+          })
+      )
+
+    {:halt, s} =
+      Connection.handle_event(
+        "connect_kubectl",
+        %{"namespace" => "shop", "container" => "", "binary" => "/app/bin/a"},
+        s
+      )
+
+    assert s.assigns.conn.connecting
+
+    {:halt, s} = Connection.handle_event("list_kube_pods", %{"namespace" => "other"}, s)
+    refute s.assigns.conn.kube_pods_listing
+    assert s.assigns.conn.kube_pods == ["app-1"]
+    assert s.assigns.conn.kube_restore_ref == nil
+  end
+
   defp flush_namespaces do
     receive do
       {:beamdash_kube_namespaces, _, _} -> flush_namespaces()

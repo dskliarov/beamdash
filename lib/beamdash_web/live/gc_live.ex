@@ -128,18 +128,29 @@ defmodule BeamdashWeb.GCLive do
      )}
   end
 
-  def handle_info({:detail_tick, pid}, %{assigns: %{selected: pid, status: :connected}} = socket) do
-    node = socket.assigns.node
+  # Each tick schedules the next, so a failed read cannot stop the loop.
+  def handle_info(
+        {:detail_tick, pid, ref},
+        %{assigns: %{selected: pid, detail_ref: ref, status: :connected}} = socket
+      ) do
+    Process.send_after(self(), {:detail_tick, pid, ref}, @detail_refresh_ms)
 
-    # A negative mailbox limit: never copy queued messages.
-    {:noreply,
-     start_async(socket, :detail, fn ->
-       {pid, Target.rpc(node, :beamdash_agent, :process_details, [pid, -1])}
-     end)}
+    if socket.assigns.detail_busy do
+      {:noreply, socket}
+    else
+      node = socket.assigns.node
+      socket = assign(socket, detail_busy: true)
+
+      # A negative mailbox limit: never copy queued messages.
+      {:noreply,
+       start_async(socket, :detail, fn ->
+         {pid, Target.rpc(node, :beamdash_agent, :process_details, [pid, -1])}
+       end)}
+    end
   end
 
   # a tick for a process that is no longer selected
-  def handle_info({:detail_tick, _pid}, socket), do: {:noreply, socket}
+  def handle_info({:detail_tick, _pid, _ref}, socket), do: {:noreply, socket}
 
   def handle_info({:beamdash_target, {:connected, node}}, socket) do
     GC.stop(socket.assigns.collector)
@@ -230,8 +241,9 @@ defmodule BeamdashWeb.GCLive do
         {:noreply, socket}
 
       pid ->
-        send(self(), {:detail_tick, pid})
-        {:noreply, socket |> unselect() |> assign(selected: pid)}
+        ref = make_ref()
+        send(self(), {:detail_tick, pid, ref})
+        {:noreply, socket |> unselect() |> assign(selected: pid, detail_ref: ref)}
     end
   end
 
@@ -388,12 +400,13 @@ defmodule BeamdashWeb.GCLive do
   end
 
   def handle_async(:detail, {:ok, {pid, result}}, %{assigns: %{selected: pid}} = socket) do
+    socket = assign(socket, detail_busy: false)
+
     case result do
       {:ok, :undefined} ->
         {:noreply, assign(socket, detail: nil, detail_note: "The process has exited.")}
 
       {:ok, detail} ->
-        Process.send_after(self(), {:detail_tick, pid}, @detail_refresh_ms)
         now = System.monotonic_time(:millisecond)
         origin = socket.assigns.sample_origin || now
         sample = Map.put(GCAdvisor.sample(detail), :offset_ms, now - origin)
@@ -408,18 +421,11 @@ defmodule BeamdashWeb.GCLive do
          )}
 
       {:error, reason} ->
-        Process.send_after(self(), {:detail_tick, pid}, @detail_refresh_ms)
         {:noreply, assign(socket, detail_note: Format.error(reason))}
     end
   end
 
-  def handle_async(:detail, {:exit, _}, %{assigns: %{selected: pid}} = socket)
-      when is_pid(pid) do
-    Process.send_after(self(), {:detail_tick, pid}, @detail_refresh_ms)
-    {:noreply, socket}
-  end
-
-  def handle_async(:detail, _result, socket), do: {:noreply, socket}
+  def handle_async(:detail, _result, socket), do: {:noreply, assign(socket, detail_busy: false)}
 
   def handle_async({:gc_advisor, _} = request, result, socket) do
     if request == socket.assigns.advisor_request and Settings.jev_enabled?() do
@@ -456,6 +462,7 @@ defmodule BeamdashWeb.GCLive do
     |> reset_advisor()
     |> assign(
       selected: nil,
+      detail_busy: false,
       detail: nil,
       detail_note: nil,
       history: [],

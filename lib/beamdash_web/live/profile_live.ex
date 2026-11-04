@@ -133,10 +133,10 @@ defmodule BeamdashWeb.ProfileLive do
     end
   end
 
-  defp apply_modules(socket, {:error, _reason}), do: socket
+  defp apply_modules(socket, {:error, _reason}), do: assign(socket, link: nil)
 
   # a ?mod= link opened before the module list has arrived waits for it
-  defp defer_link(%{assigns: %{modules: [], link: nil}} = socket, params, uri),
+  defp defer_link(%{assigns: %{modules: []}} = socket, params, uri),
     do: assign(socket, link: {params, uri})
 
   defp defer_link(socket, _params, _uri), do: socket
@@ -144,8 +144,7 @@ defmodule BeamdashWeb.ProfileLive do
   # ?mod=&fun=&arity= also picks that function (a link from a log line)
   @impl true
   def handle_params(%{"mod" => mod, "fun" => fun, "arity" => arity} = params, uri, socket) do
-    socket = defer_link(socket, params, uri)
-    {:noreply, socket} = handle_params(%{"mod" => mod}, uri, socket)
+    socket = defer_link(socket, params, uri) |> open_module(mod)
     pick_mod = socket.assigns.pick_mod
 
     with true <- is_atom(pick_mod) and Atom.to_string(pick_mod) == mod,
@@ -164,19 +163,17 @@ defmodule BeamdashWeb.ProfileLive do
   end
 
   # ?mod= opens that module (a link from "Ask beamdash")
-  def handle_params(%{"mod" => mod} = params, uri, socket) do
-    socket = defer_link(socket, params, uri)
-
-    case Enum.find(socket.assigns.modules, fn {m, _, _} -> Atom.to_string(m) == mod end) do
-      {m, _, _} ->
-        {:noreply, socket |> assign(pick_mod: m, pick_q: mod) |> SourceTabs.check(m)}
-
-      nil ->
-        {:noreply, socket}
-    end
-  end
+  def handle_params(%{"mod" => mod} = params, uri, socket),
+    do: {:noreply, defer_link(socket, params, uri) |> open_module(mod)}
 
   def handle_params(_params, _uri, socket), do: {:noreply, socket}
+
+  defp open_module(socket, mod) do
+    case Enum.find(socket.assigns.modules, fn {m, _, _} -> Atom.to_string(m) == mod end) do
+      {m, _, _} -> socket |> assign(pick_mod: m, pick_q: mod) |> SourceTabs.check(m)
+      nil -> socket
+    end
+  end
 
   ## Events
 

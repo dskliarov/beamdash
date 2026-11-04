@@ -200,6 +200,23 @@ defmodule BeamdashWeb.MemoryLive do
   defp load_tab(%{assigns: %{tab: nil}} = socket), do: socket
   defp load_tab(socket), do: request_top(socket)
 
+  # the node's answer comes back through handle_async/3
+  defp action(socket, kind, run) do
+    node = socket.assigns.node
+    start_async(socket, {:memory_action, kind}, fn -> {node, run.(node)} end)
+  end
+
+  defp apply_action(socket, :gc_all, {:ok, gc}),
+    do: socket |> assign(gc: gc, busy: nil) |> request_refresh()
+
+  defp apply_action(socket, :gc_all, {:error, r}),
+    do: assign(socket, error: Format.error(r), busy: nil)
+
+  defp apply_action(socket, :bin_leak, {:ok, leaks}),
+    do: socket |> assign(leaks: leaks) |> request_refresh()
+
+  defp apply_action(socket, :bin_leak, {:error, r}), do: assign(socket, error: Format.error(r))
+
   # The investigation to open first: the biggest of processes, binaries
   # and ETS.
   defp suggested_tab(%{memory: m}) do
@@ -272,26 +289,14 @@ defmodule BeamdashWeb.MemoryLive do
 
   def handle_event("refresh_top", _params, socket), do: {:noreply, request_top(socket)}
 
-  def handle_event("gc_all", _params, socket) do
-    socket = assign(socket, busy: :gc)
+  def handle_event("gc_all", _params, %{assigns: %{busy: :gc}} = socket), do: {:noreply, socket}
 
-    case Memory.gc_all(socket.assigns.node) do
-      {:ok, gc} ->
-        {:noreply, socket |> assign(gc: gc, busy: nil) |> request_refresh()}
-
-      {:error, r} ->
-        {:noreply, assign(socket, error: Format.error(r), busy: nil)}
-    end
-  end
+  def handle_event("gc_all", _params, socket),
+    do: {:noreply, socket |> assign(busy: :gc) |> action(:gc_all, &Memory.gc_all/1)}
 
   def handle_event("bin_leak", _params, socket) do
-    case Memory.binary_leaks(socket.assigns.node, socket.assigns.top_n) do
-      {:ok, leaks} ->
-        {:noreply, socket |> assign(leaks: leaks) |> request_refresh()}
-
-      {:error, r} ->
-        {:noreply, assign(socket, error: Format.error(r))}
-    end
+    top_n = socket.assigns.top_n
+    {:noreply, action(socket, :bin_leak, &Memory.binary_leaks(&1, top_n))}
   end
 
   def handle_event("inspect", %{"pid" => pid_text}, socket) do
@@ -360,17 +365,29 @@ defmodule BeamdashWeb.MemoryLive do
     do: {:noreply, assign(socket, ets_base: Map.new(socket.assigns.ets || [], &{&1.id, &1}))}
 
   @impl true
-  def handle_async({:memory, kind}, result, socket) do
+  def handle_async({:memory, kind}, {:ok, {node, value}}, %{assigns: %{node: node}} = socket) do
     socket = assign(socket, in_flight: MapSet.delete(socket.assigns.in_flight, kind))
-
-    case result do
-      {:ok, {node, value}} when node == socket.assigns.node ->
-        {:noreply, apply_read(socket, kind, value)}
-
-      _ ->
-        {:noreply, socket}
-    end
+    {:noreply, apply_read(socket, kind, value)}
   end
+
+  # from an earlier node: the flag now belongs to the current node's read
+  def handle_async({:memory, _kind}, {:ok, _stale}, socket), do: {:noreply, socket}
+
+  def handle_async({:memory, kind}, _exit, socket),
+    do: {:noreply, assign(socket, in_flight: MapSet.delete(socket.assigns.in_flight, kind))}
+
+  def handle_async(
+        {:memory_action, kind},
+        {:ok, {node, result}},
+        %{assigns: %{node: node}} = socket
+      ),
+      do: {:noreply, apply_action(socket, kind, result)}
+
+  def handle_async({:memory_action, _kind}, {:ok, _stale}, socket),
+    do: {:noreply, assign(socket, busy: nil)}
+
+  def handle_async({:memory_action, _kind}, _exit, socket),
+    do: {:noreply, assign(socket, busy: nil)}
 
   def handle_async({:memory_advisor, _} = request, result, socket) do
     if request == socket.assigns.health.request do

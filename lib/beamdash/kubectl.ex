@@ -47,6 +47,7 @@ defmodule Beamdash.Kubectl do
   @list_binaries_script """
   { for f in /proc/[0-9]*/cmdline; do tr '\\000' '\\n' < "$f" 2>/dev/null | sed -n '/^-root$/{n;p;q;}'; done; echo /app; } | sort -u | while read -r r; do [ -e "$r/bin/erlc" ] && continue; for b in "$r"/bin/*; do [ -f "$b" ] && [ -x "$b" ] && echo "$b"; done; done; true
   """
+  @kubectl_timeout 30_000
   @forward_wait_attempts 40
   @forward_wait_interval 500
 
@@ -293,8 +294,50 @@ defmodule Beamdash.Kubectl do
              port_forward_command(kubeconfig, namespace, pod, {epmd_local, @epmd_port})
            ),
          {:ok, epmd_forward} <-
-           open_forward.(kubeconfig, namespace, pod, {epmd_local, @epmd_port}),
-         :ok <- step(progress, "Reading the node's distribution port from EPMD", nil),
+           open_forward.(kubeconfig, namespace, pod, {epmd_local, @epmd_port}) do
+      case open_dist_forward(
+             kubeconfig,
+             namespace,
+             pod,
+             short_name,
+             epmd_local,
+             progress,
+             open_forward
+           ) do
+        {:ok, {dist_local, dist_forward}} ->
+          install_epmd_module()
+          persistent_term_put(short_name, dist_local)
+
+          {:ok,
+           %{
+             node: node,
+             cookie: cookie,
+             tunnel: %Tunnel{epmd_port: epmd_forward, dist_port: dist_forward}
+           }}
+
+        {:error, _} = error ->
+          close_port_forward(epmd_forward)
+          error
+      end
+    else
+      {:error, _} = error ->
+        error
+
+      other ->
+        {:error, {:discovery_failed, other}}
+    end
+  end
+
+  defp open_dist_forward(
+         kubeconfig,
+         namespace,
+         pod,
+         short_name,
+         epmd_local,
+         progress,
+         open_forward
+       ) do
+    with :ok <- step(progress, "Reading the node's distribution port from EPMD", nil),
          {:ok, dist_port} <- discover_dist_port(epmd_local, short_name),
          {:ok, dist_local} <- free_local_port(),
          :ok <-
@@ -304,21 +347,7 @@ defmodule Beamdash.Kubectl do
              port_forward_command(kubeconfig, namespace, pod, {dist_local, dist_port})
            ),
          {:ok, dist_forward} <- open_forward.(kubeconfig, namespace, pod, {dist_local, dist_port}) do
-      install_epmd_module()
-      persistent_term_put(short_name, dist_local)
-
-      {:ok,
-       %{
-         node: node,
-         cookie: cookie,
-         tunnel: %Tunnel{epmd_port: epmd_forward, dist_port: dist_forward}
-       }}
-    else
-      {:error, _} = error ->
-        error
-
-      other ->
-        {:error, {:discovery_failed, other}}
+      {:ok, {dist_local, dist_forward}}
     end
   end
 
@@ -513,10 +542,18 @@ defmodule Beamdash.Kubectl do
   def command_line(args), do: Enum.map_join(["kubectl" | args], " ", &shell_quote/1)
 
   @doc false
-  def run_kubectl(args) do
+  def run_kubectl(args, timeout \\ @kubectl_timeout) do
     case System.find_executable("kubectl") do
-      nil -> {"kubectl not found on PATH", 127}
-      kubectl -> System.cmd(kubectl, args, stderr_to_stdout: true)
+      nil ->
+        {"kubectl not found on PATH", 127}
+
+      kubectl ->
+        task = Task.async(fn -> System.cmd(kubectl, args, stderr_to_stdout: true) end)
+
+        case Task.yield(task, timeout) || Task.shutdown(task, :brutal_kill) do
+          {:ok, result} -> result
+          _ -> {"kubectl did not answer within #{div(timeout, 1000)} s", 124}
+        end
     end
   end
 
