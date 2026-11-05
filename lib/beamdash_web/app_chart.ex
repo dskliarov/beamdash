@@ -9,6 +9,7 @@ defmodule BeamdashWeb.AppChart do
   use Phoenix.Component
 
   alias Beamdash.Format
+  alias Phoenix.LiveView.JS
 
   # Observer's spacing (observer_app_wx.erl)
   # text to box edge, both ways
@@ -74,6 +75,90 @@ defmodule BeamdashWeb.AppChart do
     """
   end
 
+  attr :root, :map, required: true, doc: "Beamdash.Apps tree node"
+  attr :selected, :any, default: nil
+  attr :syntax, :atom, required: true
+  attr :id, :string, required: true
+
+  def outline(assigns) do
+    ~H"""
+    <div class="app-outline" id={@id}>
+      <div class="tree-actions">
+        <button
+          type="button"
+          class="secondary small-btn"
+          phx-click={JS.set_attribute({"open", ""}, to: "##{@id} details")}
+        >
+          Expand all
+        </button>
+        <button
+          type="button"
+          class="secondary small-btn"
+          phx-click={JS.remove_attribute("open", to: "##{@id} details")}
+        >
+          Collapse all
+        </button>
+      </div>
+      <ul class="term-items">
+        <.outline_node node={@root} depth={0} selected={@selected} syntax={@syntax} />
+      </ul>
+    </div>
+    """
+  end
+
+  attr :node, :map, required: true
+  attr :depth, :integer, required: true
+  attr :selected, :any, default: nil
+  attr :syntax, :atom, required: true
+
+  defp outline_node(%{node: %{children: []}} = assigns) do
+    ~H"""
+    <li><.outline_item node={@node} selected={@selected} syntax={@syntax} /></li>
+    """
+  end
+
+  defp outline_node(assigns) do
+    ~H"""
+    <li>
+      <details open={@depth < 2} phx-mounted={JS.ignore_attributes(["open"])}>
+        <summary><.outline_item node={@node} selected={@selected} syntax={@syntax} /></summary>
+        <ul class="term-items">
+          <.outline_node
+            :for={child <- @node.children}
+            node={child}
+            depth={@depth + 1}
+            selected={@selected}
+            syntax={@syntax}
+          />
+        </ul>
+      </details>
+    </li>
+    """
+  end
+
+  attr :node, :map, required: true
+  attr :selected, :any, default: nil
+  attr :syntax, :atom, required: true
+
+  defp outline_item(%{node: node} = assigns) do
+    assigns = assign(assigns, static: static?(node))
+
+    ~H"""
+    <span :if={@static} class="app-outline-item mono static">{text(@node, @syntax)}</span>
+    <button
+      :if={!@static}
+      type="button"
+      class={["app-outline-item mono", @node.pid == @selected && "selected"]}
+      phx-click="select"
+      phx-value-pid={Format.pid(@node.pid, :erlang)}
+    >
+      {text(@node, @syntax)}
+    </button>
+    """
+  end
+
+  defp static?(node), do: Map.get(node, :static, false) or not is_pid(node.pid)
+
   # As Observer: the registered name, else the pid (a proc_lib label too)
   defp text(%{name: name}, syntax) when not is_nil(name), do: Format.name(name, syntax)
   defp text(%{label: label}, _syntax) when not is_nil(label), do: label
@@ -109,7 +194,7 @@ defmodule BeamdashWeb.AppChart do
       text: text,
       title:
         "#{text} #{if is_pid(node.pid) and (node.name || node.label), do: Format.pid(node.pid, :erlang)}",
-      static: Map.get(node, :static, false) or not is_pid(node.pid),
+      static: static?(node),
       w: round(String.length(text) * @char_w) + @bx_e,
       pad: div(@bx_e, 2),
       h: @text_h + @by_e

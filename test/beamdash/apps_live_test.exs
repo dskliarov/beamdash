@@ -41,6 +41,16 @@ defmodule Beamdash.AppsLiveTest do
     end
   end
 
+  test "the Tree switch sets the process tree to outline, and Graph sets it back" do
+    socket = Component.assign(cold_socket(), tree_mode: :graph)
+
+    {:noreply, socket} = AppsLive.handle_event("tree_mode", %{"mode" => "tree"}, socket)
+    assert socket.assigns.tree_mode == :tree
+
+    {:noreply, socket} = AppsLive.handle_event("tree_mode", %{"mode" => "graph"}, socket)
+    assert socket.assigns.tree_mode == :graph
+  end
+
   defp tree_calls do
     receive do
       {:trace, _, :call, {Apps, :tree, _}} -> 1 + tree_calls()

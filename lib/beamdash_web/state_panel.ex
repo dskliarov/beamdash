@@ -8,9 +8,11 @@ defmodule BeamdashWeb.StatePanel do
   use Phoenix.LiveComponent
 
   alias Beamdash.{Format, OtpProcess}
+  alias BeamdashWeb.TermTree
+  alias Phoenix.LiveView.JS
 
   @impl true
-  def mount(socket), do: {:ok, assign(socket, result: nil, loading: false, pid: nil)}
+  def mount(socket), do: {:ok, assign(socket, result: nil, loading: false, pid: nil, view: :text)}
 
   @impl true
   def update(assigns, socket) do
@@ -36,6 +38,9 @@ defmodule BeamdashWeb.StatePanel do
 
   @impl true
   def handle_event("refresh", _params, socket), do: {:noreply, fetch(socket)}
+
+  def handle_event("set_view", %{"view" => view}, socket),
+    do: {:noreply, assign(socket, view: if(view == "tree", do: :tree, else: :text))}
 
   @impl true
   def render(assigns) do
@@ -100,14 +105,48 @@ defmodule BeamdashWeb.StatePanel do
                 <span :if={r.module}> · {Format.name(r.module, @syntax)}</span>
                 · read {Calendar.strftime(r.at, "%H:%M:%S")} UTC
               </p>
+              <nav class="seg state-view" role="tablist" aria-label="Output format">
+                <button
+                  :for={{view, label} <- [text: "Text", tree: "Tree"]}
+                  type="button"
+                  role="tab"
+                  class={["seg-btn", @view == view && "active"]}
+                  aria-selected={to_string(@view == view)}
+                  phx-click="set_view"
+                  phx-value-view={view}
+                  phx-target={@myself}
+                >
+                  {label}
+                </button>
+              </nav>
+              <span :if={@view == :tree} class="tree-actions">
+                <button
+                  type="button"
+                  class="secondary small-btn"
+                  phx-click={
+                    JS.set_attribute({"open", ""}, to: "#state-panel-#{@key} .state-tree details")
+                  }
+                >
+                  Expand all
+                </button>
+                <button
+                  type="button"
+                  class="secondary small-btn"
+                  phx-click={
+                    JS.remove_attribute("open", to: "#state-panel-#{@key} .state-tree details")
+                  }
+                >
+                  Collapse all
+                </button>
+              </span>
               <%= if @proc_kind == :gen_statem and match?({_, _}, state) do %>
                 <p class="statem-state">
                   State <span class="mono state-name">{Format.term(elem(state, 0), @syntax)}</span>
                 </p>
                 <h5>Data</h5>
-                <pre class="state-pre">{Format.pretty(elem(state, 1), @syntax)}</pre>
+                <.state_value value={elem(state, 1)} view={@view} syntax={@syntax} />
               <% else %>
-                <pre class="state-pre">{Format.pretty(state, @syntax)}</pre>
+                <.state_value value={state} view={@view} syntax={@syntax} />
               <% end %>
             <% {:error, reason} -> %>
               <p class="notice small">{error_text(reason)}</p>
@@ -115,6 +154,22 @@ defmodule BeamdashWeb.StatePanel do
         </div>
       </div>
     </article>
+    """
+  end
+
+  attr :value, :any, required: true
+  attr :view, :atom, required: true
+  attr :syntax, :atom, required: true
+
+  defp state_value(%{view: :tree} = assigns) do
+    ~H"""
+    <div class="state-tree"><TermTree.tree value={@value} syntax={@syntax} /></div>
+    """
+  end
+
+  defp state_value(assigns) do
+    ~H"""
+    <pre class="state-pre">{Format.pretty(@value, @syntax)}</pre>
     """
   end
 
