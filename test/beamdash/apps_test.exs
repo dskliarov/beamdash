@@ -291,6 +291,41 @@ defmodule Beamdash.AppsTest do
       assert render.(%{proc: :exited}) =~ "The process has exited."
     end
 
+    test "the Tree switch replaces the chart with the outline, and Graph brings the chart back",
+         %{node: node} do
+      {:ok, apps} = Apps.list(node)
+      {:ok, tree} = Apps.tree(node, :kernel)
+
+      socket = %Phoenix.LiveView.Socket{
+        private: %{lifecycle: %Phoenix.LiveView.Lifecycle{}, live_temp: %{}}
+      }
+
+      {:ok, socket} = AppsLive.mount(%{}, %{}, socket)
+
+      render = fn mode ->
+        socket.assigns
+        |> Map.merge(%{
+          syntax: :erlang,
+          status: :connected,
+          node: node,
+          apps: apps,
+          app: :kernel,
+          tree: tree,
+          tree_mode: mode
+        })
+        |> AppsLive.render()
+        |> Phoenix.LiveViewTest.rendered_to_string()
+      end
+
+      graph = render.(:graph)
+      assert graph =~ ~s(class="app-chart")
+      refute graph =~ ~s(id="app-outline")
+
+      outline = render.(:tree)
+      assert outline =~ ~s(id="app-outline")
+      refute outline =~ ~s(class="app-chart")
+    end
+
     test "an application's keys, environment, start type and who needs it", %{node: node} do
       assert {:ok, info} = Apps.info(node, :kernel)
       assert info.start_type == :permanent

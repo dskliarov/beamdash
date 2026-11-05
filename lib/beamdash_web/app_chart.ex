@@ -141,7 +141,7 @@ defmodule BeamdashWeb.AppChart do
   attr :syntax, :atom, required: true
 
   defp outline_item(%{node: node} = assigns) do
-    assigns = assign(assigns, static: Map.get(node, :static, false) or not is_pid(node.pid))
+    assigns = assign(assigns, static: static?(node))
 
     ~H"""
     <span :if={@static} class="app-outline-item mono static">{text(@node, @syntax)}</span>
@@ -156,6 +156,8 @@ defmodule BeamdashWeb.AppChart do
     </button>
     """
   end
+
+  defp static?(node), do: Map.get(node, :static, false) or not is_pid(node.pid)
 
   # As Observer: the registered name, else the pid (a proc_lib label too)
   defp text(%{name: name}, syntax) when not is_nil(name), do: Format.name(name, syntax)
@@ -192,7 +194,7 @@ defmodule BeamdashWeb.AppChart do
       text: text,
       title:
         "#{text} #{if is_pid(node.pid) and (node.name || node.label), do: Format.pid(node.pid, :erlang)}",
-      static: Map.get(node, :static, false) or not is_pid(node.pid),
+      static: static?(node),
       w: round(String.length(text) * @char_w) + @bx_e,
       pad: div(@bx_e, 2),
       h: @text_h + @by_e
