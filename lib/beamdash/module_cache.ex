@@ -10,15 +10,21 @@ defmodule Beamdash.ModuleCache do
   alias Beamdash.{Target, Tracer}
 
   @refresh_ms 300_000
+  # a timed-out fetch is tried again with 10 % more, then 20 % more, node time
+  @attempts [30_000, 33_000, 36_000]
+  # after the last attempt times out, the next fetch waits double the first attempt
+  @give_up_ms 60_000
+  # the three attempts together take up to 99 s
+  @call_timeout 120_000
 
-  defstruct [:target, :tracer, :node, :modules, :task, waiting: []]
+  defstruct [:target, :tracer, :node, :modules, :task, :retry_timer, attempt: 0, waiting: []]
 
   def start_link(opts \\ []) do
     GenServer.start_link(__MODULE__, opts, name: Keyword.get(opts, :name, __MODULE__))
   end
 
   @doc "The loaded modules, `{:ok, [{mod, exports, locals}]}`, or the error of the fetch."
-  def modules(server \\ __MODULE__), do: GenServer.call(server, :modules, 60_000)
+  def modules(server \\ __MODULE__), do: GenServer.call(server, :modules, @call_timeout)
 
   @impl true
   def init(opts) do
@@ -48,10 +54,17 @@ defmodule Beamdash.ModuleCache do
   @impl true
   def handle_info({ref, result}, %{task: %Task{ref: ref}} = state) do
     Process.demonitor(ref, [:flush])
-    Enum.each(state.waiting, &GenServer.reply(&1, result))
+    state = %{state | task: nil}
 
-    modules = if state.node, do: modules_from(result, state.modules)
-    {:noreply, %{state | task: nil, waiting: [], modules: modules}}
+    if timed_out?(result) and state.attempt < length(@attempts) - 1 do
+      {:noreply, fetch(%{state | attempt: state.attempt + 1})}
+    else
+      Enum.each(state.waiting, &GenServer.reply(&1, result))
+
+      modules = if state.node, do: modules_from(result, state.modules)
+      state = %{state | waiting: [], modules: modules, attempt: 0}
+      {:noreply, if(timed_out?(result), do: pause(state), else: state)}
+    end
   end
 
   def handle_info(:refresh, state) do
@@ -60,35 +73,45 @@ defmodule Beamdash.ModuleCache do
   end
 
   def handle_info({:beamdash_target, {:connected, node}}, state),
-    do: {:noreply, fetch(%{cancel(state) | node: node, modules: nil})}
+    do: {:noreply, fetch(%{stop_fetch(state) | node: node, modules: nil})}
 
   def handle_info({:beamdash_target, {:disconnected, _}}, state) do
-    state = cancel(state)
+    state = stop_fetch(state)
     Enum.each(state.waiting, &GenServer.reply(&1, {:error, :not_connected}))
     {:noreply, %{state | node: nil, modules: nil, waiting: []}}
   end
 
+  def handle_info(:retry, state), do: {:noreply, fetch(%{state | retry_timer: nil})}
+
   def handle_info(_message, state), do: {:noreply, state}
 
-  defp fetch(%{task: nil, node: node} = state) when node != nil do
+  defp fetch(%{task: nil, node: node, retry_timer: nil} = state) when node != nil do
     tracer = state.tracer
-    %{state | task: Task.async(fn -> fetch_modules(tracer) end)}
+    timeout = Enum.at(@attempts, state.attempt)
+    %{state | task: Task.async(fn -> fetch_modules(tracer, timeout) end)}
   end
 
   defp fetch(state), do: state
 
-  defp cancel(%{task: nil} = state), do: state
-
-  defp cancel(%{task: task} = state) do
-    Task.shutdown(task, :brutal_kill)
-    %{state | task: nil}
+  defp stop_fetch(state) do
+    if state.task, do: Task.shutdown(state.task, :brutal_kill)
+    if state.retry_timer, do: Process.cancel_timer(state.retry_timer)
+    %{state | task: nil, retry_timer: nil, attempt: 0}
   end
 
-  defp fetch_modules(tracer) do
-    Tracer.module_functions(tracer)
+  defp pause(state),
+    do: %{state | retry_timer: Process.send_after(self(), :retry, @give_up_ms)}
+
+  defp fetch_modules(tracer, timeout) do
+    Tracer.module_functions(tracer, timeout)
   catch
     :exit, reason -> {:error, reason}
   end
+
+  # Target.rpc wraps the erpc reason in its own {:error, _}
+  defp timed_out?({:error, {:error, {:erpc, :timeout}}}), do: true
+  defp timed_out?({:error, {:timeout, _}}), do: true
+  defp timed_out?(_), do: false
 
   defp modules_from({:ok, modules}, _old), do: modules
   defp modules_from(_error, old), do: old
