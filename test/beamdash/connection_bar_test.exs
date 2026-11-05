@@ -709,11 +709,13 @@ defmodule Beamdash.ConnectionBarTest do
   end
 
   test "a list request after a real connect click starts no listing while the connect runs" do
+    :ok = Target.subscribe_connecting()
+
     dir =
       Path.join(System.tmp_dir!(), "beamdash-slow-kubectl-#{System.unique_integer([:positive])}")
 
     File.mkdir_p!(dir)
-    File.write!(Path.join(dir, "kubectl"), "#!/bin/sh\nsleep 3\n")
+    File.write!(Path.join(dir, "kubectl"), "#!/bin/sh\nsleep 3\nexit 1\n")
     File.chmod!(Path.join(dir, "kubectl"), 0o755)
     path = System.get_env("PATH")
     System.put_env("PATH", dir <> ":" <> path)
@@ -753,6 +755,9 @@ defmodule Beamdash.ConnectionBarTest do
     refute s.assigns.conn.kube_pods_listing
     assert s.assigns.conn.kube_pods == ["app-1"]
     assert s.assigns.conn.kube_restore_ref == nil
+
+    :ok = Target.disconnect()
+    assert_receive {:beamdash_connecting, nil}, 10_000
   end
 
   test "switching to Direct clears a kubectl listing's progress line" do
