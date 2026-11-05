@@ -904,6 +904,11 @@ defmodule BeamdashWeb.HomeLive do
     end
   end
 
+  # The list refreshes on every tick, so its line shows only before the first list arrives.
+  defp working(%{detail_busy: true}), do: "Reading the process details"
+  defp working(%{refreshing?: true, procs: []}), do: "Reading the process list from the node"
+  defp working(_), do: nil
+
   defp reset_cpu_sort(%{assigns: %{sort_by: :cpu}} = socket),
     do: assign(socket, sort_by: :reductions, sort_dir: :desc)
 
@@ -940,7 +945,8 @@ defmodule BeamdashWeb.HomeLive do
     assigns =
       assign(assigns,
         dock_panels: dock_panels,
-        dock_active_pid: dock_active(dock_panels, assigns.dock_active)
+        dock_active_pid: dock_active(dock_panels, assigns.dock_active),
+        working: working(assigns)
       )
 
     ~H"""
@@ -952,6 +958,7 @@ defmodule BeamdashWeb.HomeLive do
     ]}>
       <BeamdashWeb.Layouts.header
         active={:processes}
+        working={@working}
         syntax={@syntax}
         conn={assigns[:conn]}
         ask={assigns[:ask]}

@@ -8,7 +8,7 @@ defmodule BeamdashWeb.TraceLive do
   """
   use Phoenix.LiveView
 
-  alias Beamdash.{CallGraph, Format, SeqTracer, Target, Tracer}
+  alias Beamdash.{CallGraph, Format, ModuleCache, SeqTracer, Target, Tracer}
   alias BeamdashWeb.SourceTabs
 
   import BeamdashWeb.FunctionList,
@@ -81,6 +81,12 @@ defmodule BeamdashWeb.TraceLive do
   end
 
   # read in a task so the page does not wait for the node
+  defp working(%{graph: {:loading, _}}), do: "Building the call graph"
+
+  defp working(%{in_flight: in_flight}) do
+    if MapSet.member?(in_flight, :modules), do: "Reading the module list"
+  end
+
   defp request_modules(socket) do
     if MapSet.member?(socket.assigns.in_flight, :modules) do
       socket
@@ -89,7 +95,7 @@ defmodule BeamdashWeb.TraceLive do
 
       socket
       |> assign(in_flight: MapSet.put(socket.assigns.in_flight, :modules))
-      |> start_async(:modules, fn -> {node, Tracer.module_functions()} end)
+      |> start_async(:modules, fn -> {node, ModuleCache.modules()} end)
     end
   end
 
@@ -516,6 +522,7 @@ defmodule BeamdashWeb.TraceLive do
 
     assigns =
       assign(assigns,
+        working: working(assigns),
         fn_counts: %{
           all: length(all),
           exported: Enum.count(all, &elem(&1, 2)),
@@ -546,6 +553,7 @@ defmodule BeamdashWeb.TraceLive do
     <main class="wrap">
       <BeamdashWeb.Layouts.header
         active={:trace}
+        working={@working}
         syntax={@syntax}
         conn={assigns[:conn]}
         ask={assigns[:ask]}

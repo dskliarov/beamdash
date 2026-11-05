@@ -70,6 +70,7 @@ defmodule BeamdashWeb.Layouts do
   attr :conn, :map, default: nil, doc: "from BeamdashWeb.Connection; nil hides the bar"
   attr :ask, :map, default: nil, doc: "from BeamdashWeb.Ask; nil hides the box"
   attr :ask_on, :boolean, default: false, doc: "Jev on and configured"
+  attr :working, :string, default: nil, doc: "what the page is waiting for from the node"
 
   @doc """
   The page header on every tab: tabs and syntax switch, then, on a line
@@ -307,6 +308,9 @@ defmodule BeamdashWeb.Layouts do
         </div>
 
         <div :if={@conn.status == :connected} class="connected">
+          <p :if={@working} id="working" class="working muted small" role="status" aria-live="polite">
+            {@working}…
+          </p>
           <span class="dot" aria-hidden="true"></span>
           <span class="connected-name">
             <span :if={@conn[:kube_target]} class="kube-target">

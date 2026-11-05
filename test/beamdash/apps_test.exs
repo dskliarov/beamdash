@@ -218,6 +218,14 @@ defmodule Beamdash.AppsTest do
       end
 
       socket = event.(socket, "select", %{"pid" => Beamdash.Format.pid(code_server.pid, :erlang)})
+
+      {:noreply, socket} =
+        AppsLive.handle_async(
+          :proc,
+          {:ok, {code_server.pid, Apps.process(node, code_server.pid)}},
+          socket
+        )
+
       html = render.(socket)
       assert html =~ ~r/<button[^>]*phx-click="open_source"[^>]*phx-value-mod="code_server"/
 

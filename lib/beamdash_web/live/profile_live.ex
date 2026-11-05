@@ -11,7 +11,7 @@ defmodule BeamdashWeb.ProfileLive do
   """
   use Phoenix.LiveView
 
-  alias Beamdash.{Format, Profiler, Target, Tracer}
+  alias Beamdash.{Format, ModuleCache, Profiler, Target}
   alias BeamdashWeb.SourceTabs
 
   import BeamdashWeb.FunctionList,
@@ -79,6 +79,14 @@ defmodule BeamdashWeb.ProfileLive do
 
   # The tprof check and the module list are calls into the node, so they are
   # read in tasks and the page does not wait for them.
+  defp working(%{in_flight: in_flight}) do
+    cond do
+      MapSet.member?(in_flight, :available) -> "Checking the profiler on the node"
+      MapSet.member?(in_flight, :modules) -> "Reading the module list"
+      true -> nil
+    end
+  end
+
   defp request_available(socket) do
     if MapSet.member?(socket.assigns.in_flight, :available) do
       socket
@@ -99,7 +107,7 @@ defmodule BeamdashWeb.ProfileLive do
 
       socket
       |> assign(in_flight: MapSet.put(socket.assigns.in_flight, :modules))
-      |> start_async(:modules, fn -> {node, Tracer.module_functions()} end)
+      |> start_async(:modules, fn -> {node, ModuleCache.modules()} end)
     end
   end
 
@@ -422,12 +430,13 @@ defmodule BeamdashWeb.ProfileLive do
 
   @impl true
   def render(assigns) do
-    assigns = assign(assigns, table: table(assigns), types: @types)
+    assigns = assign(assigns, table: table(assigns), types: @types, working: working(assigns))
 
     ~H"""
     <main class="wrap">
       <BeamdashWeb.Layouts.header
         active={:profile}
+        working={@working}
         syntax={@syntax}
         conn={assigns[:conn]}
         ask={assigns[:ask]}

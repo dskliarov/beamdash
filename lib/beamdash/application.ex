@@ -10,6 +10,7 @@ defmodule Beamdash.Application do
       {Phoenix.PubSub, name: Beamdash.PubSub},
       Beamdash.Target,
       Beamdash.Tracer,
+      Beamdash.ModuleCache,
       Beamdash.SeqTracer,
       Beamdash.Crashes,
       Beamdash.Logs,

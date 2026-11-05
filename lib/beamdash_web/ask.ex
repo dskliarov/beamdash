@@ -9,7 +9,7 @@ defmodule BeamdashWeb.Ask do
   import Phoenix.Component, only: [assign: 3]
   import Phoenix.LiveView, only: [attach_hook: 4, push_navigate: 2]
 
-  alias Beamdash.{AskAdvisor, Target, Tracer}
+  alias Beamdash.{AskAdvisor, ModuleCache, Target}
 
   @empty %{query: "", busy: nil, options: [], error: nil}
 
@@ -83,7 +83,7 @@ defmodule BeamdashWeb.Ask do
 
   defp loaded_module(q) do
     with %{status: :connected} <- Target.status(),
-         {:ok, mods} <- Tracer.module_functions() do
+         {:ok, mods} <- ModuleCache.modules() do
       AskAdvisor.module_in(q, Enum.map(mods, &elem(&1, 0)))
     else
       _ -> nil
