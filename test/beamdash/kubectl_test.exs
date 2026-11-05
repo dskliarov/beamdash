@@ -142,22 +142,83 @@ defmodule Beamdash.KubectlTest do
                Kubectl.list_namespaces(nil, exec)
     end
 
-    test "passes --kubeconfig when a cluster is given" do
-      exec = fn args ->
-        assert args == [
-                 "--kubeconfig",
-                 "/home/me/.kube/prod.yaml",
-                 "--request-timeout=5s",
-                 "get",
-                 "namespaces",
-                 "-o",
-                 "jsonpath={.items[*].metadata.name}"
-               ]
+    test "makes the cluster's context current, then lists the namespaces from it" do
+      test_pid = self()
 
-        {"default\n", 0}
+      exec = fn args ->
+        send(test_pid, {:kubectl, args})
+
+        case args do
+          ["--kubeconfig", _, "config", "get-contexts", "-o", "name"] -> {"other\nprod\n", 0}
+          ["--kubeconfig", _, "config", "use-context", "prod"] -> {"Switched.\n", 0}
+          _ -> {"default\n", 0}
+        end
       end
 
       assert {:ok, ["default"]} = Kubectl.list_namespaces("/home/me/.kube/prod.yaml", exec)
+
+      assert_received {:kubectl,
+                       [
+                         "--kubeconfig",
+                         "/home/me/.kube/prod.yaml",
+                         "config",
+                         "get-contexts",
+                         "-o",
+                         "name"
+                       ]}
+
+      assert_received {:kubectl,
+                       [
+                         "--kubeconfig",
+                         "/home/me/.kube/prod.yaml",
+                         "config",
+                         "use-context",
+                         "prod"
+                       ]}
+
+      assert_received {:kubectl,
+                       [
+                         "--kubeconfig",
+                         "/home/me/.kube/prod.yaml",
+                         "--request-timeout=5s",
+                         "get",
+                         "namespaces",
+                         "-o",
+                         "jsonpath={.items[*].metadata.name}"
+                       ]}
+    end
+
+    test "a file without a context of the cluster's name keeps its current context" do
+      test_pid = self()
+
+      exec = fn args ->
+        send(test_pid, {:kubectl, args})
+
+        case args do
+          ["--kubeconfig", _, "config", "get-contexts", "-o", "name"] -> {"a\nb\n", 0}
+          _ -> {"default\n", 0}
+        end
+      end
+
+      assert {:ok, ["default"]} = Kubectl.list_namespaces("/home/me/.kube/config", exec)
+      refute_received {:kubectl, [_, _, "config", "use-context" | _]}
+    end
+
+    test "a failed context switch is reported and nothing is listed" do
+      test_pid = self()
+
+      exec = fn args ->
+        send(test_pid, {:kubectl, args})
+
+        case args do
+          ["--kubeconfig", _, "config", "get-contexts", "-o", "name"] -> {"prod\n", 0}
+          ["--kubeconfig", _, "config", "use-context", _] -> {"permission denied", 1}
+          _ -> flunk("namespaces must not be listed")
+        end
+      end
+
+      assert {:error, {:namespace_list_failed, {1, "permission denied"}}} =
+               Kubectl.list_namespaces("/home/me/.kube/prod.yaml", exec)
     end
 
     test "a non-zero exit is reported" do

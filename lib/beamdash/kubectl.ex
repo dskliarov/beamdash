@@ -72,7 +72,7 @@ defmodule Beamdash.Kubectl do
          files
          |> Enum.filter(&(&1 == "config" or String.ends_with?(&1, [".yaml", ".yml"])))
          |> Enum.sort()
-         |> Enum.map(&%{name: Path.rootname(&1), path: Path.join(dir, &1)})}
+         |> Enum.map(&%{name: cluster_name(&1), path: Path.join(dir, &1)})}
 
       {:error, reason} ->
         {:error, {:kubeconfig_list_failed, reason}}
@@ -153,26 +153,57 @@ defmodule Beamdash.Kubectl do
   @spec list_namespaces(String.t() | nil, (list(String.t()) -> {binary(), integer()})) ::
           {:ok, [String.t()]} | {:error, term()}
   def list_namespaces(kubeconfig, exec \\ &run_kubectl/1) do
-    args =
-      kubeconfig_args(kubeconfig) ++
-        [
-          "--request-timeout=5s",
-          "get",
-          "namespaces",
-          "-o",
-          "jsonpath={.items[*].metadata.name}"
-        ]
+    with :ok <- select_context(kubeconfig, exec) do
+      args =
+        kubeconfig_args(kubeconfig) ++
+          [
+            "--request-timeout=5s",
+            "get",
+            "namespaces",
+            "-o",
+            "jsonpath={.items[*].metadata.name}"
+          ]
 
-    case exec.(args) do
-      {output, 0} ->
-        {:ok, output |> String.trim() |> String.split(~r/\s+/, trim: true)}
+      case exec.(args) do
+        {output, 0} ->
+          {:ok, output |> String.trim() |> String.split(~r/\s+/, trim: true)}
 
-      {output, status} ->
-        {:error, {:namespace_list_failed, {status, String.trim(output)}}}
+        {output, status} ->
+          {:error, {:namespace_list_failed, {status, String.trim(output)}}}
+      end
     end
   catch
     kind, reason -> {:error, {:namespace_list_failed, {kind, reason}}}
   end
+
+  # A kubeconfig's current-context can name another cluster in the same file,
+  # so the cluster picked in the UI becomes the current context first. A file
+  # with no context of that name (a multi-cluster `config`) keeps its own.
+  defp select_context(nil, _exec), do: :ok
+  defp select_context("", _exec), do: :ok
+
+  defp select_context(kubeconfig, exec) do
+    name = cluster_name(kubeconfig)
+
+    case exec.(kubeconfig_args(kubeconfig) ++ ["config", "get-contexts", "-o", "name"]) do
+      {output, 0} ->
+        if name in String.split(output, "\n", trim: true),
+          do: use_context(kubeconfig, name, exec),
+          else: :ok
+
+      {output, status} ->
+        {:error, {:namespace_list_failed, {status, String.trim(output)}}}
+    end
+  end
+
+  defp use_context(kubeconfig, name, exec) do
+    case exec.(kubeconfig_args(kubeconfig) ++ ["config", "use-context", name]) do
+      {_output, 0} -> :ok
+      {output, status} -> {:error, {:namespace_list_failed, {status, String.trim(output)}}}
+    end
+  end
+
+  defp cluster_name(path), do: path |> Path.basename() |> Path.rootname()
 
   @doc """
   Containers in `pod` (`connect/6` and `list_binaries/5` need one to pick
