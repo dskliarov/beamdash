@@ -6,6 +6,7 @@ defmodule BeamdashWeb.ProcessDetails do
   use Phoenix.Component
 
   alias Beamdash.Format
+  alias BeamdashWeb.TermTree
   alias Phoenix.LiveView.JS
 
   # Processes that answer sys requests (sys:trace and friends)
@@ -279,7 +280,11 @@ defmodule BeamdashWeb.ProcessDetails do
                  are consumed --%>
             <details id={id} phx-mounted={JS.ignore_attributes(["open"])}>
               <summary class="mono">{Format.term(m, @syntax, 90)}</summary>
-              <pre>{Format.pretty(m, @syntax)}</pre>
+              <TermTree.tree value={m} syntax={@syntax} />
+              <details class="message-text">
+                <summary class="muted small">Text</summary>
+                <pre>{Format.pretty(m, @syntax)}</pre>
+              </details>
             </details>
           </li>
         </ol>
