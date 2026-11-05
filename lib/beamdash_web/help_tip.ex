@@ -9,13 +9,15 @@ defmodule BeamdashWeb.HelpTip do
   attr :href, :string, required: true
 
   def tip(assigns) do
+    assigns = assign(assigns, :id, "help-#{:erlang.phash2(assigns.text)}")
+
     ~H"""
-    <span class="help-tip" tabindex="0">
+    <button type="button" class="help-tip" popovertarget={@id} aria-label={"Help: #{@text}"}>
       ?
-      <span class="help-tip-body" role="tooltip">
-        {@text}
-        <a href={@href} target="_blank" rel="noopener">OTP docs</a>
-      </span>
+    </button>
+    <span id={@id} class="help-tip-body" popover>
+      {@text}
+      <a href={@href} target="_blank" rel="noopener">OTP docs</a>
     </span>
     """
   end

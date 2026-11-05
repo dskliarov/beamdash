@@ -1004,7 +1004,7 @@ defmodule BeamdashWeb.MemoryLive do
             limit={@snap.atom_limit}
             hint="atoms are never freed; at the limit the node crashes"
             tip="Atoms are names that are never garbage collected. The limit is set with +t."
-            tip_href="https://www.erlang.org/doc/apps/erts/erlang.html#system_info/1"
+            tip_href="https://www.erlang.org/doc/apps/erts/erl_cmd.html"
           />
           <.meter
             label="Processes"
@@ -1012,7 +1012,7 @@ defmodule BeamdashWeb.MemoryLive do
             limit={@snap.process_limit}
             hint=""
             tip="Live processes against the limit set with +P. Spawning past it fails."
-            tip_href="https://www.erlang.org/doc/apps/erts/erlang.html#system_info/1"
+            tip_href="https://www.erlang.org/doc/apps/erts/erl_cmd.html"
           />
           <.meter
             :if={@snap.ets_limit}
