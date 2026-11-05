@@ -262,7 +262,8 @@ defmodule Beamdash.Settings do
 
   @doc """
   How long, in milliseconds, a trace call to the node may take before it is
-  given up: the module list the trace page reads. Its retries scale from it.
+  given up: the module and application lists `Beamdash.NodeCache` reads. Its
+  retries scale from it.
   """
   def trace_timeout do
     case :persistent_term.get(@trace_timeout_key, :unset) do

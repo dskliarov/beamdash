@@ -1,11 +1,26 @@
 defmodule Beamdash.AppsLiveTest do
-  # The Apps tab against this node, which always runs kernel.
-  use ExUnit.Case, async: true
+  # The Apps tab against a peer node running kernel. The applications come
+  # from the application cache, which is fed by the connected target.
+  use ExUnit.Case, async: false
 
+  alias Beamdash.{Target}
+  alias Beamdash.Test.Fixture
   alias BeamdashWeb.AppsLive
   alias Phoenix.Component
 
-  defp cold_socket do
+  setup do
+    {peer, node} = Fixture.start_peer()
+    {:ok, _} = Target.connect(Atom.to_string(node), Fixture.cookie())
+
+    on_exit(fn ->
+      Target.disconnect()
+      Fixture.stop_peer(peer)
+    end)
+
+    %{node: node}
+  end
+
+  defp cold_socket(node) do
     socket = %Phoenix.LiveView.Socket{
       transport_pid: self(),
       private: %{lifecycle: %Phoenix.LiveView.Lifecycle{}, live_temp: %{}}
@@ -13,7 +28,7 @@ defmodule Beamdash.AppsLiveTest do
 
     Component.assign(socket,
       status: :connected,
-      node: node(),
+      node: node,
       apps: [],
       app: nil,
       tree: nil,
@@ -24,9 +39,9 @@ defmodule Beamdash.AppsLiveTest do
     )
   end
 
-  test "a ?app= link on a cold page opens that application, loading its tree once" do
+  test "a ?app= link on a cold page opens that application, loading its tree once", ctx do
     {:noreply, socket} =
-      AppsLive.handle_params(%{"app" => "kernel"}, "http://localhost/apps", cold_socket())
+      AppsLive.handle_params(%{"app" => "kernel"}, "http://localhost/apps", cold_socket(ctx.node))
 
     assert socket.assigns.loading == :shown
     socket = async_result(socket, :load)
@@ -36,8 +51,8 @@ defmodule Beamdash.AppsLiveTest do
     refute_receive {:phoenix, :async_result, {:start, {_, _, :load, _}}}, 100
   end
 
-  test "the Tree switch sets the process tree to outline, and Graph sets it back" do
-    socket = Component.assign(cold_socket(), tree_mode: :graph)
+  test "the Tree switch sets the process tree to outline, and Graph sets it back", ctx do
+    socket = Component.assign(cold_socket(ctx.node), tree_mode: :graph)
 
     {:noreply, socket} = AppsLive.handle_event("tree_mode", %{"mode" => "tree"}, socket)
     assert socket.assigns.tree_mode == :tree

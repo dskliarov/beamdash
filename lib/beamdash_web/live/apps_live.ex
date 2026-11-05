@@ -11,7 +11,7 @@ defmodule BeamdashWeb.AppsLive do
   """
   use Phoenix.LiveView
 
-  alias Beamdash.{Apps, Format, Plugins, Target}
+  alias Beamdash.{AppCache, Apps, Format, Plugins, Target}
   alias BeamdashWeb.SourceTabs
 
   @refresh_ms 5_000
@@ -81,7 +81,7 @@ defmodule BeamdashWeb.AppsLive do
 
   # the application list, then the chosen application's tree and details
   defp fetch(node, requested, current) do
-    with {:ok, apps} <- Apps.list(node) do
+    with {:ok, apps} <- AppCache.apps() do
       app = pick_app(apps, requested, current)
 
       case tree_info(node, app) do

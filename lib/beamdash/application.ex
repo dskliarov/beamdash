@@ -11,6 +11,7 @@ defmodule Beamdash.Application do
       Beamdash.Target,
       Beamdash.Tracer,
       Beamdash.ModuleCache,
+      Beamdash.AppCache,
       Beamdash.SeqTracer,
       Beamdash.Crashes,
       Beamdash.Logs,

@@ -738,8 +738,8 @@ defmodule BeamdashWeb.SettingsLive do
             <div>
               <label for="trace-timeout"><strong>Trace call timeout</strong></label>
               <p class="muted small">
-                How many seconds the trace page waits for the node's module list before it
-                gives up. Raise it for a slow or busy node.
+                How many seconds the module and application lists wait for the node before
+                they give up. Raise it for a slow or busy node.
               </p>
               <p :if={@trace_timeout_error} class="error small" role="alert">
                 {@trace_timeout_error}

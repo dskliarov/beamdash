@@ -8,7 +8,8 @@ defmodule Beamdash.Apps do
   alias Beamdash.Target
 
   @doc "`[%{name, description, vsn, master}]` in `application:which_applications/0` order."
-  def list(node), do: Target.rpc(node, :beamdash_agent, :applications, [])
+  def list(node, timeout \\ nil),
+    do: Target.rpc(node, :beamdash_agent, :applications, [], timeout)
 
   @doc """
   `{:ok, [{name, vsn}]}`: every running application on `node`, from
