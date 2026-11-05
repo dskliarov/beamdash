@@ -11,6 +11,8 @@ defmodule BeamdashWeb.Router do
     plug :put_secure_browser_headers
   end
 
+  forward "/mcp", BeamdashWeb.McpPlug
+
   # before the live routes: "/plugins/:plugin/:page" would match it too
   scope "/plugins", BeamdashWeb do
     get "/:plugin/plugin.css", PluginAssetController, :css

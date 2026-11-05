@@ -620,6 +620,26 @@ The agent includes these compatibility and reliability improvements:
   directories are indexed once instead of twice, without warnings, and
   Elixir's standard library is excluded.
 
+## MCP server
+
+beamdash serves the node it is attached to over MCP (JSON-RPC over HTTP) at
+`http://127.0.0.1:4000/mcp`, for coding agents. The tools are read-only:
+
+- `node_info`: name, OTP and ERTS versions, process count, memory, uptime
+- `list_processes`: processes, largest memory first (`limit`, default 100)
+- `process_details`: memory, GC, reductions and mailbox of one process (`pid`)
+- `ets_tables`: ETS tables, largest memory first
+
+Only loopback clients are accepted, and a request with a non-loopback `Host`
+or `Origin` is refused, so a web page cannot reach it. Connect beamdash to a
+node first; the tools report that they are not connected otherwise.
+
+For Claude Code:
+
+```
+claude mcp add --transport http beamdash http://127.0.0.1:4000/mcp
+```
+
 ## License
 
 GPL-3.0-or-later (see `LICENSE`). The tracing agent is
