@@ -21,8 +21,12 @@ defmodule Beamdash.NodeCache do
     GenServer.start_link(__MODULE__, opts, name: Keyword.fetch!(opts, :name))
   end
 
-  @doc "The value, `{:ok, value}`, or the error of the fetch."
-  def get(server), do: GenServer.call(server, :get, call_timeout())
+  @doc "The value, `{:ok, value}`, or the error of the fetch; a timeout while waiting is the timeout error."
+  def get(server) do
+    GenServer.call(server, :get, call_timeout())
+  catch
+    :exit, {:timeout, _} -> {:error, {:error, {:erpc, :timeout}}}
+  end
 
   @impl true
   def init(opts) do

@@ -108,6 +108,19 @@ defmodule Beamdash.ModuleCacheRaceTest do
     assert Process.read_timer(timer) > 60_000
   end
 
+  test "a caller whose wait runs out gets the timeout reply, not an exit", ctx do
+    on_exit(fn -> Settings.put_trace_timeout(30_000) end)
+    :ok = Settings.put_trace_timeout(1_000)
+
+    :sys.suspend(ctx.cache)
+
+    try do
+      assert @timeout_reply = ModuleCache.modules(ctx.cache)
+    after
+      :sys.resume(ctx.cache)
+    end
+  end
+
   test "a failure other than a timeout is answered at once, not retried", ctx do
     send(ctx.cache, {:beamdash_target, {:connected, :n1@host}})
     assert_receive {:fetch, 30_000, from}

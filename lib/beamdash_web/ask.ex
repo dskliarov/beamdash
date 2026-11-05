@@ -32,12 +32,11 @@ defmodule BeamdashWeb.Ask do
     else
       ref = make_ref()
       parent = self()
-      module = loaded_module(q)
 
       spawn(fn ->
         result =
           try do
-            AskAdvisor.ask(q, module)
+            AskAdvisor.ask(q, loaded_module(q))
           catch
             _, _ -> {:error, "#{Beamdash.Jev.name()} could not be reached. Try again."}
           end

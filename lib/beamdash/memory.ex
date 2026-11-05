@@ -12,8 +12,8 @@ defmodule Beamdash.Memory do
 
   alias Beamdash.{AgentLoader, Target}
 
-  @timeout 30_000
   @recon_modules [:recon_lib, :recon, :recon_alloc]
+  @timeout 30_000
 
   @doc """
   Makes recon usable on `node` if possible. Returns `:node` (the node has

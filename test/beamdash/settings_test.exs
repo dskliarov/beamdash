@@ -370,12 +370,12 @@ defmodule Beamdash.SettingsTest do
     end
   end
 
-  test "node call timeout applies at once, is saved, and the timeout message names it" do
+  test "node call timeout applies at once, is saved, and the timeout message points to Settings" do
     on_exit(fn -> Settings.put_rpc_timeout(5_000) end)
 
     assert :ok = Settings.put_rpc_timeout(12_000)
     assert Settings.rpc_timeout() == 12_000
-    assert Format.error({:error, {:erpc, :timeout}}) =~ "within 12 s"
+    assert Format.error({:error, {:error, {:erpc, :timeout}}}) =~ "Settings"
 
     Settings.reload()
     assert Settings.rpc_timeout() == 12_000
