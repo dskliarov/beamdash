@@ -12,6 +12,61 @@ defmodule Beamdash.ProcessDetailsTest do
     assert [{^b, {:b, 1}}, {^a0, :a}] = ProcessDetails.message_ids([{:b, 1}, :a])
   end
 
+  test "the process fields link to their OTP documentation" do
+    detail =
+      Map.merge(Beamdash.Test.Fixture.gc_detail(), %{
+        reductions: 1,
+        links: [],
+        monitors: [],
+        monitored_by: [],
+        current_stacktrace: [],
+        trap_exit: false,
+        priority: :normal,
+        mailbox: %{length: 0, limit: 100, messages: []}
+      })
+
+    html =
+      render_component(&ProcessDetails.panel/1,
+        details: detail,
+        history: [],
+        syntax: :erlang,
+        kind: :gen_server
+      )
+
+    assert html =~ ~s(href="https://www.erlang.org/doc/apps/erts/erlang.html#process_info/2")
+    assert html =~ ~s(class="help-tip")
+    assert html =~ ~s(href="https://www.erlang.org/doc/apps/stdlib/gen_server.html")
+    assert html =~ ~s(href="https://www.erlang.org/doc/apps/erts/erlang.html#spawn_opt/4")
+    assert html =~ ~s(aria-label="Help: Status")
+    ids = Regex.scan(~r/aria-describedby="([^"]+)"/, html, capture: :all_but_first)
+    assert length(ids) > 1
+
+    for [id] <- ids do
+      assert html =~ ~s(popovertarget="#{id}")
+      assert html =~ ~s(id="#{id}" class="help-tip-body")
+    end
+  end
+
+  test "a process with no behaviour gets no behaviour tip" do
+    detail =
+      Map.merge(Beamdash.Test.Fixture.gc_detail(), %{
+        reductions: 1,
+        links: [],
+        monitors: [],
+        monitored_by: [],
+        current_stacktrace: [],
+        trap_exit: false,
+        priority: :normal,
+        mailbox: %{length: 0, limit: 100, messages: []}
+      })
+
+    html =
+      render_component(&ProcessDetails.panel/1, details: detail, history: [], syntax: :erlang)
+
+    refute html =~ "stdlib/gen_server.html"
+    refute html =~ "stdlib/supervisor.html"
+  end
+
   test "an opened message stays open when the panel refreshes" do
     detail =
       Map.merge(Beamdash.Test.Fixture.gc_detail(), %{

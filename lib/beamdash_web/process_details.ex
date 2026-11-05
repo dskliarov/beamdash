@@ -6,11 +6,40 @@ defmodule BeamdashWeb.ProcessDetails do
   use Phoenix.Component
 
   alias Beamdash.Format
+  import BeamdashWeb.HelpTip, only: [tip: 1]
+
   alias BeamdashWeb.TermTree
   alias Phoenix.LiveView.JS
 
   # Processes that answer sys requests (sys:trace and friends)
   @sys_kinds [:gen_server, :gen_statem, :gen_event, :supervisor]
+
+  @behaviour_help %{
+    gen_server:
+      {"A gen_server keeps state. It answers calls and handles casts and plain messages one at a time.",
+       "https://www.erlang.org/doc/apps/stdlib/gen_server.html"},
+    gen_statem:
+      {"A gen_statem is a state machine: its current state decides how each event is handled.",
+       "https://www.erlang.org/doc/apps/stdlib/gen_statem.html"},
+    supervisor:
+      {"A supervisor starts its child processes and restarts them when they crash, as its restart strategy says.",
+       "https://www.erlang.org/doc/apps/stdlib/supervisor.html"}
+  }
+
+  attr :kind, :atom, default: nil
+
+  defp behaviour_tip(%{kind: kind} = assigns) when is_map_key(@behaviour_help, kind) do
+    {text, href} = @behaviour_help[kind]
+    assigns = assign(assigns, label: "#{kind} behaviour", text: text, href: href)
+
+    ~H"""
+    <.tip label={@label} text={@text} href={@href} />
+    """
+  end
+
+  defp behaviour_tip(assigns), do: ~H""
+
+  defp erts_doc(anchor), do: "https://www.erlang.org/doc/apps/erts/erlang.html#" <> anchor
 
   attr :details, :map, required: true
   attr :history, :list, required: true
@@ -67,12 +96,15 @@ defmodule BeamdashWeb.ProcessDetails do
       </div>
       <div class="panel-head">
         <div>
-          <h3 class="mono">
-            <BeamdashWeb.Icons.kind kind={@kind} />
-            {if @details.registered_name,
-              do: Format.name(@details.registered_name, @syntax),
-              else: Format.pid(@details.pid, @syntax)}
-          </h3>
+          <div class="panel-title">
+            <h3 class="mono">
+              <BeamdashWeb.Icons.kind kind={@kind} />
+              {if @details.registered_name,
+                do: Format.name(@details.registered_name, @syntax),
+                else: Format.pid(@details.pid, @syntax)}
+            </h3>
+            <.behaviour_tip kind={@kind} />
+          </div>
           <p class="muted small mono">
             {Format.pid(@details.pid, @syntax)} · {Format.mfa(@details.initial_call, @syntax)}
           </p>
@@ -136,11 +168,32 @@ defmodule BeamdashWeb.ProcessDetails do
       />
 
       <dl class="facts">
-        <dt>Status</dt>
+        <dt>
+          Status
+          <.tip
+            label="Status"
+            text="What the process is doing now: running, waiting for a message, ready to run, or suspended."
+            href={erts_doc("process_info/2")}
+          />
+        </dt>
         <dd>{@details.status}</dd>
-        <dt>Running</dt>
+        <dt>
+          Running
+          <.tip
+            label="Running"
+            text="The function the process is executing at this moment."
+            href={erts_doc("process_info/2")}
+          />
+        </dt>
         <dd class="mono">{Format.mfa(@details.current_function, @syntax)}</dd>
-        <dt>Priority</dt>
+        <dt>
+          Priority
+          <.tip
+            label="Priority"
+            text="How the scheduler ranks this process: low, normal, high or max. Traps exits means exit signals arrive as messages."
+            href={erts_doc("process_flag/2")}
+          />
+        </dt>
         <dd>{@details.priority}{if @details.trap_exit, do: " · traps exits"}</dd>
       </dl>
 
@@ -151,7 +204,14 @@ defmodule BeamdashWeb.ProcessDetails do
         <div class="stat-row">
           <div class="stat">
             <span class="stat-value">{rate_text(@rate)}</span>
-            <span class="stat-label">reductions / s now</span>
+            <span class="stat-label">
+              reductions / s now
+              <.tip
+                label="Reductions / s now"
+                text="Reductions are the unit of work the scheduler counts, roughly one per function call."
+                href={erts_doc("process_info/2")}
+              />
+            </span>
           </div>
           <div class="stat">
             <span class="stat-value">{Format.number(@details.reductions)}</span>
@@ -171,7 +231,14 @@ defmodule BeamdashWeb.ProcessDetails do
         <div class="stat-row">
           <div class="stat">
             <span class="stat-value">{Format.bytes(@mem.total)}</span>
-            <span class="stat-label">total</span>
+            <span class="stat-label">
+              total
+              <.tip
+                label="Total memory"
+                text="Memory the process holds: its heap, its stack and the messages it has received."
+                href={erts_doc("process_info/2")}
+              />
+            </span>
           </div>
           <div class="stat">
             <span class="stat-value">{Format.bytes(@mem.binary_bytes)}</span>
@@ -179,6 +246,11 @@ defmodule BeamdashWeb.ProcessDetails do
               in {Format.number(@mem.binary_count)} off-heap binar{if @mem.binary_count == 1,
                 do: "y",
                 else: "ies"}
+              <.tip
+                label="Off-heap binaries"
+                text="Binaries over 64 bytes are stored outside the heap and shared by reference. Only this process's references are counted."
+                href={erts_doc("process_info/2")}
+              />
             </span>
           </div>
         </div>
@@ -190,22 +262,70 @@ defmodule BeamdashWeb.ProcessDetails do
         />
         <table class="kv">
           <tr>
-            <th>Heap (young)</th><td>{Format.bytes(@mem.heap)}</td>
+            <th>
+              Heap (young)
+              <.tip
+                label="Heap (young)"
+                text="Where new data is allocated. When it fills up, a young garbage collection runs."
+                href={erts_doc("process_info/2")}
+              />
+            </th>
+            <td>{Format.bytes(@mem.heap)}</td>
           </tr>
           <tr>
-            <th>Old heap</th><td>{Format.bytes(@gc.old_heap_size)}</td>
+            <th>
+              Old heap
+              <.tip
+                label="Old heap"
+                text="Data that survived a collection is moved here. When it fills up, a full garbage collection runs."
+                href={erts_doc("process_info/2")}
+              />
+            </th>
+            <td>{Format.bytes(@gc.old_heap_size)}</td>
           </tr>
           <tr>
-            <th>Total heap</th><td>{Format.bytes(@mem.total_heap)}</td>
+            <th>
+              Total heap
+              <.tip
+                label="Total heap"
+                text="The young and old heaps together."
+                href={erts_doc("process_info/2")}
+              />
+            </th>
+            <td>{Format.bytes(@mem.total_heap)}</td>
           </tr>
           <tr>
-            <th>Stack</th><td>{Format.bytes(@mem.stack)}</td>
+            <th>
+              Stack
+              <.tip
+                label="Stack"
+                text="Space for the call frames and local variables of the functions that are running."
+                href={erts_doc("process_info/2")}
+              />
+            </th>
+            <td>{Format.bytes(@mem.stack)}</td>
           </tr>
           <tr>
-            <th>Heap fragments</th><td>{Format.bytes(@gc.mbuf_size)}</td>
+            <th>
+              Heap fragments
+              <.tip
+                label="Heap fragments"
+                text="Memory for messages that have arrived but are not yet copied into the heap."
+                href={erts_doc("process_info/2")}
+              />
+            </th>
+            <td>{Format.bytes(@gc.mbuf_size)}</td>
           </tr>
           <tr>
-            <th>Messages stored</th><td>{@mem.message_queue_data || "n/a"}</td>
+            <th>
+              Messages stored
+              <.tip
+                label="Messages stored"
+                text="Where mailbox messages are kept: on_heap (copied into the heap) or off_heap (outside it). Set by the message_queue_data flag."
+                href={erts_doc("process_flag/2")}
+              />
+            </th>
+            <td>{@mem.message_queue_data || "n/a"}</td>
           </tr>
         </table>
       </section>
@@ -229,25 +349,71 @@ defmodule BeamdashWeb.ProcessDetails do
         </p>
         <table class="kv">
           <tr>
-            <th>Minor GCs since last full sweep</th>
+            <th>
+              Minor GCs since last full sweep
+              <.tip
+                label="Minor GCs since last full sweep"
+                text="Collections of the young heap since the last full sweep. A full sweep collects the old heap too, once this count reaches the setting."
+                href={erts_doc("process_info/2")}
+              />
+            </th>
             <td>
               {Format.number(@gc.minor_gcs)} of {Format.number(@gc.fullsweep_after)}
             </td>
           </tr>
           <tr>
-            <th>Heap block (allocated)</th><td>{Format.bytes(@gc.heap_block_size)}</td>
+            <th>
+              Heap block (allocated)
+              <.tip
+                label="Heap block (allocated)"
+                text="Memory the heap has reserved from the allocator. It can be larger than the data in it."
+                href={erts_doc("process_info/2")}
+              />
+            </th>
+            <td>{Format.bytes(@gc.heap_block_size)}</td>
           </tr>
           <tr>
-            <th>Live after last GC</th><td>{Format.bytes(@gc.recent_size)}</td>
+            <th>
+              Live after last GC
+              <.tip
+                label="Live after last GC"
+                text="Data that survived the last collection. This is the size the process really needs."
+                href={erts_doc("process_info/2")}
+              />
+            </th>
+            <td>{Format.bytes(@gc.recent_size)}</td>
           </tr>
           <tr>
-            <th>Min heap size</th><td>{Format.bytes(@gc.min_heap_size)}</td>
+            <th>
+              Min heap size
+              <.tip
+                label="Min heap size"
+                text="The smallest heap the process starts with, set when it is spawned. A bigger value avoids early collections."
+                href={erts_doc("spawn_opt/4")}
+              />
+            </th>
+            <td>{Format.bytes(@gc.min_heap_size)}</td>
           </tr>
           <tr>
-            <th>Max heap size</th><td>{bytes_or(@gc.max_heap_size)}</td>
+            <th>
+              Max heap size
+              <.tip
+                label="Max heap size"
+                text="A limit on the heap. If the process grows past it, the process is killed. Shown as unlimited when no limit is set."
+                href={erts_doc("process_flag/2")}
+              />
+            </th>
+            <td>{bytes_or(@gc.max_heap_size)}</td>
           </tr>
           <tr>
-            <th>Binary vheap (young / old)</th>
+            <th>
+              Binary vheap (young / old)
+              <.tip
+                label="Binary vheap (young / old)"
+                text="Size counted for off-heap binaries. When it fills up, a collection runs, so many binaries make collections more frequent."
+                href={erts_doc("process_info/2")}
+              />
+            </th>
             <td>{Format.bytes(@gc.bin_vheap_size)} / {Format.bytes(@gc.bin_old_vheap_size)}</td>
           </tr>
         </table>

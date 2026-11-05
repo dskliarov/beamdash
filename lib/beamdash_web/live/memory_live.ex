@@ -9,6 +9,8 @@ defmodule BeamdashWeb.MemoryLive do
 
   alias Beamdash.{Format, Memory, MemoryAdvisor, Target}
 
+  import BeamdashWeb.HelpTip, only: [tip: 1]
+
   @refresh_ms 2_000
   # 5 minutes of 2 s samples
   @history 150
@@ -1001,17 +1003,35 @@ defmodule BeamdashWeb.MemoryLive do
             used={@snap.atom_count}
             limit={@snap.atom_limit}
             hint="atoms are never freed; at the limit the node crashes"
+            tip="Atoms are names that are never garbage collected. The limit is set with +t."
+            tip_href="https://www.erlang.org/doc/apps/erts/erl_cmd.html"
           />
-          <.meter label="Processes" used={@snap.process_count} limit={@snap.process_limit} hint="" />
+          <.meter
+            label="Processes"
+            used={@snap.process_count}
+            limit={@snap.process_limit}
+            hint=""
+            tip="Live processes against the limit set with +P. Spawning past it fails."
+            tip_href="https://www.erlang.org/doc/apps/erts/erl_cmd.html"
+          />
           <.meter
             :if={@snap.ets_limit}
             label="ETS tables"
             used={@snap.ets_count}
             limit={@snap.ets_limit}
             hint=""
+            tip="Tables against the limit set with +e. Creating one past it fails."
+            tip_href="https://www.erlang.org/doc/apps/stdlib/ets.html"
           />
           <div class="meter">
-            <span class="meter-label">Modules loaded</span>
+            <span class="meter-label">
+              Modules loaded
+              <.tip
+                label="Modules loaded"
+                text="Modules loaded into the node, as code:all_loaded/0 lists them."
+                href="https://www.erlang.org/doc/apps/kernel/code.html#all_loaded/0"
+              />
+            </span>
             <span class="mono">{Format.number(@snap.module_count)}</span>
           </div>
         </div>
@@ -1404,13 +1424,18 @@ defmodule BeamdashWeb.MemoryLive do
   attr :used, :integer, required: true
   attr :limit, :integer, required: true
   attr :hint, :string, default: ""
+  attr :tip, :string, required: true
+  attr :tip_href, :string, required: true
 
   defp meter(assigns) do
     assigns = assign(assigns, pct: Float.round(assigns.used * 100 / max(assigns.limit, 1), 1))
 
     ~H"""
     <div class={["meter", @pct >= 80 && "warn"]} title={@hint}>
-      <span class="meter-label">{@label}</span>
+      <span class="meter-label">
+        {@label}
+        <.tip label={@label} text={@tip} href={@tip_href} />
+      </span>
       <span class="mono">{Format.number(@used)} / {Format.number(@limit)}</span>
       <span class="meter-track"><span style={"width: #{min(@pct, 100)}%"}></span></span>
       <span class="muted small">{@pct}%{if @pct >= 80, do: " · near the limit"}</span>
