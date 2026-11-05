@@ -60,10 +60,13 @@ defmodule Beamdash.ModuleCache do
   end
 
   def handle_info({:beamdash_target, {:connected, node}}, state),
-    do: {:noreply, fetch(%{state | node: node, modules: nil})}
+    do: {:noreply, fetch(%{cancel(state) | node: node, modules: nil})}
 
-  def handle_info({:beamdash_target, {:disconnected, _}}, state),
-    do: {:noreply, %{state | node: nil, modules: nil}}
+  def handle_info({:beamdash_target, {:disconnected, _}}, state) do
+    state = cancel(state)
+    Enum.each(state.waiting, &GenServer.reply(&1, {:error, :not_connected}))
+    {:noreply, %{state | node: nil, modules: nil, waiting: []}}
+  end
 
   def handle_info(_message, state), do: {:noreply, state}
 
@@ -73,6 +76,13 @@ defmodule Beamdash.ModuleCache do
   end
 
   defp fetch(state), do: state
+
+  defp cancel(%{task: nil} = state), do: state
+
+  defp cancel(%{task: task} = state) do
+    Task.shutdown(task, :brutal_kill)
+    %{state | task: nil}
+  end
 
   defp fetch_modules(tracer) do
     Tracer.module_functions(tracer)

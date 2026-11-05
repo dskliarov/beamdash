@@ -77,8 +77,6 @@ defmodule BeamdashWeb.ProfileLive do
     end
   end
 
-  # The tprof check and the module list are calls into the node, so they are
-  # read in tasks and the page does not wait for them.
   defp working(%{in_flight: in_flight}) do
     cond do
       MapSet.member?(in_flight, :available) -> "Checking the profiler on the node"
@@ -87,6 +85,8 @@ defmodule BeamdashWeb.ProfileLive do
     end
   end
 
+  # The tprof check and the module list are calls into the node, so they are
+  # read in tasks and the page does not wait for them.
   defp request_available(socket) do
     if MapSet.member?(socket.assigns.in_flight, :available) do
       socket

@@ -706,7 +706,7 @@ defmodule BeamdashWeb.SettingsLive do
               <label for="rpc-timeout"><strong>Node call timeout</strong></label>
               <p class="muted small">
                 How many seconds a page waits for the node before it gives up. Raise it
-                for a slow or busy node. Saved for the next start.
+                for a slow or busy node.
               </p>
               <p :if={@rpc_timeout_error} class="error small" role="alert">{@rpc_timeout_error}</p>
             </div>

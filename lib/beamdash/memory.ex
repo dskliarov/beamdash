@@ -12,6 +12,7 @@ defmodule Beamdash.Memory do
 
   alias Beamdash.{AgentLoader, Target}
 
+  @timeout 30_000
   @recon_modules [:recon_lib, :recon, :recon_alloc]
 
   @doc """
@@ -92,5 +93,5 @@ defmodule Beamdash.Memory do
   @doc "A process's stack (and with `status?`, `sys:get_status/2`)."
   def process_state(node, pid, status?), do: call(node, :process_state, [pid, status?])
 
-  defp call(node, fun, args), do: Target.rpc(node, :beamdash_agent, fun, args)
+  defp call(node, fun, args), do: Target.rpc(node, :beamdash_agent, fun, args, @timeout)
 end

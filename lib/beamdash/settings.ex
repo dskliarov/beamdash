@@ -21,7 +21,7 @@ defmodule Beamdash.Settings do
   @nx_key {__MODULE__, :nx_enabled}
   @kev_port_key {__MODULE__, :kev_port}
   @rpc_timeout_key {__MODULE__, :rpc_timeout}
-  @default_rpc_timeout 15_000
+  @default_rpc_timeout 5_000
   @rpc_timeout_range 1_000..120_000
   @kube_key {__MODULE__, :kubeconfig_dir}
   @notebooks_key {__MODULE__, :notebooks_dir}
@@ -237,7 +237,7 @@ defmodule Beamdash.Settings do
 
   @doc """
   How long, in milliseconds, a call to the node may take before it is given
-  up (see `Beamdash.Target.rpc/5`). Saved for the next start.
+  up (see `Beamdash.Target.rpc/5`). Changing it applies to the next call.
   """
   def rpc_timeout do
     case :persistent_term.get(@rpc_timeout_key, :unset) do
@@ -254,7 +254,6 @@ defmodule Beamdash.Settings do
   def put_rpc_timeout(ms) when is_integer(ms) and ms in @rpc_timeout_range do
     :persistent_term.put(@rpc_timeout_key, ms)
     save("rpc_timeout", if(ms == @default_rpc_timeout, do: nil, else: ms))
-    Phoenix.PubSub.broadcast(Beamdash.PubSub, "settings", {:beamdash_rpc_timeout, ms})
     :ok
   end
 

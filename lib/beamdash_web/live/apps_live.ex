@@ -81,10 +81,13 @@ defmodule BeamdashWeb.AppsLive do
 
   # the application list, then the chosen application's tree and details
   defp fetch(node, requested, current) do
-    with {:ok, apps} <- Apps.list(node),
-         app = pick_app(apps, requested, current),
-         {:ok, tree, info} <- tree_info(node, app) do
-      {:ok, apps, app, tree, info}
+    with {:ok, apps} <- Apps.list(node) do
+      app = pick_app(apps, requested, current)
+
+      case tree_info(node, app) do
+        {:ok, tree, info} -> {:ok, apps, app, tree, info, nil}
+        {:error, reason} -> {:ok, apps, app, nil, nil, reason}
+      end
     end
   end
 
@@ -164,9 +167,16 @@ defmodule BeamdashWeb.AppsLive do
   def handle_event("refresh", _params, socket), do: {:noreply, load(socket, nil, :shown)}
 
   @impl true
-  def handle_async(:load, {:ok, {:ok, apps, app, tree, info}}, socket) do
+  def handle_async(:load, {:ok, {:ok, apps, app, tree, info, error}}, socket) do
     socket =
-      assign(socket, loading: false, apps: apps, app: app, tree: tree, info: info, error: nil)
+      assign(socket,
+        loading: false,
+        apps: apps,
+        app: app,
+        tree: tree,
+        info: info,
+        error: error && Format.error(error)
+      )
 
     {:noreply, load_proc(socket)}
   end

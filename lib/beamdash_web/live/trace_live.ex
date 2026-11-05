@@ -80,13 +80,13 @@ defmodule BeamdashWeb.TraceLive do
     request_modules(socket)
   end
 
-  # read in a task so the page does not wait for the node
   defp working(%{graph: {:loading, _}}), do: "Building the call graph"
 
   defp working(%{in_flight: in_flight}) do
     if MapSet.member?(in_flight, :modules), do: "Reading the module list"
   end
 
+  # read in a task so the page does not wait for the node
   defp request_modules(socket) do
     if MapSet.member?(socket.assigns.in_flight, :modules) do
       socket
