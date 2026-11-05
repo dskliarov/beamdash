@@ -12,10 +12,16 @@ defmodule BeamdashWeb.HelpTip do
     assigns = assign(assigns, :id, "help-#{:erlang.phash2(assigns.text)}")
 
     ~H"""
-    <button type="button" class="help-tip" popovertarget={@id} aria-label={"Help: #{@text}"}>
+    <button
+      type="button"
+      class="help-tip"
+      popovertarget={@id}
+      style={"anchor-name: --#{@id}"}
+      aria-label={"Help: #{@text}"}
+    >
       ?
     </button>
-    <span id={@id} class="help-tip-body" popover>
+    <span id={@id} class="help-tip-body" popover style={"position-anchor: --#{@id}"}>
       {@text}
       <a href={@href} target="_blank" rel="noopener">OTP docs</a>
     </span>

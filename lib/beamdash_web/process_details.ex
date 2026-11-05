@@ -14,6 +14,31 @@ defmodule BeamdashWeb.ProcessDetails do
   # Processes that answer sys requests (sys:trace and friends)
   @sys_kinds [:gen_server, :gen_statem, :gen_event, :supervisor]
 
+  @behaviour_help %{
+    gen_server:
+      {"A gen_server keeps state. It answers calls and handles casts and plain messages one at a time.",
+       "https://www.erlang.org/doc/apps/stdlib/gen_server.html"},
+    gen_statem:
+      {"A gen_statem is a state machine: its current state decides how each event is handled.",
+       "https://www.erlang.org/doc/apps/stdlib/gen_statem.html"},
+    supervisor:
+      {"A supervisor starts its child processes and restarts them when they crash, as its restart strategy says.",
+       "https://www.erlang.org/doc/apps/stdlib/supervisor.html"}
+  }
+
+  attr :kind, :atom, default: nil
+
+  defp behaviour_tip(%{kind: kind} = assigns) when is_map_key(@behaviour_help, kind) do
+    {text, href} = @behaviour_help[kind]
+    assigns = assign(assigns, text: text, href: href)
+
+    ~H"""
+    <.tip text={@text} href={@href} />
+    """
+  end
+
+  defp behaviour_tip(assigns), do: ~H""
+
   attr :details, :map, required: true
   attr :history, :list, required: true
   attr :syntax, :atom, required: true
@@ -69,12 +94,15 @@ defmodule BeamdashWeb.ProcessDetails do
       </div>
       <div class="panel-head">
         <div>
-          <h3 class="mono">
-            <BeamdashWeb.Icons.kind kind={@kind} />
-            {if @details.registered_name,
-              do: Format.name(@details.registered_name, @syntax),
-              else: Format.pid(@details.pid, @syntax)}
-          </h3>
+          <div class="panel-title">
+            <h3 class="mono">
+              <BeamdashWeb.Icons.kind kind={@kind} />
+              {if @details.registered_name,
+                do: Format.name(@details.registered_name, @syntax),
+                else: Format.pid(@details.pid, @syntax)}
+            </h3>
+            <.behaviour_tip kind={@kind} />
+          </div>
           <p class="muted small mono">
             {Format.pid(@details.pid, @syntax)} · {Format.mfa(@details.initial_call, @syntax)}
           </p>
@@ -307,25 +335,65 @@ defmodule BeamdashWeb.ProcessDetails do
         </p>
         <table class="kv">
           <tr>
-            <th>Minor GCs since last full sweep</th>
+            <th>
+              Minor GCs since last full sweep
+              <.tip
+                text="Collections of the young heap since the last full sweep. A full sweep collects the old heap too, once this count reaches the setting."
+                href="https://www.erlang.org/doc/apps/erts/erlang.html#process_info/2"
+              />
+            </th>
             <td>
               {Format.number(@gc.minor_gcs)} of {Format.number(@gc.fullsweep_after)}
             </td>
           </tr>
           <tr>
-            <th>Heap block (allocated)</th><td>{Format.bytes(@gc.heap_block_size)}</td>
+            <th>
+              Heap block (allocated)
+              <.tip
+                text="Memory the heap has reserved from the allocator. It can be larger than the data in it."
+                href="https://www.erlang.org/doc/apps/erts/erlang.html#process_info/2"
+              />
+            </th>
+            <td>{Format.bytes(@gc.heap_block_size)}</td>
           </tr>
           <tr>
-            <th>Live after last GC</th><td>{Format.bytes(@gc.recent_size)}</td>
+            <th>
+              Live after last GC
+              <.tip
+                text="Data that survived the last collection. This is the size the process really needs."
+                href="https://www.erlang.org/doc/apps/erts/erlang.html#process_info/2"
+              />
+            </th>
+            <td>{Format.bytes(@gc.recent_size)}</td>
           </tr>
           <tr>
-            <th>Min heap size</th><td>{Format.bytes(@gc.min_heap_size)}</td>
+            <th>
+              Min heap size
+              <.tip
+                text="The smallest heap the process starts with, set when it is spawned. A bigger value avoids early collections."
+                href="https://www.erlang.org/doc/apps/erts/erlang.html#spawn_opt/4"
+              />
+            </th>
+            <td>{Format.bytes(@gc.min_heap_size)}</td>
           </tr>
           <tr>
-            <th>Max heap size</th><td>{bytes_or(@gc.max_heap_size)}</td>
+            <th>
+              Max heap size
+              <.tip
+                text="A limit on the heap. If the process grows past it, the process is killed. Shown as none when no limit is set."
+                href="https://www.erlang.org/doc/apps/erts/erlang.html#process_flag/2"
+              />
+            </th>
+            <td>{bytes_or(@gc.max_heap_size)}</td>
           </tr>
           <tr>
-            <th>Binary vheap (young / old)</th>
+            <th>
+              Binary vheap (young / old)
+              <.tip
+                text="Size counted for off-heap binaries. When it fills up, a collection runs, so many binaries make collections more frequent."
+                href="https://www.erlang.org/doc/apps/erts/erlang.html#process_info/2"
+              />
+            </th>
             <td>{Format.bytes(@gc.bin_vheap_size)} / {Format.bytes(@gc.bin_old_vheap_size)}</td>
           </tr>
         </table>

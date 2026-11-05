@@ -29,11 +29,15 @@ defmodule Beamdash.ProcessDetailsTest do
       render_component(&ProcessDetails.panel/1,
         details: detail,
         history: [],
-        syntax: :erlang
+        syntax: :erlang,
+        kind: :gen_server
       )
 
     assert html =~ ~s(href="https://www.erlang.org/doc/apps/erts/erlang.html#process_info/2")
     assert html =~ ~s(class="help-tip")
+    assert html =~ ~s(href="https://www.erlang.org/doc/apps/stdlib/gen_server.html")
+    assert html =~ ~s(href="https://www.erlang.org/doc/apps/erts/erlang.html#spawn_opt/4")
+    assert html =~ ~s(popovertarget=)
   end
 
   test "an opened message stays open when the panel refreshes" do
