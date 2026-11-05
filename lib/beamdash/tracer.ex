@@ -111,9 +111,9 @@ defmodule Beamdash.Tracer do
 
   def subscribe(server \\ __MODULE__), do: GenServer.call(server, {:subscribe, self()})
 
-  @doc "Loaded modules on the target: `[{mod, exports, locals}]`."
-  def module_functions(server \\ __MODULE__),
-    do: GenServer.call(server, :module_functions, 30_000)
+  @doc "Loaded modules on the target: `[{mod, exports, locals}]`, the node given `timeout` ms."
+  def module_functions(server \\ __MODULE__, timeout \\ Beamdash.Settings.trace_timeout()),
+    do: GenServer.call(server, {:module_functions, timeout}, timeout + 1_000)
 
   ## GenServer
 
@@ -193,12 +193,12 @@ defmodule Beamdash.Tracer do
     {:reply, :ok, put_in(state.subscribers[ref], pid)}
   end
 
-  def handle_call(:module_functions, _from, %{node: nil} = state),
+  def handle_call({:module_functions, _timeout}, _from, %{node: nil} = state),
     do: {:reply, {:error, :not_connected}, state}
 
-  def handle_call(:module_functions, _from, state) do
+  def handle_call({:module_functions, timeout}, _from, state) do
     reply =
-      case Target.rpc(state.node, :erlyberly, :module_functions, []) do
+      case Target.rpc(state.node, :erlyberly, :module_functions, [], timeout) do
         {:ok, mods} -> {:ok, for({mod, exports, locals} <- mods, do: {mod, exports, locals})}
         error -> error
       end

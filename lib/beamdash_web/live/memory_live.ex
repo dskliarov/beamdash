@@ -100,6 +100,13 @@ defmodule BeamdashWeb.MemoryLive do
     |> load_tab()
   end
 
+  defp working(%{busy: :gc}), do: "Collecting garbage on every process"
+  defp working(%{busy: :bin_leak}), do: "Finding binary leaks"
+
+  defp working(%{in_flight: in_flight}) do
+    if MapSet.size(in_flight) > 0, do: "Reading memory from the node"
+  end
+
   ## Data
 
   # Each read of the node runs in a task, so a slow node never holds up
@@ -901,13 +908,15 @@ defmodule BeamdashWeb.MemoryLive do
       assign(assigns,
         parts_list: @parts,
         attrs: @attrs,
-        parts: if(assigns.snap, do: parts(assigns.snap.memory), else: [])
+        parts: if(assigns.snap, do: parts(assigns.snap.memory), else: []),
+        working: working(assigns)
       )
 
     ~H"""
     <main id="memory-page" class="wrap">
       <BeamdashWeb.Layouts.header
         active={:memory}
+        working={@working}
         syntax={@syntax}
         conn={assigns[:conn]}
         ask={assigns[:ask]}

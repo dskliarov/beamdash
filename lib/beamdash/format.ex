@@ -219,7 +219,11 @@ defmodule Beamdash.Format do
   def error({:module_traced, mod}),
     do: "Every function of #{mod} is traced already."
 
-  def error({:error, {:erpc, :timeout}}), do: "The target did not answer in time."
+  def error({:error, {:error, {:erpc, :timeout}}}),
+    do:
+      "The target did not answer in time. " <>
+        "Raise the node call or trace call timeout in Settings if the node is slow."
+
   def error({:error, {:erpc, :noconnection}}), do: "Lost connection to the target."
 
   def error(:kubectl_not_found),

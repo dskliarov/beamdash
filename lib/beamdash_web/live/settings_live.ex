@@ -13,6 +13,8 @@ defmodule BeamdashWeb.SettingsLive do
        nx_on: Jev.configured?(:nx),
        models: Jev.configured_backends(),
        kev_port_error: nil,
+       rpc_timeout_error: nil,
+       trace_timeout_error: nil,
        ai_provider: Settings.ai_provider(),
        ai_notice: nil,
        ai_models: [],
@@ -277,6 +279,28 @@ defmodule BeamdashWeb.SettingsLive do
       {_, port} ->
         :ok = Settings.put_kev_port(port)
         {:noreply, assign(socket, kev_port_error: nil)}
+    end
+  end
+
+  def handle_event("set_rpc_timeout", %{"seconds" => value}, socket) do
+    case Integer.parse(String.trim(value)) do
+      {seconds, ""} when seconds in 1..120 ->
+        :ok = Settings.put_rpc_timeout(seconds * 1000)
+        {:noreply, assign(socket, rpc_timeout_error: nil)}
+
+      _ ->
+        {:noreply, assign(socket, rpc_timeout_error: "Wait a number of seconds from 1 to 120.")}
+    end
+  end
+
+  def handle_event("set_trace_timeout", %{"seconds" => value}, socket) do
+    case Integer.parse(String.trim(value)) do
+      {seconds, ""} when seconds in 1..120 ->
+        :ok = Settings.put_trace_timeout(seconds * 1000)
+        {:noreply, assign(socket, trace_timeout_error: nil)}
+
+      _ ->
+        {:noreply, assign(socket, trace_timeout_error: "Wait a number of seconds from 1 to 120.")}
     end
   end
 
@@ -684,6 +708,50 @@ defmodule BeamdashWeb.SettingsLive do
               min="1"
               max="65535"
               value={Settings.kev_port() || Jev.kev_port()}
+              class="mono"
+              style="width: 7em"
+            />
+            <button type="submit" class="small-btn">Save</button>
+          </form>
+          <form id="rpc-timeout-form" class="settings-toggle-row" phx-submit="set_rpc_timeout">
+            <div>
+              <label for="rpc-timeout"><strong>Node call timeout</strong></label>
+              <p class="muted small">
+                How many seconds a page waits for the node before it gives up. Raise it
+                for a slow or busy node.
+              </p>
+              <p :if={@rpc_timeout_error} class="error small" role="alert">{@rpc_timeout_error}</p>
+            </div>
+            <input
+              id="rpc-timeout"
+              name="seconds"
+              type="number"
+              min="1"
+              max="120"
+              value={div(Settings.rpc_timeout(), 1000)}
+              class="mono"
+              style="width: 7em"
+            />
+            <button type="submit" class="small-btn">Save</button>
+          </form>
+          <form id="trace-timeout-form" class="settings-toggle-row" phx-submit="set_trace_timeout">
+            <div>
+              <label for="trace-timeout"><strong>Trace call timeout</strong></label>
+              <p class="muted small">
+                How many seconds the module and application lists wait for the node before
+                they give up. Raise it for a slow or busy node.
+              </p>
+              <p :if={@trace_timeout_error} class="error small" role="alert">
+                {@trace_timeout_error}
+              </p>
+            </div>
+            <input
+              id="trace-timeout"
+              name="seconds"
+              type="number"
+              min="1"
+              max="120"
+              value={div(Settings.trace_timeout(), 1000)}
               class="mono"
               style="width: 7em"
             />

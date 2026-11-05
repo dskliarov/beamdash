@@ -42,9 +42,8 @@ defmodule Beamdash.Target do
   use GenServer
   require Logger
 
-  alias Beamdash.{AgentLoader, Kubectl}
+  alias Beamdash.{AgentLoader, Kubectl, Settings}
 
-  @rpc_timeout 5_000
   @connect_timeout 15_000
   @kubectl_connect_timeout 60_000
   @connecting_topic "target:connecting"
@@ -106,7 +105,7 @@ defmodule Beamdash.Target do
   binary, since a pod's peers aren't reachable through its own tunnel.
   """
   def switch(node, server \\ __MODULE__) when is_atom(node),
-    do: GenServer.call(server, {:switch, node}, @kubectl_connect_timeout + @rpc_timeout)
+    do: GenServer.call(server, {:switch, node}, @kubectl_connect_timeout + Settings.rpc_timeout())
 
   @doc """
   `nil`, or while a lost connection is being tried again
@@ -222,8 +221,8 @@ defmodule Beamdash.Target do
     do: call_agent(server, :log_set_primary_level, [level])
 
   @doc false
-  def rpc(node, mod, fun, args, timeout \\ @rpc_timeout) do
-    {:ok, :erpc.call(node, mod, fun, args, timeout)}
+  def rpc(node, mod, fun, args, timeout \\ nil) do
+    {:ok, :erpc.call(node, mod, fun, args, timeout || Settings.rpc_timeout())}
   catch
     kind, reason -> {:error, {kind, reason}}
   end

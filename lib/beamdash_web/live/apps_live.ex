@@ -11,7 +11,7 @@ defmodule BeamdashWeb.AppsLive do
   """
   use Phoenix.LiveView
 
-  alias Beamdash.{Apps, Format, Plugins, Target}
+  alias Beamdash.{AppCache, Apps, Format, Plugins, Target}
   alias BeamdashWeb.SourceTabs
 
   @refresh_ms 5_000
@@ -33,6 +33,8 @@ defmodule BeamdashWeb.AppsLive do
         plugin_css?: false,
         selected: nil,
         proc: nil,
+        loading: false,
+        proc_busy: false,
         error: nil
       )
       |> SourceTabs.init()
@@ -52,10 +54,10 @@ defmodule BeamdashWeb.AppsLive do
   def handle_params(%{"app" => app}, _uri, socket) do
     socket =
       if socket.assigns.apps == [] do
-        load(socket, app)
+        load(socket, app, :shown)
       else
         case Enum.find(socket.assigns.apps, &(Atom.to_string(&1.name) == app)) do
-          %{name: name} -> socket |> assign(app: name, selected: nil) |> load_tree()
+          %{name: name} -> socket |> assign(app: name, selected: nil) |> load(nil, :shown)
           nil -> socket
         end
       end
@@ -65,57 +67,63 @@ defmodule BeamdashWeb.AppsLive do
 
   def handle_params(_params, _uri, socket), do: {:noreply, socket}
 
-  defp load(socket, requested \\ nil)
+  # shown: :shown for a click (the line says what is read), :quiet for a
+  # refresh tick (the line appears only before the first list)
+  defp load(socket, requested \\ nil, shown \\ :quiet)
 
-  defp load(%{assigns: %{status: :connected, node: node}} = socket, requested) do
-    case Apps.list(node) do
-      {:ok, apps} ->
-        # as Observer: the first application listed (the latest started)
-        wanted = Enum.find(apps, &(requested != nil and Atom.to_string(&1.name) == requested))
+  defp load(%{assigns: %{status: :connected, node: node, app: app}} = socket, requested, shown) do
+    socket
+    |> assign(loading: shown)
+    |> start_async(:load, fn -> fetch(node, requested, app) end)
+  end
 
-        app =
-          cond do
-            wanted -> wanted.name
-            Enum.any?(apps, &(&1.name == socket.assigns.app)) -> socket.assigns.app
-            true -> apps |> List.first() |> then(&(&1 && &1.name))
-          end
+  defp load(socket, _requested, _shown), do: socket
 
-        socket |> assign(apps: apps, app: app, error: nil) |> load_tree()
+  # the application list, then the chosen application's tree and details
+  defp fetch(node, requested, current) do
+    with {:ok, apps} <- AppCache.apps() do
+      app = pick_app(apps, requested, current)
 
-      {:error, reason} ->
-        assign(socket, error: Format.error(reason))
+      case tree_info(node, app) do
+        {:ok, tree, info} -> {:ok, apps, app, tree, info, nil}
+        {:error, reason} -> {:ok, apps, app, nil, nil, reason}
+      end
     end
   end
 
-  defp load(socket, _requested), do: socket
+  # as Observer: the first application listed (the latest started)
+  defp pick_app(apps, requested, current) do
+    wanted = Enum.find(apps, &(requested != nil and Atom.to_string(&1.name) == requested))
 
-  defp load_tree(%{assigns: %{app: nil}} = socket), do: assign(socket, tree: nil, info: nil)
-
-  # the tree and the application's details, refreshed together
-  defp load_tree(%{assigns: %{node: node, app: app}} = socket) do
-    with {:ok, tree} <- Apps.tree(node, app),
-         {:ok, info} <- Apps.info(node, app) do
-      socket |> assign(tree: tree, info: info, error: nil) |> load_proc()
-    else
-      {:error, reason} -> assign(socket, error: Format.error(reason))
+    cond do
+      wanted -> wanted.name
+      Enum.any?(apps, &(&1.name == current)) -> current
+      true -> apps |> List.first() |> then(&(&1 && &1.name))
     end
+  end
+
+  defp tree_info(_node, nil), do: {:ok, nil, nil}
+
+  defp tree_info(node, app) do
+    with {:ok, tree} <- Apps.tree(node, app),
+         {:ok, info} <- Apps.info(node, app),
+         do: {:ok, tree, info}
   end
 
   # the selected process's details and module: `:exited` once it is gone
-  defp load_proc(%{assigns: %{selected: nil}} = socket), do: assign(socket, proc: nil)
+  defp load_proc(%{assigns: %{selected: nil}} = socket),
+    do: assign(socket, proc: nil, proc_busy: false)
 
   defp load_proc(%{assigns: %{node: node, selected: pid}} = socket) do
-    case Apps.process(node, pid) do
-      {:ok, nil} -> assign(socket, proc: :exited)
-      {:ok, proc} -> assign(socket, proc: proc)
-      {:error, _} -> socket
-    end
+    socket
+    |> assign(proc_busy: true)
+    |> start_async(:proc, fn -> {pid, Apps.process(node, pid)} end)
   end
 
   @impl true
   def handle_event("app", %{"app" => app}, socket) do
     name = Enum.find_value(socket.assigns.apps, &(Atom.to_string(&1.name) == app && &1.name))
-    {:noreply, socket |> assign(app: name, selected: nil) |> load_tree()}
+    {:noreply, socket |> assign(app: name, selected: nil) |> load(nil, :shown)}
   end
 
   def handle_event("select", %{"pid" => pid}, socket) do
@@ -156,14 +164,46 @@ defmodule BeamdashWeb.AppsLive do
     {:noreply, SourceTabs.event(event, params, socket, modules)}
   end
 
-  def handle_event("refresh", _params, socket), do: {:noreply, load(socket)}
+  def handle_event("refresh", _params, socket), do: {:noreply, load(socket, nil, :shown)}
+
+  @impl true
+  def handle_async(:load, {:ok, {:ok, apps, app, tree, info, error}}, socket) do
+    socket =
+      assign(socket,
+        loading: false,
+        apps: apps,
+        app: app,
+        tree: tree,
+        info: info,
+        error: error && Format.error(error)
+      )
+
+    {:noreply, load_proc(socket)}
+  end
+
+  def handle_async(:load, {:ok, {:error, reason}}, socket),
+    do: {:noreply, assign(socket, loading: false, error: Format.error(reason))}
+
+  def handle_async(:load, _result, socket), do: {:noreply, assign(socket, loading: false)}
+
+  def handle_async(:proc, {:ok, {pid, result}}, %{assigns: %{selected: pid}} = socket) do
+    socket = assign(socket, proc_busy: false)
+
+    case result do
+      {:ok, nil} -> {:noreply, assign(socket, proc: :exited)}
+      {:ok, proc} -> {:noreply, assign(socket, proc: proc)}
+      {:error, _} -> {:noreply, socket}
+    end
+  end
+
+  def handle_async(:proc, _result, socket), do: {:noreply, assign(socket, proc_busy: false)}
 
   @impl true
   def handle_info(:initial_load, socket), do: {:noreply, load(socket)}
 
   def handle_info(:refresh, socket) do
     Process.send_after(self(), :refresh, @refresh_ms)
-    {:noreply, load(socket)}
+    {:noreply, if(socket.assigns.loading, do: socket, else: load(socket))}
   end
 
   def handle_info({:beamdash_target, {:connected, node}}, socket),
@@ -175,9 +215,13 @@ defmodule BeamdashWeb.AppsLive do
     do:
       {:noreply,
        socket
+       |> cancel_async(:load)
+       |> cancel_async(:proc)
        |> SourceTabs.init()
        |> assign(
          status: :disconnected,
+         loading: false,
+         proc_busy: false,
          apps: [],
          app: nil,
          tree: nil,
@@ -189,6 +233,11 @@ defmodule BeamdashWeb.AppsLive do
   def handle_info(_message, socket), do: {:noreply, socket}
 
   ## Rendering
+
+  defp working(%{loading: :shown}), do: "Reading the application from the node"
+  defp working(%{proc_busy: true}), do: "Reading the selected process"
+  defp working(%{loading: :quiet, apps: []}), do: "Reading the applications from the node"
+  defp working(_), do: nil
 
   @impl true
   def render(assigns) do
@@ -213,13 +262,15 @@ defmodule BeamdashWeb.AppsLive do
         current: Enum.find(assigns.apps, &(&1.name == assigns.app)),
         names: if(assigns.tree, do: names(assigns.tree.root), else: %{}),
         plugins: plugins,
-        tab: tab
+        tab: tab,
+        working: working(assigns)
       )
 
     ~H"""
     <main class="wrap apps-page">
       <BeamdashWeb.Layouts.header
         active={:apps}
+        working={@working}
         syntax={@syntax}
         conn={assigns[:conn]}
         ask={assigns[:ask]}

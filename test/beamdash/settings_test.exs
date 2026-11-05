@@ -1,6 +1,6 @@
 defmodule Beamdash.SettingsTest do
   use ExUnit.Case, async: false
-  alias Beamdash.{GCAdvisor, Settings}
+  alias Beamdash.{Format, GCAdvisor, Settings}
 
   setup do
     previous = Settings.jev_enabled?()
@@ -368,6 +368,51 @@ defmodule Beamdash.SettingsTest do
       assert conn.kube_cluster == Path.join(dir, "staging.yml")
       assert conn.kube_pod == ""
     end
+  end
+
+  test "node call timeout applies at once, is saved, and the timeout message points to Settings" do
+    on_exit(fn -> Settings.put_rpc_timeout(5_000) end)
+
+    assert :ok = Settings.put_rpc_timeout(12_000)
+    assert Settings.rpc_timeout() == 12_000
+    assert Format.error({:error, {:error, {:erpc, :timeout}}}) =~ "Settings"
+
+    Settings.reload()
+    assert Settings.rpc_timeout() == 12_000
+    assert %{"rpc_timeout" => 12_000} = Settings.path() |> File.read!() |> Jason.decode!()
+
+    :ok = Settings.put_rpc_timeout(5_000)
+    refute Map.has_key?(Settings.path() |> File.read!() |> Jason.decode!(), "rpc_timeout")
+
+    {:ok, socket} = BeamdashWeb.SettingsLive.mount(%{}, %{}, %Phoenix.LiveView.Socket{})
+
+    {:noreply, socket} =
+      BeamdashWeb.SettingsLive.handle_event("set_rpc_timeout", %{"seconds" => "0"}, socket)
+
+    assert socket.assigns.rpc_timeout_error =~ "1 to 120"
+    assert Settings.rpc_timeout() == 5_000
+  end
+
+  test "trace call timeout defaults to 30 s, is saved, and resets to the default" do
+    on_exit(fn -> Settings.put_trace_timeout(30_000) end)
+    assert Settings.trace_timeout() == 30_000
+    refute Map.has_key?(Settings.path() |> File.read!() |> Jason.decode!(), "trace_timeout")
+
+    assert :ok = Settings.put_trace_timeout(45_000)
+    Settings.reload()
+    assert Settings.trace_timeout() == 45_000
+    assert %{"trace_timeout" => 45_000} = Settings.path() |> File.read!() |> Jason.decode!()
+
+    {:ok, socket} = BeamdashWeb.SettingsLive.mount(%{}, %{}, %Phoenix.LiveView.Socket{})
+
+    {:noreply, socket} =
+      BeamdashWeb.SettingsLive.handle_event("set_trace_timeout", %{"seconds" => "0"}, socket)
+
+    assert socket.assigns.trace_timeout_error =~ "1 to 120"
+    assert Settings.trace_timeout() == 45_000
+
+    :ok = Settings.put_trace_timeout(30_000)
+    refute Map.has_key?(Settings.path() |> File.read!() |> Jason.decode!(), "trace_timeout")
   end
 
   test "GC page disables analysis and clears old advice when Jev is switched off" do
