@@ -24,6 +24,28 @@ defmodule Beamdash.TermTreeTest do
     assert leading == "dict, 0, 16, 16, 8, 80, 48"
   end
 
+  test "long text items stay separate and are not joined into one line" do
+    items = Enum.map(1..10, fn _ -> String.duplicate("x", 100) end)
+
+    assert {:group, "[", "]", 10, children, 0} = TermTree.build(items, :erlang)
+    assert length(children) == 10
+  end
+
+  test "the node budget caps the rendered leaves" do
+    html =
+      rendered_to_string(
+        TermTree.tree(%{
+          value: Enum.map(1..50, &{:k, &1, String.duplicate("v", 90)}),
+          syntax: :erlang,
+          expand: 2,
+          max_nodes: 10,
+          __changed__: nil
+        })
+      )
+
+    assert length(Regex.scan(~r/class="term-leaf/, html)) <= 10
+  end
+
   test "a big map keeps its keys and shows each value next to its key" do
     big = %{k: String.duplicate("v", 90)}
 

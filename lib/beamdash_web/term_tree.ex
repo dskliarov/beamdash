@@ -16,10 +16,11 @@ defmodule BeamdashWeb.TermTree do
   attr :value, :any, required: true
   attr :syntax, :atom, default: :erlang
   attr :expand, :integer, default: 2, doc: "levels that start expanded"
+  attr :max_nodes, :integer, default: @max_nodes, doc: "node budget for the whole tree"
 
   def tree(assigns) do
     ~H"""
-    <.tree_node node={build(@value, @syntax)} expand={@expand} depth={0} />
+    <.tree_node node={build(@value, @syntax, @max_nodes)} expand={@expand} depth={0} />
     """
   end
 
@@ -52,8 +53,8 @@ defmodule BeamdashWeb.TermTree do
   end
 
   @doc false
-  def build(value, syntax) do
-    {node, _budget} = build_node(value, syntax, @max_nodes)
+  def build(value, syntax, max_nodes \\ @max_nodes) do
+    {node, _budget} = build_node(value, syntax, max_nodes)
     node
   end
 
@@ -87,16 +88,14 @@ defmodule BeamdashWeb.TermTree do
   defp merge_scalars(children) do
     children
     |> Enum.chunk_by(&scalar?/1)
-    |> Enum.flat_map(fn
-      [{nil, {:leaf, _}} | _] = run ->
-        [{nil, {:leaf, Enum.map_join(run, ", ", fn {nil, {:leaf, text}} -> text end)}}]
-
-      run ->
-        run
+    |> Enum.flat_map(fn run ->
+      if scalar?(hd(run)),
+        do: [{nil, {:leaf, Enum.map_join(run, ", ", fn {nil, {:leaf, text}} -> text end)}}],
+        else: run
     end)
   end
 
-  defp scalar?({nil, {:leaf, _}}), do: true
+  defp scalar?({nil, {:leaf, text}}), do: String.length(text) <= 20
   defp scalar?(_child), do: false
 
   defp container(value, _syntax) when is_tuple(value) and tuple_size(value) > 0 do

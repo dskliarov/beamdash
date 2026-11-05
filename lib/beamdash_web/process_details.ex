@@ -280,7 +280,7 @@ defmodule BeamdashWeb.ProcessDetails do
                  are consumed --%>
             <details id={id} phx-mounted={JS.ignore_attributes(["open"])}>
               <summary class="mono">{Format.term(m, @syntax, 90)}</summary>
-              <TermTree.tree value={m} syntax={@syntax} />
+              <TermTree.tree value={m} syntax={@syntax} max_nodes={100} />
               <details class="message-text">
                 <summary class="muted small">Text</summary>
                 <pre>{Format.pretty(m, @syntax)}</pre>
