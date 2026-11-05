@@ -24,11 +24,23 @@ defmodule Beamdash.KubectlTimeoutTest do
   end
 
   test "a kubectl that never answers is given up on and its process is killed", ctx do
-    assert {message, 124} = Kubectl.run_kubectl(["get", "pods"], 1500)
+    assert {message, 124} = Kubectl.run_kubectl(["get", "pods"], 5_000)
     assert message =~ "did not answer"
 
+    assert wait_file(ctx.pid_file, 40), "kubectl never started"
     pid = ctx.pid_file |> File.read!() |> String.trim()
     assert wait_gone(pid, 40), "kubectl process #{pid} is still running"
+  end
+
+  defp wait_file(_path, 0), do: false
+
+  defp wait_file(path, tries) do
+    if File.exists?(path) do
+      true
+    else
+      Process.sleep(50)
+      wait_file(path, tries - 1)
+    end
   end
 
   defp wait_gone(_pid, 0), do: false
