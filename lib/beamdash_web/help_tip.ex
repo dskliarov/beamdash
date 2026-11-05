@@ -5,6 +5,7 @@ defmodule BeamdashWeb.HelpTip do
   """
   use Phoenix.Component
 
+  attr :label, :string, required: true
   attr :text, :string, required: true
   attr :href, :string, required: true
 
@@ -17,7 +18,7 @@ defmodule BeamdashWeb.HelpTip do
       class="help-tip"
       popovertarget={@id}
       style={"anchor-name: --#{@id}"}
-      aria-label="Help"
+      aria-label={"Help: #{@label}"}
       aria-describedby={@id}
     >
       ?

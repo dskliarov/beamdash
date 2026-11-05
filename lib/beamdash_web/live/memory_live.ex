@@ -1027,6 +1027,7 @@ defmodule BeamdashWeb.MemoryLive do
             <span class="meter-label">
               Modules loaded
               <.tip
+                label="Modules loaded"
                 text="Modules loaded into the node, as code:all_loaded/0 lists them."
                 href="https://www.erlang.org/doc/apps/kernel/code.html#all_loaded/0"
               />
@@ -1433,7 +1434,7 @@ defmodule BeamdashWeb.MemoryLive do
     <div class={["meter", @pct >= 80 && "warn"]} title={@hint}>
       <span class="meter-label">
         {@label}
-        <.tip text={@tip} href={@tip_href} />
+        <.tip label={@label} text={@tip} href={@tip_href} />
       </span>
       <span class="mono">{Format.number(@used)} / {Format.number(@limit)}</span>
       <span class="meter-track"><span style={"width: #{min(@pct, 100)}%"}></span></span>

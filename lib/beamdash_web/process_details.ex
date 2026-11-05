@@ -30,10 +30,10 @@ defmodule BeamdashWeb.ProcessDetails do
 
   defp behaviour_tip(%{kind: kind} = assigns) when is_map_key(@behaviour_help, kind) do
     {text, href} = @behaviour_help[kind]
-    assigns = assign(assigns, text: text, href: href)
+    assigns = assign(assigns, label: "#{kind} behaviour", text: text, href: href)
 
     ~H"""
-    <.tip text={@text} href={@href} />
+    <.tip label={@label} text={@text} href={@href} />
     """
   end
 
@@ -171,6 +171,7 @@ defmodule BeamdashWeb.ProcessDetails do
         <dt>
           Status
           <.tip
+            label="Status"
             text="What the process is doing now: running, waiting for a message, ready to run, or suspended."
             href={erts_doc("process_info/2")}
           />
@@ -179,6 +180,7 @@ defmodule BeamdashWeb.ProcessDetails do
         <dt>
           Running
           <.tip
+            label="Running"
             text="The function the process is executing at this moment."
             href={erts_doc("process_info/2")}
           />
@@ -187,6 +189,7 @@ defmodule BeamdashWeb.ProcessDetails do
         <dt>
           Priority
           <.tip
+            label="Priority"
             text="How the scheduler ranks this process: low, normal, high or max. Traps exits means exit signals arrive as messages."
             href={erts_doc("process_flag/2")}
           />
@@ -204,6 +207,7 @@ defmodule BeamdashWeb.ProcessDetails do
             <span class="stat-label">
               reductions / s now
               <.tip
+                label="Reductions / s now"
                 text="Reductions are the unit of work the scheduler counts, roughly one per function call."
                 href={erts_doc("process_info/2")}
               />
@@ -230,6 +234,7 @@ defmodule BeamdashWeb.ProcessDetails do
             <span class="stat-label">
               total
               <.tip
+                label="Total memory"
                 text="Memory the process holds: its heap, its stack and the messages it has received."
                 href={erts_doc("process_info/2")}
               />
@@ -242,6 +247,7 @@ defmodule BeamdashWeb.ProcessDetails do
                 do: "y",
                 else: "ies"}
               <.tip
+                label="Off-heap binaries"
                 text="Binaries over 64 bytes are stored outside the heap and shared by reference. Only this process's references are counted."
                 href={erts_doc("process_info/2")}
               />
@@ -259,6 +265,7 @@ defmodule BeamdashWeb.ProcessDetails do
             <th>
               Heap (young)
               <.tip
+                label="Heap (young)"
                 text="Where new data is allocated. When it fills up, a young garbage collection runs."
                 href={erts_doc("process_info/2")}
               />
@@ -269,6 +276,7 @@ defmodule BeamdashWeb.ProcessDetails do
             <th>
               Old heap
               <.tip
+                label="Old heap"
                 text="Data that survived a collection is moved here. When it fills up, a full garbage collection runs."
                 href={erts_doc("process_info/2")}
               />
@@ -279,6 +287,7 @@ defmodule BeamdashWeb.ProcessDetails do
             <th>
               Total heap
               <.tip
+                label="Total heap"
                 text="The young and old heaps together."
                 href={erts_doc("process_info/2")}
               />
@@ -289,6 +298,7 @@ defmodule BeamdashWeb.ProcessDetails do
             <th>
               Stack
               <.tip
+                label="Stack"
                 text="Space for the call frames and local variables of the functions that are running."
                 href={erts_doc("process_info/2")}
               />
@@ -299,6 +309,7 @@ defmodule BeamdashWeb.ProcessDetails do
             <th>
               Heap fragments
               <.tip
+                label="Heap fragments"
                 text="Memory for messages that have arrived but are not yet copied into the heap."
                 href={erts_doc("process_info/2")}
               />
@@ -309,6 +320,7 @@ defmodule BeamdashWeb.ProcessDetails do
             <th>
               Messages stored
               <.tip
+                label="Messages stored"
                 text="Where mailbox messages are kept: on_heap (copied into the heap) or off_heap (outside it). Set by the message_queue_data flag."
                 href={erts_doc("process_flag/2")}
               />
@@ -340,6 +352,7 @@ defmodule BeamdashWeb.ProcessDetails do
             <th>
               Minor GCs since last full sweep
               <.tip
+                label="Minor GCs since last full sweep"
                 text="Collections of the young heap since the last full sweep. A full sweep collects the old heap too, once this count reaches the setting."
                 href={erts_doc("process_info/2")}
               />
@@ -352,6 +365,7 @@ defmodule BeamdashWeb.ProcessDetails do
             <th>
               Heap block (allocated)
               <.tip
+                label="Heap block (allocated)"
                 text="Memory the heap has reserved from the allocator. It can be larger than the data in it."
                 href={erts_doc("process_info/2")}
               />
@@ -362,6 +376,7 @@ defmodule BeamdashWeb.ProcessDetails do
             <th>
               Live after last GC
               <.tip
+                label="Live after last GC"
                 text="Data that survived the last collection. This is the size the process really needs."
                 href={erts_doc("process_info/2")}
               />
@@ -372,6 +387,7 @@ defmodule BeamdashWeb.ProcessDetails do
             <th>
               Min heap size
               <.tip
+                label="Min heap size"
                 text="The smallest heap the process starts with, set when it is spawned. A bigger value avoids early collections."
                 href={erts_doc("spawn_opt/4")}
               />
@@ -382,6 +398,7 @@ defmodule BeamdashWeb.ProcessDetails do
             <th>
               Max heap size
               <.tip
+                label="Max heap size"
                 text="A limit on the heap. If the process grows past it, the process is killed. Shown as unlimited when no limit is set."
                 href={erts_doc("process_flag/2")}
               />
@@ -392,6 +409,7 @@ defmodule BeamdashWeb.ProcessDetails do
             <th>
               Binary vheap (young / old)
               <.tip
+                label="Binary vheap (young / old)"
                 text="Size counted for off-heap binaries. When it fills up, a collection runs, so many binaries make collections more frequent."
                 href={erts_doc("process_info/2")}
               />

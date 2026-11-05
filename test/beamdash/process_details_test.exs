@@ -37,8 +37,10 @@ defmodule Beamdash.ProcessDetailsTest do
     assert html =~ ~s(class="help-tip")
     assert html =~ ~s(href="https://www.erlang.org/doc/apps/stdlib/gen_server.html")
     assert html =~ ~s(href="https://www.erlang.org/doc/apps/erts/erlang.html#spawn_opt/4")
-    assert html =~ ~s(popovertarget=)
-    assert html =~ ~s(aria-describedby="help-)
+    assert html =~ ~s(aria-label="Help: Status")
+    [_, id] = Regex.run(~r/aria-describedby="([^"]+)"/, html)
+    assert html =~ ~s(popovertarget="#{id}")
+    assert html =~ ~s(id="#{id}" class="help-tip-body")
   end
 
   test "a process with no behaviour gets no behaviour tip" do
