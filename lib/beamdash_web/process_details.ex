@@ -39,6 +39,8 @@ defmodule BeamdashWeb.ProcessDetails do
 
   defp behaviour_tip(assigns), do: ~H""
 
+  defp erts_doc(anchor), do: "https://www.erlang.org/doc/apps/erts/erlang.html#" <> anchor
+
   attr :details, :map, required: true
   attr :history, :list, required: true
   attr :syntax, :atom, required: true
@@ -170,7 +172,7 @@ defmodule BeamdashWeb.ProcessDetails do
           Status
           <.tip
             text="What the process is doing now: running, waiting for a message, ready to run, or suspended."
-            href="https://www.erlang.org/doc/apps/erts/erlang.html#process_info/2"
+            href={erts_doc("process_info/2")}
           />
         </dt>
         <dd>{@details.status}</dd>
@@ -178,7 +180,7 @@ defmodule BeamdashWeb.ProcessDetails do
           Running
           <.tip
             text="The function the process is executing at this moment."
-            href="https://www.erlang.org/doc/apps/erts/erlang.html#process_info/2"
+            href={erts_doc("process_info/2")}
           />
         </dt>
         <dd class="mono">{Format.mfa(@details.current_function, @syntax)}</dd>
@@ -186,7 +188,7 @@ defmodule BeamdashWeb.ProcessDetails do
           Priority
           <.tip
             text="How the scheduler ranks this process: low, normal, high or max. Traps exits means exit signals arrive as messages."
-            href="https://www.erlang.org/doc/apps/erts/erlang.html#process_flag/2"
+            href={erts_doc("process_flag/2")}
           />
         </dt>
         <dd>{@details.priority}{if @details.trap_exit, do: " · traps exits"}</dd>
@@ -203,7 +205,7 @@ defmodule BeamdashWeb.ProcessDetails do
               reductions / s now
               <.tip
                 text="Reductions are the unit of work the scheduler counts, roughly one per function call."
-                href="https://www.erlang.org/doc/apps/erts/erlang.html#process_info/2"
+                href={erts_doc("process_info/2")}
               />
             </span>
           </div>
@@ -229,7 +231,7 @@ defmodule BeamdashWeb.ProcessDetails do
               total
               <.tip
                 text="Memory the process holds: its heap, its stack and the messages it has received."
-                href="https://www.erlang.org/doc/apps/erts/erlang.html#process_info/2"
+                href={erts_doc("process_info/2")}
               />
             </span>
           </div>
@@ -241,7 +243,7 @@ defmodule BeamdashWeb.ProcessDetails do
                 else: "ies"}
               <.tip
                 text="Binaries over 64 bytes are stored outside the heap and shared by reference. Only this process's references are counted."
-                href="https://www.erlang.org/doc/apps/erts/erlang.html#process_info/2"
+                href={erts_doc("process_info/2")}
               />
             </span>
           </div>
@@ -258,7 +260,7 @@ defmodule BeamdashWeb.ProcessDetails do
               Heap (young)
               <.tip
                 text="Where new data is allocated. When it fills up, a young garbage collection runs."
-                href="https://www.erlang.org/doc/apps/erts/erlang.html#process_info/2"
+                href={erts_doc("process_info/2")}
               />
             </th>
             <td>{Format.bytes(@mem.heap)}</td>
@@ -268,7 +270,7 @@ defmodule BeamdashWeb.ProcessDetails do
               Old heap
               <.tip
                 text="Data that survived a collection is moved here. When it fills up, a full garbage collection runs."
-                href="https://www.erlang.org/doc/apps/erts/erlang.html#process_info/2"
+                href={erts_doc("process_info/2")}
               />
             </th>
             <td>{Format.bytes(@gc.old_heap_size)}</td>
@@ -278,7 +280,7 @@ defmodule BeamdashWeb.ProcessDetails do
               Total heap
               <.tip
                 text="The young and old heaps together."
-                href="https://www.erlang.org/doc/apps/erts/erlang.html#process_info/2"
+                href={erts_doc("process_info/2")}
               />
             </th>
             <td>{Format.bytes(@mem.total_heap)}</td>
@@ -288,7 +290,7 @@ defmodule BeamdashWeb.ProcessDetails do
               Stack
               <.tip
                 text="Space for the call frames and local variables of the functions that are running."
-                href="https://www.erlang.org/doc/apps/erts/erlang.html#process_info/2"
+                href={erts_doc("process_info/2")}
               />
             </th>
             <td>{Format.bytes(@mem.stack)}</td>
@@ -298,7 +300,7 @@ defmodule BeamdashWeb.ProcessDetails do
               Heap fragments
               <.tip
                 text="Memory for messages that have arrived but are not yet copied into the heap."
-                href="https://www.erlang.org/doc/apps/erts/erlang.html#process_info/2"
+                href={erts_doc("process_info/2")}
               />
             </th>
             <td>{Format.bytes(@gc.mbuf_size)}</td>
@@ -308,7 +310,7 @@ defmodule BeamdashWeb.ProcessDetails do
               Messages stored
               <.tip
                 text="Where mailbox messages are kept: on_heap (copied into the heap) or off_heap (outside it). Set by the message_queue_data flag."
-                href="https://www.erlang.org/doc/apps/erts/erlang.html#process_flag/2"
+                href={erts_doc("process_flag/2")}
               />
             </th>
             <td>{@mem.message_queue_data || "n/a"}</td>
@@ -339,7 +341,7 @@ defmodule BeamdashWeb.ProcessDetails do
               Minor GCs since last full sweep
               <.tip
                 text="Collections of the young heap since the last full sweep. A full sweep collects the old heap too, once this count reaches the setting."
-                href="https://www.erlang.org/doc/apps/erts/erlang.html#process_info/2"
+                href={erts_doc("process_info/2")}
               />
             </th>
             <td>
@@ -351,7 +353,7 @@ defmodule BeamdashWeb.ProcessDetails do
               Heap block (allocated)
               <.tip
                 text="Memory the heap has reserved from the allocator. It can be larger than the data in it."
-                href="https://www.erlang.org/doc/apps/erts/erlang.html#process_info/2"
+                href={erts_doc("process_info/2")}
               />
             </th>
             <td>{Format.bytes(@gc.heap_block_size)}</td>
@@ -361,7 +363,7 @@ defmodule BeamdashWeb.ProcessDetails do
               Live after last GC
               <.tip
                 text="Data that survived the last collection. This is the size the process really needs."
-                href="https://www.erlang.org/doc/apps/erts/erlang.html#process_info/2"
+                href={erts_doc("process_info/2")}
               />
             </th>
             <td>{Format.bytes(@gc.recent_size)}</td>
@@ -371,7 +373,7 @@ defmodule BeamdashWeb.ProcessDetails do
               Min heap size
               <.tip
                 text="The smallest heap the process starts with, set when it is spawned. A bigger value avoids early collections."
-                href="https://www.erlang.org/doc/apps/erts/erlang.html#spawn_opt/4"
+                href={erts_doc("spawn_opt/4")}
               />
             </th>
             <td>{Format.bytes(@gc.min_heap_size)}</td>
@@ -380,8 +382,8 @@ defmodule BeamdashWeb.ProcessDetails do
             <th>
               Max heap size
               <.tip
-                text="A limit on the heap. If the process grows past it, the process is killed. Shown as none when no limit is set."
-                href="https://www.erlang.org/doc/apps/erts/erlang.html#process_flag/2"
+                text="A limit on the heap. If the process grows past it, the process is killed. Shown as unlimited when no limit is set."
+                href={erts_doc("process_flag/2")}
               />
             </th>
             <td>{bytes_or(@gc.max_heap_size)}</td>
@@ -391,7 +393,7 @@ defmodule BeamdashWeb.ProcessDetails do
               Binary vheap (young / old)
               <.tip
                 text="Size counted for off-heap binaries. When it fills up, a collection runs, so many binaries make collections more frequent."
-                href="https://www.erlang.org/doc/apps/erts/erlang.html#process_info/2"
+                href={erts_doc("process_info/2")}
               />
             </th>
             <td>{Format.bytes(@gc.bin_vheap_size)} / {Format.bytes(@gc.bin_old_vheap_size)}</td>

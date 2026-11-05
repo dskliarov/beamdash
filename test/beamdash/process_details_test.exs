@@ -40,6 +40,26 @@ defmodule Beamdash.ProcessDetailsTest do
     assert html =~ ~s(popovertarget=)
   end
 
+  test "a process with no behaviour gets no behaviour tip" do
+    detail =
+      Map.merge(Beamdash.Test.Fixture.gc_detail(), %{
+        reductions: 1,
+        links: [],
+        monitors: [],
+        monitored_by: [],
+        current_stacktrace: [],
+        trap_exit: false,
+        priority: :normal,
+        mailbox: %{length: 0, limit: 100, messages: []}
+      })
+
+    html =
+      render_component(&ProcessDetails.panel/1, details: detail, history: [], syntax: :erlang)
+
+    refute html =~ "stdlib/gen_server.html"
+    refute html =~ "stdlib/supervisor.html"
+  end
+
   test "an opened message stays open when the panel refreshes" do
     detail =
       Map.merge(Beamdash.Test.Fixture.gc_detail(), %{

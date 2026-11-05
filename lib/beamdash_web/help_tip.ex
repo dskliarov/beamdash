@@ -17,7 +17,7 @@ defmodule BeamdashWeb.HelpTip do
       class="help-tip"
       popovertarget={@id}
       style={"anchor-name: --#{@id}"}
-      aria-label={"Help: #{@text}"}
+      aria-label="Help"
     >
       ?
     </button>
