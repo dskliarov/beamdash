@@ -10,12 +10,8 @@ defmodule Beamdash.ModuleCache do
   alias Beamdash.{Target, Tracer}
 
   @refresh_ms 300_000
-  # a timed-out fetch is tried again with 10 % more, then 20 % more, node time
-  @attempts [30_000, 33_000, 36_000]
-  # after the last attempt times out, the next fetch waits double the first attempt
-  @give_up_ms 60_000
-  # the three attempts together take up to 99 s
-  @call_timeout 120_000
+  # a timed-out fetch is tried again with 10 % more, then 20 % more than the trace timeout
+  @attempt_percent [100, 110, 120]
 
   defstruct [:target, :tracer, :node, :modules, :task, :retry_timer, attempt: 0, waiting: []]
 
@@ -24,7 +20,7 @@ defmodule Beamdash.ModuleCache do
   end
 
   @doc "The loaded modules, `{:ok, [{mod, exports, locals}]}`, or the error of the fetch."
-  def modules(server \\ __MODULE__), do: GenServer.call(server, :modules, @call_timeout)
+  def modules(server \\ __MODULE__), do: GenServer.call(server, :modules, call_timeout())
 
   @impl true
   def init(opts) do
@@ -56,7 +52,7 @@ defmodule Beamdash.ModuleCache do
     Process.demonitor(ref, [:flush])
     state = %{state | task: nil}
 
-    if timed_out?(result) and state.attempt < length(@attempts) - 1 do
+    if timed_out?(result) and state.attempt < length(@attempt_percent) - 1 do
       {:noreply, fetch(%{state | attempt: state.attempt + 1})}
     else
       Enum.each(state.waiting, &GenServer.reply(&1, result))
@@ -87,7 +83,7 @@ defmodule Beamdash.ModuleCache do
 
   defp fetch(%{task: nil, node: node, retry_timer: nil} = state) when node != nil do
     tracer = state.tracer
-    timeout = Enum.at(@attempts, state.attempt)
+    timeout = attempt_timeout(state.attempt)
     %{state | task: Task.async(fn -> fetch_modules(tracer, timeout) end)}
   end
 
@@ -99,8 +95,17 @@ defmodule Beamdash.ModuleCache do
     %{state | task: nil, retry_timer: nil, attempt: 0}
   end
 
+  # after the last attempt times out, the next fetch waits double the first attempt
   defp pause(state),
-    do: %{state | retry_timer: Process.send_after(self(), :retry, @give_up_ms)}
+    do: %{state | retry_timer: Process.send_after(self(), :retry, 2 * trace_timeout())}
+
+  defp attempt_timeout(attempt),
+    do: div(trace_timeout() * Enum.at(@attempt_percent, attempt), 100)
+
+  # the attempts together, and a little for the answer to come back
+  defp call_timeout, do: div(trace_timeout() * Enum.sum(@attempt_percent), 100) + 10_000
+
+  defp trace_timeout, do: Beamdash.Settings.trace_timeout()
 
   defp fetch_modules(tracer, timeout) do
     Tracer.module_functions(tracer, timeout)

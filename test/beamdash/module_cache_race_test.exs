@@ -1,7 +1,7 @@
 defmodule Beamdash.ModuleCacheRaceTest do
   use ExUnit.Case, async: false
 
-  alias Beamdash.{ModuleCache, Target}
+  alias Beamdash.{ModuleCache, Settings, Target}
 
   @timeout_reply {:error, {:error, {:erpc, :timeout}}}
 
@@ -85,6 +85,27 @@ defmodule Beamdash.ModuleCacheRaceTest do
 
     send(ctx.cache, :retry)
     assert_receive {:fetch, 30_000, _}
+  end
+
+  test "the retry steps and the give-up wait follow the trace timeout setting", ctx do
+    on_exit(fn -> Settings.put_trace_timeout(30_000) end)
+    :ok = Settings.put_trace_timeout(60_000)
+
+    send(ctx.cache, {:beamdash_target, {:connected, :n1@host}})
+    assert_receive {:fetch, 60_000, first}
+
+    waiter = Task.async(fn -> ModuleCache.modules(ctx.cache) end)
+    await_waiting(ctx.cache)
+    GenServer.reply(first, @timeout_reply)
+    assert_receive {:fetch, 66_000, second}
+    GenServer.reply(second, @timeout_reply)
+    assert_receive {:fetch, 72_000, third}
+    GenServer.reply(third, @timeout_reply)
+    assert @timeout_reply = Task.await(waiter)
+
+    assert %{retry_timer: timer} = :sys.get_state(ctx.cache)
+    assert is_reference(timer)
+    assert Process.read_timer(timer) > 60_000
   end
 
   test "a failure other than a timeout is answered at once, not retried", ctx do

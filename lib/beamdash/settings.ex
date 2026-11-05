@@ -23,6 +23,9 @@ defmodule Beamdash.Settings do
   @rpc_timeout_key {__MODULE__, :rpc_timeout}
   @default_rpc_timeout 5_000
   @rpc_timeout_range 1_000..120_000
+  @trace_timeout_key {__MODULE__, :trace_timeout}
+  @default_trace_timeout 30_000
+  @trace_timeout_range 1_000..120_000
   @kube_key {__MODULE__, :kubeconfig_dir}
   @notebooks_key {__MODULE__, :notebooks_dir}
   @kube_selection_key {__MODULE__, :kube_selection}
@@ -258,6 +261,28 @@ defmodule Beamdash.Settings do
   end
 
   @doc """
+  How long, in milliseconds, a trace call to the node may take before it is
+  given up: the module list the trace page reads. Its retries scale from it.
+  """
+  def trace_timeout do
+    case :persistent_term.get(@trace_timeout_key, :unset) do
+      :unset ->
+        ms = saved_trace_timeout()
+        :persistent_term.put(@trace_timeout_key, ms)
+        ms
+
+      ms ->
+        ms
+    end
+  end
+
+  def put_trace_timeout(ms) when is_integer(ms) and ms in @trace_timeout_range do
+    :persistent_term.put(@trace_timeout_key, ms)
+    save("trace_timeout", if(ms == @default_trace_timeout, do: nil, else: ms))
+    :ok
+  end
+
+  @doc """
   Whether beamdash's local model (Nx) was switched on (`true`) or off
   (`false`) in Settings, or `nil` when never switched: `NX_MODEL` then
   decides (see `Beamdash.Jev.configured?/1`). Saved for the next start.
@@ -444,6 +469,7 @@ defmodule Beamdash.Settings do
     :persistent_term.erase(@source_dirs_key)
     :persistent_term.erase(@ai_key)
     :persistent_term.erase(@rpc_timeout_key)
+    :persistent_term.erase(@trace_timeout_key)
     :ok
   end
 
@@ -451,6 +477,13 @@ defmodule Beamdash.Settings do
     case read()["rpc_timeout"] do
       ms when is_integer(ms) and ms in @rpc_timeout_range -> ms
       _ -> @default_rpc_timeout
+    end
+  end
+
+  defp saved_trace_timeout do
+    case read()["trace_timeout"] do
+      ms when is_integer(ms) and ms in @trace_timeout_range -> ms
+      _ -> @default_trace_timeout
     end
   end
 

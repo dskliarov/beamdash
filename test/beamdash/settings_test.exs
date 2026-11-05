@@ -393,6 +393,28 @@ defmodule Beamdash.SettingsTest do
     assert Settings.rpc_timeout() == 5_000
   end
 
+  test "trace call timeout defaults to 30 s, is saved, and resets to the default" do
+    on_exit(fn -> Settings.put_trace_timeout(30_000) end)
+    assert Settings.trace_timeout() == 30_000
+    refute Map.has_key?(Settings.path() |> File.read!() |> Jason.decode!(), "trace_timeout")
+
+    assert :ok = Settings.put_trace_timeout(45_000)
+    Settings.reload()
+    assert Settings.trace_timeout() == 45_000
+    assert %{"trace_timeout" => 45_000} = Settings.path() |> File.read!() |> Jason.decode!()
+
+    {:ok, socket} = BeamdashWeb.SettingsLive.mount(%{}, %{}, %Phoenix.LiveView.Socket{})
+
+    {:noreply, socket} =
+      BeamdashWeb.SettingsLive.handle_event("set_trace_timeout", %{"seconds" => "0"}, socket)
+
+    assert socket.assigns.trace_timeout_error =~ "1 to 120"
+    assert Settings.trace_timeout() == 45_000
+
+    :ok = Settings.put_trace_timeout(30_000)
+    refute Map.has_key?(Settings.path() |> File.read!() |> Jason.decode!(), "trace_timeout")
+  end
+
   test "GC page disables analysis and clears old advice when Jev is switched off" do
     view = BeamdashWeb.GCLive
     {:ok, socket} = view.mount(%{}, %{}, %Phoenix.LiveView.Socket{})

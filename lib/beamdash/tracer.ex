@@ -112,7 +112,7 @@ defmodule Beamdash.Tracer do
   def subscribe(server \\ __MODULE__), do: GenServer.call(server, {:subscribe, self()})
 
   @doc "Loaded modules on the target: `[{mod, exports, locals}]`, the node given `timeout` ms."
-  def module_functions(server \\ __MODULE__, timeout \\ 30_000),
+  def module_functions(server \\ __MODULE__, timeout \\ Beamdash.Settings.trace_timeout()),
     do: GenServer.call(server, {:module_functions, timeout}, timeout + 1_000)
 
   ## GenServer
