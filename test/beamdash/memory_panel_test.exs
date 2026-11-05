@@ -53,11 +53,8 @@ defmodule Beamdash.MemoryPanelTest do
       )
 
     html = socket.assigns |> MemoryLive.render() |> Phoenix.LiveViewTest.rendered_to_string()
+    assert html =~ ~s(>Trend<)
     assert html =~ ~s(class="proc-layout memory-layout with-panel")
-
-    assert elem(:binary.match(html, ">Trend<"), 0) <
-             elem(:binary.match(html, ~s(class="proc-layout memory-layout with-panel")), 0)
-
     assert html =~ ~s(id="memory-trend-chart")
     assert html =~ ~s(rowspan="6")
     assert html =~ ~s(aria-label="Hide Processes trend")
@@ -187,11 +184,231 @@ defmodule Beamdash.MemoryPanelTest do
     {:noreply, scaled} = MemoryLive.handle_event("toggle_trend", %{"kind" => "processes"}, scaled)
     assert scaled.assigns.visible_trends == MapSet.new([:processes, :binary])
 
+    leak = Phoenix.Component.assign(socket, page: :leak)
+    html = leak.assigns |> MemoryLive.render() |> Phoenix.LiveViewTest.rendered_to_string()
+    assert html =~ ~s(class="proc-layout memory-layout with-panel")
     assert html =~ ~s(id="memory-process-details")
     assert html =~ ~s(phx-hook="Resizer")
     assert html =~ ~s(phx-click="get_status")
-    {:noreply, socket} = MemoryLive.handle_event("close_inspect", %{}, socket)
-    html = socket.assigns |> MemoryLive.render() |> Phoenix.LiveViewTest.rendered_to_string()
+    {:noreply, leak} = MemoryLive.handle_event("close_inspect", %{}, leak)
+    html = leak.assigns |> MemoryLive.render() |> Phoenix.LiveViewTest.rendered_to_string()
     refute html =~ ~s(id="memory-process-details")
+  end
+
+  test "forecast and the leak search each have their own page" do
+    socket = %Phoenix.LiveView.Socket{
+      private: %{lifecycle: %Phoenix.LiveView.Lifecycle{}, live_temp: %{}}
+    }
+
+    {:ok, socket} = MemoryLive.mount(%{}, %{}, socket)
+
+    memory = %{
+      total: 100,
+      processes: 40,
+      processes_used: 40,
+      system: 60,
+      atom: 1,
+      atom_used: 1,
+      binary: 30,
+      code: 10,
+      ets: 10
+    }
+
+    snap = %{
+      memory: memory,
+      alloc: nil,
+      atom_count: 1,
+      atom_limit: 10,
+      process_count: 1,
+      process_limit: 10,
+      ets_count: 1,
+      ets_limit: 10,
+      module_count: 1,
+      recon: false
+    }
+
+    socket =
+      Phoenix.Component.assign(socket,
+        syntax: :erlang,
+        jev_enabled: false,
+        status: :connected,
+        snap: snap,
+        forecast: {:collecting, 5, 60}
+      )
+
+    render = fn assigns ->
+      assigns |> MemoryLive.render() |> Phoenix.LiveViewTest.rendered_to_string()
+    end
+
+    loaded = render.(socket.assigns)
+    assert loaded =~ ">Trend<"
+    assert loaded =~ ~s(class="mem-h2")
+    refute loaded =~ ~s(id="forecast-heading")
+
+    {:noreply, forecast} = MemoryLive.handle_event("page", %{"page" => "forecast"}, socket)
+    forecast_html = render.(forecast.assigns)
+    assert forecast_html =~ ~s(id="forecast-heading")
+    assert forecast_html =~ ">Trend<"
+
+    {:noreply, leak} = MemoryLive.handle_event("page", %{"page" => "leak"}, forecast)
+    leak_html = render.(leak.assigns)
+    assert leak_html =~ ~s(class="mem-h2")
+    refute leak_html =~ ~s(id="forecast-heading")
+    assert leak_html =~ ">Trend<"
+  end
+
+  test "a table's browse opens in the side column, and a tab change closes it" do
+    socket = %Phoenix.LiveView.Socket{
+      private: %{lifecycle: %Phoenix.LiveView.Lifecycle{}, live_temp: %{}}
+    }
+
+    {:ok, socket} = MemoryLive.mount(%{}, %{}, socket)
+
+    snap = %{
+      memory: %{
+        total: 100,
+        processes: 40,
+        processes_used: 40,
+        system: 60,
+        atom: 1,
+        atom_used: 1,
+        binary: 30,
+        code: 10,
+        ets: 10
+      },
+      alloc: nil,
+      atom_count: 1,
+      atom_limit: 10,
+      process_count: 1,
+      process_limit: 10,
+      ets_count: 1,
+      ets_limit: 10,
+      module_count: 1,
+      recon: false
+    }
+
+    browse = %{
+      table: :tab,
+      label: "tab",
+      key: "",
+      spec: "",
+      rows: 500,
+      result: nil,
+      examples: nil,
+      key_pick: 0,
+      spec_pick: 0,
+      view: :raw,
+      output: %{segments: [], pairs: []}
+    }
+
+    showing = fn socket, result, view ->
+      socket =
+        Phoenix.Component.assign(socket,
+          ets_browse: %{socket.assigns.ets_browse | result: result}
+        )
+
+      {:noreply, socket} = MemoryLive.handle_event("ets_view", %{"view" => view}, socket)
+      socket
+    end
+
+    socket =
+      Phoenix.Component.assign(socket,
+        syntax: :erlang,
+        jev_enabled: false,
+        status: :connected,
+        snap: snap,
+        page: :leak,
+        tab: :ets,
+        ets: [],
+        ets_base: %{},
+        ets_browse: browse
+      )
+
+    html = socket.assigns |> MemoryLive.render() |> Phoenix.LiveViewTest.rendered_to_string()
+    assert html =~ ~s(class="proc-layout memory-layout with-panel")
+
+    assert html =~
+             ~r/<div class="proc-side memory-inspect-side">\s*<aside class="proc-panel memory-inspect ets-browse"/
+
+    assert html =~ ~s(id="ets-browse-resizer")
+    assert html =~ ~s(value="select" class="secondary ets-action")
+    refute html =~ "First rows"
+
+    table = %{
+      id: :tab,
+      name: :tab,
+      named: true,
+      owner: self(),
+      owner_name: nil,
+      type: :set,
+      protection: :public,
+      size: 7,
+      memory: 2048
+    }
+
+    with_table = Phoenix.Component.assign(socket, ets: [table])
+    html = with_table.assigns |> MemoryLive.render() |> Phoenix.LiveViewTest.rendered_to_string()
+    assert html =~ "set, public"
+    assert html =~ "7 rows"
+
+    long_row = {:long_key, Enum.map(1..60, &{:"key_#{&1}", &1})}
+    result = {:ok, %{rows: [long_row], stop: :complete, keypos: 1}}
+    shown = showing.(socket, result, "raw")
+    html = shown.assigns |> MemoryLive.render() |> Phoenix.LiveViewTest.rendered_to_string()
+    assert html =~ "key_60"
+    assert html =~ "long_key"
+    assert html =~ ~s(<span class="tok-curly">{</span>)
+    assert html =~ ~s(<span class="tok-square">[</span>)
+    assert html =~ ~s(<span class="tok-comma">,</span>)
+    refute html =~ ~s(class="ets-kv")
+
+    table_shown = showing.(socket, result, "table")
+
+    html = table_shown.assigns |> MemoryLive.render() |> Phoenix.LiveViewTest.rendered_to_string()
+    assert html =~ ~s(class="ets-kv")
+    assert html =~ "<th>Key</th>"
+    assert html =~ "<th>Value</th>"
+
+    swapped = showing.(socket, {:ok, %{rows: [{:v, :k}], stop: :complete, keypos: 2}}, "table")
+    html = swapped.assigns |> MemoryLive.render() |> Phoenix.LiveViewTest.rendered_to_string()
+
+    assert html =~
+             ~r/<td class="ets-rows small">\s*<span[^>]*>k<\/span>\s*<\/td>\s*<td class="ets-rows small">\s*<span[^>]*>v<\/span>/
+
+    single = showing.(socket, {:ok, %{rows: [{:only}], stop: :complete, keypos: 1}}, "table")
+    html = single.assigns |> MemoryLive.render() |> Phoenix.LiveViewTest.rendered_to_string()
+
+    assert html =~
+             ~r/<td class="ets-rows small">\s*<span[^>]*>only<\/span>\s*<\/td>\s*<td class="ets-rows small">\s*<\/td>/
+
+    bare = showing.(socket, {:ok, %{rows: [:a], stop: :complete, keypos: 1}}, "table")
+    html = bare.assigns |> MemoryLive.render() |> Phoenix.LiveViewTest.rendered_to_string()
+    assert html =~ ~r/<td class="ets-rows small">\s*<span[^>]*>a<\/span>\s*<\/td>/
+
+    quoted = {:ok, %{rows: [{"{x}", 1}], stop: :complete, keypos: 1}}
+    quoted_socket = showing.(socket, quoted, "raw")
+
+    html =
+      quoted_socket.assigns |> MemoryLive.render() |> Phoenix.LiveViewTest.rendered_to_string()
+
+    assert html =~ "&quot;{x}&quot;"
+    refute html =~ ~s(<span class="tok-curly">{</span>x)
+
+    examples =
+      {:ok, %{keys: ["42"], specs: [{"[{'$1', '_'}]", "Whole rows with a key above 1."}]}}
+
+    with_examples = Phoenix.Component.assign(socket, ets_browse: %{browse | examples: examples})
+
+    html =
+      with_examples.assigns |> MemoryLive.render() |> Phoenix.LiveViewTest.rendered_to_string()
+
+    assert html =~ ~s(phx-value-kind="key")
+    assert html =~ ~s(phx-value-kind="spec")
+    assert html =~ "Whole rows with a key above 1."
+    assert html =~ "Key lookup"
+    assert html =~ "Sample match specs"
+
+    {:noreply, socket} = MemoryLive.handle_event("tab", %{"tab" => "binary"}, socket)
+    assert socket.assigns.ets_browse == nil
   end
 end

@@ -83,12 +83,12 @@ defmodule Beamdash.Format do
   end
 
   @doc "Full, pretty-printed rendering of a term."
-  def pretty(term, syntax \\ :erlang)
+  def pretty(term, syntax \\ :erlang, width \\ 100)
 
-  def pretty(term, :elixir),
-    do: inspect(term, pretty: true, limit: :infinity, printable_limit: 4096, width: 100)
+  def pretty(term, :elixir, width),
+    do: inspect(term, pretty: true, limit: :infinity, printable_limit: 4096, width: width)
 
-  def pretty(term, :erlang), do: erlang_text(term, line_length: 100, depth: -1)
+  def pretty(term, :erlang, width), do: erlang_text(term, line_length: width, depth: -1)
 
   # io_lib_pretty with record names and field names, as the Erlang shell
   # prints them. Records recovered by erlyberly become tuples again and

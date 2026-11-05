@@ -17,7 +17,8 @@
          process_ancestors/1]).
 -export([tprof_available/0, tprof_start/4, tprof_collect/1, tprof_stop/0]).
 -export([recon_available/0, memory_snapshot/0, top_processes/2, memory_page/2, gc_all/0,
-         binary_leaks/1, ets_tables/0, process_state/2]).
+         binary_leaks/1, ets_tables/0, ets_browse/4, ets_examples/3, ets_lookup/3,
+         process_state/2]).
 -export([get_state/1, supervision_tree/1]).
 -export([gc_snapshot/0, gc_trace_start/3]).
 
@@ -1537,6 +1538,64 @@ ets_tables() ->
                                                 element(2, owner_name(Owner)))}}
               end
       end, ets:all()).
+
+%% Rows of a table that match a match spec: at most Limit of them, and the
+%% scan stops once Ms milliseconds have passed. `stop` says why it ended:
+%% complete, rows (Limit reached) or time (the budget ran out first).
+ets_browse(Tab, Spec, Limit, Ms) ->
+    ets_checked(Tab, fun() ->
+        Deadline = erlang:monotonic_time(millisecond) + Ms,
+        Result = ets_scan(ets:select(Tab, Spec, 1000), [], 0, Limit, Deadline),
+        Result#{keypos => ets:info(Tab, keypos)}
+    end).
+
+ets_scan('$end_of_table', Acc, _N, _Limit, _Deadline) ->
+    #{rows => lists:reverse(Acc), stop => complete};
+ets_scan({Rows, Cont}, Acc, N, Limit, Deadline) ->
+    Taken = lists:sublist(Rows, Limit - N),
+    Acc1 = lists:reverse(Taken, Acc),
+    N1 = N + length(Taken),
+    case {N1 >= Limit, erlang:monotonic_time(millisecond) >= Deadline} of
+        {true, _} -> #{rows => lists:reverse(Acc1), stop => rows};
+        {false, true} -> #{rows => lists:reverse(Acc1), stop => time};
+        {false, false} -> ets_scan(ets:select(Cont), Acc1, N1, Limit, Deadline)
+    end.
+
+%% A few rows of a table, for examples: their keys, the key position and the
+%% tuple size of the rows (nil for an empty table).
+ets_examples(Tab, Limit, Ms) ->
+    ets_checked(Tab, fun() ->
+        Deadline = erlang:monotonic_time(millisecond) + Ms,
+        #{rows := Rows} = ets_scan(ets:select(Tab, [{'_', [], ['$_']}], 1000), [], 0, Limit, Deadline),
+        KeyPos = ets:info(Tab, keypos),
+        #{keypos => KeyPos,
+          arity => case Rows of [R | _] -> tuple_size(R); [] -> nil end,
+          keys => [element(KeyPos, R) || R <- Rows]}
+    end).
+
+%% The rows stored under a key, at most Limit of them.
+%% shortcut: a bag key with many rows is copied whole before the cut, upgrade to a keyed select when that shows up
+ets_lookup(Tab, Key, Limit) ->
+    ets_checked(Tab, fun() ->
+        KeyPos = ets:info(Tab, keypos),
+        case ets:lookup(Tab, Key) of
+            Rows when length(Rows) > Limit ->
+                #{rows => lists:sublist(Rows, Limit), stop => rows, keypos => KeyPos};
+            Rows ->
+                #{rows => Rows, stop => complete, keypos => KeyPos}
+        end
+    end).
+
+%% A private table can only be read by its owner, and this process is not.
+ets_checked(Tab, Read) ->
+    case ets:info(Tab, protection) of
+        undefined -> {error, no_table};
+        private -> {error, private};
+        _ ->
+            try Read()
+            catch error:badarg -> {error, badarg}
+            end
+    end.
 
 owner_name(Pid) ->
     case erlang:process_info(Pid, registered_name) of

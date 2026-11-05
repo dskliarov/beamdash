@@ -199,6 +199,7 @@ defmodule Beamdash.InsightsTest do
         jev_enabled: false,
         status: :connected,
         snap: snap,
+        page: :forecast,
         forecast: Forecast.forecast(history, snap)
       )
 
