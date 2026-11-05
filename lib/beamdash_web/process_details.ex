@@ -6,6 +6,8 @@ defmodule BeamdashWeb.ProcessDetails do
   use Phoenix.Component
 
   alias Beamdash.Format
+  import BeamdashWeb.HelpTip, only: [tip: 1]
+
   alias BeamdashWeb.TermTree
   alias Phoenix.LiveView.JS
 
@@ -136,11 +138,29 @@ defmodule BeamdashWeb.ProcessDetails do
       />
 
       <dl class="facts">
-        <dt>Status</dt>
+        <dt>
+          Status
+          <.tip
+            text="What the process is doing now: running, waiting for a message, ready to run, or suspended."
+            href="https://www.erlang.org/doc/apps/erts/erlang.html#process_info/2"
+          />
+        </dt>
         <dd>{@details.status}</dd>
-        <dt>Running</dt>
+        <dt>
+          Running
+          <.tip
+            text="The function the process is executing at this moment."
+            href="https://www.erlang.org/doc/apps/erts/erlang.html#process_info/2"
+          />
+        </dt>
         <dd class="mono">{Format.mfa(@details.current_function, @syntax)}</dd>
-        <dt>Priority</dt>
+        <dt>
+          Priority
+          <.tip
+            text="How the scheduler ranks this process: low, normal, high or max. Traps exits means exit signals arrive as messages."
+            href="https://www.erlang.org/doc/apps/erts/erlang.html#process_flag/2"
+          />
+        </dt>
         <dd>{@details.priority}{if @details.trap_exit, do: " · traps exits"}</dd>
       </dl>
 
@@ -151,7 +171,13 @@ defmodule BeamdashWeb.ProcessDetails do
         <div class="stat-row">
           <div class="stat">
             <span class="stat-value">{rate_text(@rate)}</span>
-            <span class="stat-label">reductions / s now</span>
+            <span class="stat-label">
+              reductions / s now
+              <.tip
+                text="Reductions are the unit of work the scheduler counts, roughly one per function call."
+                href="https://www.erlang.org/doc/apps/erts/erlang.html#process_info/2"
+              />
+            </span>
           </div>
           <div class="stat">
             <span class="stat-value">{Format.number(@details.reductions)}</span>
@@ -171,7 +197,13 @@ defmodule BeamdashWeb.ProcessDetails do
         <div class="stat-row">
           <div class="stat">
             <span class="stat-value">{Format.bytes(@mem.total)}</span>
-            <span class="stat-label">total</span>
+            <span class="stat-label">
+              total
+              <.tip
+                text="Memory the process holds: its heap, its stack and the messages it has received."
+                href="https://www.erlang.org/doc/apps/erts/erlang.html#process_info/2"
+              />
+            </span>
           </div>
           <div class="stat">
             <span class="stat-value">{Format.bytes(@mem.binary_bytes)}</span>
@@ -179,6 +211,10 @@ defmodule BeamdashWeb.ProcessDetails do
               in {Format.number(@mem.binary_count)} off-heap binar{if @mem.binary_count == 1,
                 do: "y",
                 else: "ies"}
+              <.tip
+                text="Binaries over 64 bytes are stored outside the heap and shared by reference. Only this process's references are counted."
+                href="https://www.erlang.org/doc/apps/erts/erlang.html#process_info/2"
+              />
             </span>
           </div>
         </div>
@@ -190,22 +226,64 @@ defmodule BeamdashWeb.ProcessDetails do
         />
         <table class="kv">
           <tr>
-            <th>Heap (young)</th><td>{Format.bytes(@mem.heap)}</td>
+            <th>
+              Heap (young)
+              <.tip
+                text="Where new data is allocated. When it fills up, a young garbage collection runs."
+                href="https://www.erlang.org/doc/apps/erts/erlang.html#process_info/2"
+              />
+            </th>
+            <td>{Format.bytes(@mem.heap)}</td>
           </tr>
           <tr>
-            <th>Old heap</th><td>{Format.bytes(@gc.old_heap_size)}</td>
+            <th>
+              Old heap
+              <.tip
+                text="Data that survived a collection is moved here. When it fills up, a full garbage collection runs."
+                href="https://www.erlang.org/doc/apps/erts/erlang.html#process_info/2"
+              />
+            </th>
+            <td>{Format.bytes(@gc.old_heap_size)}</td>
           </tr>
           <tr>
-            <th>Total heap</th><td>{Format.bytes(@mem.total_heap)}</td>
+            <th>
+              Total heap
+              <.tip
+                text="The young and old heaps together."
+                href="https://www.erlang.org/doc/apps/erts/erlang.html#process_info/2"
+              />
+            </th>
+            <td>{Format.bytes(@mem.total_heap)}</td>
           </tr>
           <tr>
-            <th>Stack</th><td>{Format.bytes(@mem.stack)}</td>
+            <th>
+              Stack
+              <.tip
+                text="Space for the call frames and local variables of the functions that are running."
+                href="https://www.erlang.org/doc/apps/erts/erlang.html#process_info/2"
+              />
+            </th>
+            <td>{Format.bytes(@mem.stack)}</td>
           </tr>
           <tr>
-            <th>Heap fragments</th><td>{Format.bytes(@gc.mbuf_size)}</td>
+            <th>
+              Heap fragments
+              <.tip
+                text="Memory for messages that have arrived but are not yet copied into the heap."
+                href="https://www.erlang.org/doc/apps/erts/erlang.html#process_info/2"
+              />
+            </th>
+            <td>{Format.bytes(@gc.mbuf_size)}</td>
           </tr>
           <tr>
-            <th>Messages stored</th><td>{@mem.message_queue_data || "n/a"}</td>
+            <th>
+              Messages stored
+              <.tip
+                text="Where mailbox messages are kept: on_heap (copied into the heap) or off_heap (outside it). Set by the message_queue_data flag."
+                href="https://www.erlang.org/doc/apps/erts/erlang.html#process_flag/2"
+              />
+            </th>
+            <td>{@mem.message_queue_data || "n/a"}</td>
           </tr>
         </table>
       </section>

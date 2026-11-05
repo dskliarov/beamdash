@@ -12,6 +12,30 @@ defmodule Beamdash.ProcessDetailsTest do
     assert [{^b, {:b, 1}}, {^a0, :a}] = ProcessDetails.message_ids([{:b, 1}, :a])
   end
 
+  test "the process fields link to their OTP documentation" do
+    detail =
+      Map.merge(Beamdash.Test.Fixture.gc_detail(), %{
+        reductions: 1,
+        links: [],
+        monitors: [],
+        monitored_by: [],
+        current_stacktrace: [],
+        trap_exit: false,
+        priority: :normal,
+        mailbox: %{length: 0, limit: 100, messages: []}
+      })
+
+    html =
+      render_component(&ProcessDetails.panel/1,
+        details: detail,
+        history: [],
+        syntax: :erlang
+      )
+
+    assert html =~ ~s(href="https://www.erlang.org/doc/apps/erts/erlang.html#process_info/2")
+    assert html =~ ~s(class="help-tip")
+  end
+
   test "an opened message stays open when the panel refreshes" do
     detail =
       Map.merge(Beamdash.Test.Fixture.gc_detail(), %{
