@@ -19,6 +19,12 @@ defmodule BeamdashWeb.McpPlugTest do
         origin -> put_req_header(conn, "origin", origin)
       end
     end)
+    |> then(fn conn ->
+      case Keyword.get(opts, :protocol) do
+        nil -> conn
+        version -> put_req_header(conn, "mcp-protocol-version", version)
+      end
+    end)
     |> Plug.Parsers.call(Plug.Parsers.init(parsers: [:json], pass: ["*/*"], json_decoder: Jason))
     |> McpPlug.call([])
   end
@@ -42,6 +48,16 @@ defmodule BeamdashWeb.McpPlugTest do
     assert post(msg, origin: "null").status == 403
     assert post(msg, origin: "http://localhost:4000").status == 200
     assert post(msg).status == 200
+  end
+
+  test "an MCP-Protocol-Version the server does not speak is a bad request" do
+    conn = post(%{jsonrpc: "2.0", id: 1, method: "ping"}, protocol: "2026-01-01")
+    assert conn.status == 400
+    assert body(conn) |> get_in(["error", "code"]) == -32600
+  end
+
+  test "the protocol version the server speaks is accepted" do
+    assert post(%{jsonrpc: "2.0", id: 1, method: "ping"}, protocol: "2025-06-18").status == 200
   end
 
   test "only POST is allowed" do

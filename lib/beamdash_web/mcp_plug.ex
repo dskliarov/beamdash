@@ -24,6 +24,9 @@ defmodule BeamdashWeb.McpPlug do
       not (loopback_client?(conn.remote_ip) and loopback_host?(conn.host) and origin_ok?(conn)) ->
         conn |> send_resp(403, "Forbidden") |> halt()
 
+      not protocol_ok?(conn) ->
+        reply(conn, 400, error(nil, -32600, "Unsupported MCP-Protocol-Version"))
+
       conn.method != "POST" ->
         conn |> put_resp_header("allow", "POST") |> send_resp(405, "Method Not Allowed") |> halt()
 
@@ -96,6 +99,14 @@ defmodule BeamdashWeb.McpPlug do
     case get_req_header(conn, "origin") do
       [] -> true
       [origin] -> loopback_host?(URI.parse(origin).host)
+      _ -> false
+    end
+  end
+
+  defp protocol_ok?(conn) do
+    case get_req_header(conn, "mcp-protocol-version") do
+      [] -> true
+      [@protocol_version] -> true
       _ -> false
     end
   end

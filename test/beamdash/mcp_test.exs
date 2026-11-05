@@ -1,7 +1,7 @@
 defmodule Beamdash.McpTest do
   use ExUnit.Case, async: false
 
-  alias Beamdash.{Mcp, Target}
+  alias Beamdash.{Format, Mcp, Target}
   alias Beamdash.Test.Fixture
 
   defp unique_name, do: :"mcp_target_#{System.unique_integer([:positive])}"
@@ -40,11 +40,31 @@ defmodule Beamdash.McpTest do
       assert Enum.all?(procs, &(&1.pid =~ ~r/^<\d+\.\d+\.\d+>$/))
     end
 
-    test "process_details takes a pid as list_processes shows it", %{target: target} do
-      {:ok, [%{pid: pid} | _]} = Mcp.call("list_processes", %{"limit" => 1}, target)
+    test "process_details takes a pid as list_processes shows it", %{node: node, target: target} do
+      text = Format.pid(:erpc.call(node, :erlang, :spawn, [:timer, :sleep, [:infinity]]))
 
-      assert {:ok, %{pid: ^pid, memory: %{total: _}}} =
-               Mcp.call("process_details", %{"pid" => pid}, target)
+      assert {:ok, procs} = Mcp.call("list_processes", %{"limit" => 1000}, target)
+      assert text in Enum.map(procs, & &1.pid)
+
+      assert {:ok, %{pid: ^text, memory: %{total: _}}} =
+               Mcp.call("process_details", %{"pid" => text}, target)
+    end
+
+    test "process_details leaves queued messages out", %{node: node, target: target} do
+      pid = :erpc.call(node, :erlang, :spawn, [:timer, :sleep, [:infinity]])
+      :erpc.call(node, :erlang, :send, [pid, :secret])
+
+      assert {:ok, %{mailbox: %{length: 1, messages: :not_fetched}}} =
+               Mcp.call("process_details", %{"pid" => Format.pid(pid)}, target)
+    end
+
+    test "process_details says so once the process has exited", %{node: node, target: target} do
+      pid = :erpc.call(node, :erlang, :spawn, [:erlang, :exit, [:normal]])
+      ref = Process.monitor(pid)
+      assert_receive {:DOWN, ^ref, :process, ^pid, _}
+
+      assert {:error, "that process has exited"} =
+               Mcp.call("process_details", %{"pid" => Format.pid(pid)}, target)
     end
 
     test "process_details refuses text that is not a pid", %{target: target} do

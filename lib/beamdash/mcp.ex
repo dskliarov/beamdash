@@ -83,7 +83,7 @@ defmodule Beamdash.Mcp do
   defp run("process_details", args, node, server) do
     case Target.parse_pid(args["pid"], node) do
       pid when is_pid(pid) ->
-        case Target.process_details(pid, 100, server) do
+        case Target.process_details(pid, 0, server) do
           {:ok, :undefined} -> {:error, "that process has exited"}
           other -> answer(other)
         end
