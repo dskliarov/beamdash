@@ -29,6 +29,7 @@ defmodule BeamdashWeb.AppsLive do
         tree: nil,
         info: nil,
         view: :tree,
+        tree_mode: :graph,
         plugin_css?: false,
         selected: nil,
         proc: nil,
@@ -127,6 +128,9 @@ defmodule BeamdashWeb.AppsLive do
   # tab while the plugin supports that one too); picking one leaves a source
   def handle_event("view", %{"view" => view}, socket) when view in ~w(tree details),
     do: {:noreply, assign(socket, view: String.to_existing_atom(view), source_tab: nil)}
+
+  def handle_event("tree_mode", %{"mode" => mode}, socket) when mode in ~w(graph tree),
+    do: {:noreply, assign(socket, tree_mode: String.to_existing_atom(mode))}
 
   def handle_event("view", %{"view" => "plugin:" <> app}, socket) do
     case Enum.find(plugin_tabs(socket.assigns), &(Atom.to_string(&1.app) == app)) do
@@ -324,6 +328,20 @@ defmodule BeamdashWeb.AppsLive do
               {Format.number(@tree.count)} processes · as Observer: from the application master, following links · refreshed every 5 s
             </p>
 
+            <nav :if={@tree} class="seg" role="tablist" aria-label="Process tree format">
+              <button
+                :for={{mode, label} <- [graph: "Graph", tree: "Tree"]}
+                type="button"
+                role="tab"
+                class={["seg-btn", @tree_mode == mode && "active"]}
+                aria-selected={to_string(@tree_mode == mode)}
+                phx-click="tree_mode"
+                phx-value-mode={mode}
+              >
+                {label}
+              </button>
+            </nav>
+
             <div :if={@selected} class="apps-selected" role="status">
               <span class="mono">
                 {pid_label(@selected, @names, @syntax)}
@@ -349,13 +367,20 @@ defmodule BeamdashWeb.AppsLive do
               This application has no processes (a library application) or has just stopped.
             </p>
             <BeamdashWeb.AppChart.chart
-              :if={@tree}
+              :if={@tree && @tree_mode == :graph}
+              root={@tree.root}
+              selected={@selected}
+              syntax={@syntax}
+            />
+            <BeamdashWeb.AppChart.outline
+              :if={@tree && @tree_mode == :tree}
+              id="app-outline"
               root={@tree.root}
               selected={@selected}
               syntax={@syntax}
             />
             <p
-              :if={@tree && Enum.any?(Map.values(@names), &(&1.also != []))}
+              :if={@tree && @tree_mode == :graph && Enum.any?(Map.values(@names), &(&1.also != []))}
               class="muted small apps-legend"
             >
               <span class="xlink-key" aria-hidden="true"></span>

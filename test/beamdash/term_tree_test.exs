@@ -84,7 +84,7 @@ defmodule Beamdash.TermTreeTest do
     value = {:a, Enum.map(1..30, &{:k, &1, String.duplicate("v", 5)})}
     html = render(value, 1)
 
-    assert html =~ ~s(<details class="term-group" open>)
-    assert html =~ ~s(<details class="term-group">)
+    assert html =~ ~s(<details class="term-group" open )
+    assert html =~ ~s(<details class="term-group" phx-mounted=)
   end
 end

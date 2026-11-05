@@ -9,6 +9,7 @@ defmodule BeamdashWeb.StatePanel do
 
   alias Beamdash.{Format, OtpProcess}
   alias BeamdashWeb.TermTree
+  alias Phoenix.LiveView.JS
 
   @impl true
   def mount(socket), do: {:ok, assign(socket, result: nil, loading: false, pid: nil, view: :text)}
@@ -118,6 +119,26 @@ defmodule BeamdashWeb.StatePanel do
                   {label}
                 </button>
               </nav>
+              <span :if={@view == :tree} class="tree-actions">
+                <button
+                  type="button"
+                  class="secondary small-btn"
+                  phx-click={
+                    JS.set_attribute({"open", ""}, to: "#state-panel-#{@key} .state-tree details")
+                  }
+                >
+                  Expand all
+                </button>
+                <button
+                  type="button"
+                  class="secondary small-btn"
+                  phx-click={
+                    JS.remove_attribute("open", to: "#state-panel-#{@key} .state-tree details")
+                  }
+                >
+                  Collapse all
+                </button>
+              </span>
               <%= if @proc_kind == :gen_statem and match?({_, _}, state) do %>
                 <p class="statem-state">
                   State <span class="mono state-name">{Format.term(elem(state, 0), @syntax)}</span>

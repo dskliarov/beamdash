@@ -45,6 +45,14 @@ defmodule BeamdashWeb.StatePanelTest do
     refute html =~ "state-pre"
   end
 
+  test "Expand all and Collapse all appear only in the tree view" do
+    {:noreply, tree} = StatePanel.handle_event("set_view", %{"view" => "tree"}, panel(@big))
+
+    assert html(tree) =~ "Expand all"
+    assert html(tree) =~ "Collapse all"
+    refute html(panel(@big)) =~ "Expand all"
+  end
+
   test "the Text switch goes back to the text view" do
     {:noreply, tree} = StatePanel.handle_event("set_view", %{"view" => "tree"}, panel(@big))
     {:noreply, socket} = StatePanel.handle_event("set_view", %{"view" => "text"}, tree)

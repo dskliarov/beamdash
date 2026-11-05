@@ -8,6 +8,7 @@ defmodule BeamdashWeb.TermTree do
   use Phoenix.Component
 
   alias Beamdash.Format
+  alias Phoenix.LiveView.JS
 
   @fits 80
   @max_items 100
@@ -36,7 +37,11 @@ defmodule BeamdashWeb.TermTree do
       <% :cut -> %>
         <span class="muted small">…</span>
       <% {:group, open, close, count, children, hidden} -> %>
-        <details class="term-group" open={@depth < @expand}>
+        <details
+          class="term-group"
+          open={@depth < @expand}
+          phx-mounted={JS.ignore_attributes(["open"])}
+        >
           <summary class="mono">
             {open}…{close} <span class="muted small">{Format.number(count)} items</span>
           </summary>
