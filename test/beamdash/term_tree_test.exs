@@ -46,6 +46,13 @@ defmodule Beamdash.TermTreeTest do
     assert length(Regex.scan(~r/class="term-leaf/, html)) <= 10
   end
 
+  test "a big struct opens into its fields" do
+    value = %URI{path: String.duplicate("p", 100)}
+
+    assert {:group, _, _, count, [_ | _], 0} = TermTree.build(value, :erlang)
+    assert count == map_size(value)
+  end
+
   test "a big map keeps its keys and shows each value next to its key" do
     big = %{k: String.duplicate("v", 90)}
 

@@ -106,7 +106,7 @@ defmodule BeamdashWeb.TermTree do
     open = if syntax == :elixir, do: "%{", else: "\#{"
 
     {open, "}", map_size(value),
-     Stream.map(value, fn {k, v} -> {Format.term(k, syntax, 80), v} end)}
+     Stream.map(Map.to_list(value), fn {k, v} -> {Format.term(k, syntax, 80), v} end)}
   end
 
   defp container(value, _syntax) when is_list(value) and value != [] do
