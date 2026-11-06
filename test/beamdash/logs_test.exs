@@ -147,6 +147,26 @@ defmodule Beamdash.LogsTest do
       assert [] = Logs.entries(logs)
     end
 
+    test "connecting to another node drops the previous node's entries", ctx do
+      logs = start_logs(ctx)
+      :ok = Logs.subscribe(logs)
+      :ok = connect(ctx)
+      eventually(fn -> Logs.info(logs).status == :streaming end)
+      :ok = Fixture.log(ctx.node, :error, "from first node")
+      assert_receive {:beamdash_logs, {:entries, [_]}}, 3_000
+
+      {peer2, node2} = Fixture.start_peer()
+      on_exit(fn -> Fixture.stop_peer(peer2) end)
+      {:ok, _} = Target.connect(Atom.to_string(node2), Fixture.cookie(), ctx.target)
+      eventually(fn -> Logs.info(logs).status == :streaming end)
+      assert [] = Logs.entries(logs)
+
+      :ok = Fixture.log(node2, :error, "from second node")
+      assert_receive {:beamdash_logs, {:entries, [e]}}, 3_000
+      assert e.message == "from second node"
+      assert [^e] = Logs.entries(logs)
+    end
+
     test "previous/1 needs a kubectl source", ctx do
       logs = start_logs(ctx)
       :ok = connect(ctx)
