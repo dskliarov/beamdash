@@ -186,13 +186,18 @@ defmodule Beamdash.Kubectl do
   defp cluster_context(kubeconfig, exec) do
     name = cluster_name(kubeconfig)
 
-    case exec.(kubeconfig_args(kubeconfig) ++ ["config", "get-contexts", "-o", "name"]) do
-      {output, 0} ->
-        {:ok, if(name in String.split(output, "\n", trim: true), do: name)}
-
-      {output, status} ->
-        {:error, {:context_list_failed, {status, String.trim(output)}}}
+    with {:ok, names} <- context_names(kubeconfig, exec) do
+      {:ok, if(name in names, do: name)}
     end
+  end
+
+  defp context_names(kubeconfig, exec) do
+    case exec.(kubeconfig_args(kubeconfig) ++ ["config", "get-contexts", "-o", "name"]) do
+      {output, 0} -> {:ok, String.split(output, "\n", trim: true)}
+      {output, status} -> {:error, {:context_list_failed, {status, String.trim(output)}}}
+    end
+  catch
+    kind, reason -> {:error, {:context_list_failed, {kind, reason}}}
   end
 
   defp context_args(nil), do: []

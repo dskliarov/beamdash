@@ -213,6 +213,13 @@ defmodule Beamdash.KubectlTest do
                Kubectl.list_namespaces("/home/me/.kube/prod.yaml", exec)
     end
 
+    test "an exception while reading the contexts is reported as a context failure" do
+      exec = fn _args -> raise "boom" end
+
+      assert {:error, {:context_list_failed, {:error, %RuntimeError{}}}} =
+               Kubectl.list_namespaces("/home/me/.kube/prod.yaml", exec)
+    end
+
     test "a non-zero exit is reported" do
       exec = fn _args -> {"namespaces is forbidden", 1} end
 
