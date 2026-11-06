@@ -279,6 +279,7 @@ To write a plugin, start from the riak_core plugin ([beamdash-riak-core-plugin](
 - The supported applications are `runtime: false` deps in `mix.exs`. beamdash reads `mix.exs` as data and never runs it.
 - No other runtime deps: a plugin can use only what beamdash ships (Elixir, Phoenix, LiveView, Jason…).
 - Code on the attached node is called only through `Beamdash.Plugin.rpc/5`.
+- `mcp_tools:` is optional. Each tool is a `{name, description, schema, {module, fun}}` tuple, with the module under the plugin's prefix. Its function takes the arguments map and returns `{:ok, data}` or `{:error, message}`. The MCP server offers it as `<app>.<name>` while the application runs (see [MCP tools](mcp.md#tools)).
 - Every module sits under one top-level prefix, which no module beamdash, OTP or another plugin has loaded may already use.
 - Protocol implementations have no effect: beamdash's protocols are consolidated.
 

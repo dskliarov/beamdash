@@ -155,6 +155,31 @@ priv/static/plugin.css     optional
 - Plugin CSS: `priv/static/plugin.css`, served at `/plugins/<id>/plugin.css`
   and added to that plugin's pages only. Class names should be prefixed with
   the plugin id.
+- `mcp_tools:` (optional) in `use Beamdash.Plugin`: tools for beamdash's MCP
+  endpoint. See "MCP tools from plugins".
+
+## MCP tools from plugins
+
+A plugin can add tools to beamdash's MCP endpoint (`docs/mcp.md`). They are
+listed and callable only while the plugin is active.
+
+- Declared in the entry module as `{name, description, input_schema,
+  {module, fun}}`, for example
+  `mcp_tools: [{"ring", "Ring ownership of the node", %{type: "object", properties: %{}}, {MyPlugin.Mcp, :ring}}]`.
+- The exposed name is `<plugin app>.<name>`, such as `riak_core_plugin.ring`.
+  This keeps plugins from shadowing beamdash's own tools.
+- `fun(args)` takes the call's JSON arguments as a map and returns
+  `{:ok, term}` or `{:error, message}`. Results are JSON-encoded like the
+  built-in tools. A raise, exit or timeout (5 s) becomes a tool error, not a
+  failed request.
+- The function runs inside beamdash, so it reaches the node only through
+  `Beamdash.Plugin.rpc/5`, as pages do.
+- Tools must be read-only, as the built-in ones are. beamdash can't check
+  this, so the plugin's author is responsible for it.
+- The names are slugs, as page slugs are, and unique within the plugin. The
+  schema is a map, and `{module, fun}` names a module inside the plugin's
+  namespace that exports `fun/1`. The install check validates the same things,
+  for a hand-written declaration too.
 
 ## Storage
 

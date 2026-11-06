@@ -88,7 +88,8 @@ defmodule Beamdash.Apps do
   `beamdash_agent:module_summary/1` of `mod` on `node`: `%{module, file,
   source, vsn, behaviours, exports, application}` (`source` and
   `application` are `nil` when unknown) and `has_source` (on the node, or
-  in a local source folder, see `Beamdash.LocalSource`), or `nil` when it
+  in a local source folder, see `Beamdash.LocalSource`; then `local_file` is
+  that file's path on this computer), or `nil` when it
   isn't loaded or can't be asked.
   """
   def module_summary(node, mod, find_local \\ &Beamdash.LocalSource.find/2)
@@ -108,8 +109,12 @@ defmodule Beamdash.Apps do
   end
 
   # no source on the node: a local source folder may have it
-  defp local_source(%{has_source: false} = summary, node, mod, find_local),
-    do: %{summary | has_source: match?({:ok, _}, find_local.(node, mod))}
+  defp local_source(%{has_source: false} = summary, node, mod, find_local) do
+    case find_local.(node, mod) do
+      {:ok, path} -> summary |> Map.put(:has_source, true) |> Map.put(:local_file, path)
+      :error -> summary
+    end
+  end
 
   defp local_source(summary, _node, _mod, _find_local), do: summary
 

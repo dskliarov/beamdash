@@ -3,13 +3,15 @@ defmodule Beamdash.Mcp do
   The read-only tools the MCP endpoint (`BeamdashWeb.McpPlug`) offers to a
   coding agent. Each one reads the node beamdash is attached to through the
   same calls the web pages use, and returns plain data. Crashes and logs are
-  what beamdash has already collected from the node.
+  what beamdash has already collected from the node. Active plugins add
+  their own tools, named `<app>.<tool>`.
   """
 
-  alias Beamdash.{Apps, Crashes, Format, Logs, Memory, Target}
+  alias Beamdash.{Apps, Crashes, Format, Logs, Memory, Plugins, Target}
 
   @default_limit 100
   @max_limit 1000
+  @plugin_tool_timeout 5_000
 
   @tools [
     %{
@@ -85,7 +87,7 @@ defmodule Beamdash.Mcp do
     %{
       name: "module_summary",
       description:
-        "A loaded module: its file, version, behaviours, exports, owning application and whether its source is available.",
+        "A loaded module: its file, version, behaviours, exports, owning application and whether its source is available. `source` is the source path it was compiled from, on the node; `local_file` is the source file on this computer, when a source folder in beamdash's settings has it.",
       inputSchema: %{
         type: "object",
         properties: %{
@@ -127,18 +129,25 @@ defmodule Beamdash.Mcp do
 
   @names Enum.map(@tools, & &1.name)
 
-  def tools, do: @tools
+  def tools(plugins \\ Plugins) do
+    @tools ++ for {app, tool} <- plugin_tools(plugins), do: public_tool(app, tool)
+  end
 
-  def call(name, args, server \\ Target)
+  def call(name, args, server \\ Target, plugins \\ Plugins)
 
-  def call(name, args, server) when name in @names do
+  def call(name, args, server, _plugins) when name in @names do
     case Target.status(server) do
       %{status: :connected, node: node} -> run(name, args, node, server)
       _ -> {:error, "beamdash is not connected to a node"}
     end
   end
 
-  def call(_name, _args, _server), do: :unknown_tool
+  def call(name, args, _server, plugins) do
+    case Enum.find(plugin_tools(plugins), fn {app, tool} -> tool_name(app, tool) == name end) do
+      {_app, tool} -> run_plugin_tool(tool, name, args)
+      nil -> :unknown_tool
+    end
+  end
 
   defp run("node_info", _args, _node, server), do: answer(Target.node_info(server))
 
@@ -206,6 +215,41 @@ defmodule Beamdash.Mcp do
       )
 
     {:ok, json(entries)}
+  end
+
+  defp plugin_tools(plugins) do
+    for %{app: app, mcp_tools: tools} <- Plugins.active(plugins), tool <- tools, do: {app, tool}
+  end
+
+  defp tool_name(app, tool), do: "#{app}.#{tool.name}"
+
+  defp public_tool(app, tool),
+    do: %{
+      name: tool_name(app, tool),
+      description: tool.description,
+      inputSchema: tool.input_schema
+    }
+
+  defp run_plugin_tool(%{call: {mod, fun}}, name, args) do
+    task =
+      Task.async(fn ->
+        try do
+          case apply(mod, fun, [args]) do
+            {:ok, data} -> {:ok, json(data)}
+            {:error, message} when is_binary(message) -> {:error, message}
+            other -> {:error, "#{name} returned #{inspect(other)}"}
+          end
+        rescue
+          e -> {:error, "#{name} raised #{Exception.message(e)}"}
+        catch
+          kind, reason -> {:error, "#{name} failed: #{inspect({kind, reason})}"}
+        end
+      end)
+
+    case Task.yield(task, @plugin_tool_timeout) || Task.shutdown(task, :brutal_kill) do
+      {:ok, reply} -> reply
+      nil -> {:error, "#{name} did not answer in #{div(@plugin_tool_timeout, 1000)} seconds"}
+    end
   end
 
   defp answer({:ok, data}), do: {:ok, json(data)}

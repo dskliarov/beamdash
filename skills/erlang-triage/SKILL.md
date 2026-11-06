@@ -17,7 +17,8 @@ If the user does not name an application for an app analysis, call `app_list` an
 
 ## Before you start
 
-**Source path.** Ask the user for the path to the source code of the application being analyzed (the repository root, for example `~/projects/my_app`). If the user already gave it in this conversation, reuse it. Check that the path exists and contains `mix.exs` or `rebar.config`. If the user has no source to give, continue with runtime analysis only and mark every code-level finding as unverified.
+**Source path.** Find it before asking. If the user already gave a path in this conversation, reuse it. Otherwise take a module of the application (the `initial_call` module of one of its processes, or any module from `app_tree`) and call `module_summary`. When beamdash has a local copy of the module, the summary's `local_file` is its path on this computer. Walk up from `local_file` to the nearest folder that contains `mix.exs` or `rebar.config`; for an umbrella, that is the folder above `apps/`. That folder is the source path. `source` is where the node compiled the module, which may not exist on this computer, so use it only as a hint.
+If no module of the application has a `local_file`, ask the user for the repository root (for example `~/projects/my_app`), check that it contains `mix.exs` or `rebar.config`, and reuse it. If the user has no source to give, continue with runtime analysis only and mark every code-level finding as unverified.
 
 ## Triage steps
 
@@ -45,7 +46,7 @@ If the user does not name an application for an app analysis, call `app_list` an
 7. **Code.** For each finding, find the module:
    - a process's module is its `initial_call` module, or for a supervisor, its callback module (`process_details` gives `initial_call`),
    - a crash or log line names a module in its `where` or `stack`.
-   Call `module_summary` for that module. Then read its source under the source path, starting at the function in the stack or log line. Match the module's `application` to the app's folder under that path. If the module is not in that path, say so and do not guess its code.
+   Call `module_summary` for that module. Read its source starting at the function in the stack or log line: from `local_file` when the summary has one, else under the source path, matching the module's `application` to the app's folder there. If neither has the module, say so and do not guess its code.
 
 8. **Report.** Give a short ranked list. For each finding:
    - the evidence: pid, application, module, counts, the exact error text, and the time,
@@ -69,7 +70,7 @@ Goal: find bottlenecks, errors and caveats in one application, read the code beh
 
 6. **Caveats.** From `app_info` and `app_list`, check that the app is running as `permanent` when it should be, that every application in `applications` is running, and what depends on it through `needed_by`. Compare `start_type` with what the source expects.
 
-7. **Source.** For each finding, get the module (from `initial_call`, the crash `stack`, or the log `where`), call `module_summary`, then read it under the source path. Read the function that holds the behavior and its callers. Look for:
+7. **Source.** For each finding, get the module (from `initial_call`, the crash `stack`, or the log `where`), call `module_summary`, then read it from `local_file` or under the source path. Read the function that holds the behavior and its callers. Look for:
    - blocking work (HTTP, database, file, `Process.sleep`) inside `handle_call` or `handle_info`, or synchronous `GenServer.call` with the default 5 s timeout,
    - one process serializing work for many workers,
    - unbounded growth: maps, lists, ETS tables or buffers that are only added to,
@@ -88,7 +89,7 @@ Goal: find bottlenecks, errors and caveats in one application, read the code beh
    - **Verify:** the test to add, and what to watch on the node after the change.
    List healthy checks in one line each.
 
-9. **Limits.** State what was not checked: a running version that differs from the source, errors or crashes older than what beamdash collected (it only keeps what it saw since it connected), no load test, and any module outside the source path.
+9. **Limits.** State what was not checked: a running version that differs from the source (a `local_file` is the copy on this computer, which may not be the version the node runs), errors or crashes older than what beamdash collected (it only keeps what it saw since it connected), no load test, and any module with neither a `local_file` nor a file under the source path.
 
 ## Notes
 

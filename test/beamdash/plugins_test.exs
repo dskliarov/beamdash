@@ -12,7 +12,7 @@ defmodule Beamdash.PluginsTest do
   @moduletag :capture_log
 
   @fixture Path.expand("../fixtures/plugins/hello_plugin", __DIR__)
-  @hello [HelloPlugin, HelloPlugin.HelloLive]
+  @hello [HelloPlugin, HelloPlugin.HelloLive, HelloPlugin.Tools]
   @impl_mods [
     HelloPlugin.Foo,
     Enumerable.HelloPlugin.Foo,
