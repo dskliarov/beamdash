@@ -230,7 +230,19 @@ defmodule Beamdash.Mcp do
       inputSchema: tool.input_schema
     }
 
-  defp run_plugin_tool(%{call: {mod, fun}}, name, args) do
+  defp run_plugin_tool(tool, name, args) do
+    case missing_args(tool.input_schema, args) do
+      [] -> call_plugin_tool(tool, name, args)
+      missing -> {:error, "#{name} needs #{Enum.join(missing, ", ")}"}
+    end
+  end
+
+  defp missing_args(schema, args) do
+    required = Map.get(schema, :required, [])
+    if is_map(args), do: Enum.reject(required, &Map.has_key?(args, &1)), else: required
+  end
+
+  defp call_plugin_tool(%{call: {mod, fun}}, name, args) do
     task =
       Task.async(fn ->
         try do

@@ -34,6 +34,7 @@ defmodule Beamdash.McpTest do
     def error(_args), do: {:error, "nope"}
     def raises(_args), do: raise("boom")
     def odd(_args), do: :odd
+    def greet(%{"name" => name}), do: {:ok, %{greeting: "Hello, #{name}!"}}
   end
 
   describe "tools of active plugins" do
@@ -51,7 +52,13 @@ defmodule Beamdash.McpTest do
         tool.("ok", :ok),
         tool.("error", :error),
         tool.("raises", :raises),
-        tool.("odd", :odd)
+        tool.("odd", :odd),
+        %{
+          name: "greet",
+          description: "Tool greet",
+          input_schema: %{type: "object", required: ["name"]},
+          call: {Tools, :greet}
+        }
       ]
 
       plugins = start_supervised!({StubPlugins, [%{app: :ring_app, mcp_tools: tools}]})
@@ -84,6 +91,17 @@ defmodule Beamdash.McpTest do
     test "report a value that is not a result", %{plugins: plugins} do
       assert {:error, "ring_app.odd returned :odd"} =
                Mcp.call("ring_app.odd", %{}, Target, plugins)
+    end
+
+    test "a call without a required argument says which one is missing", %{plugins: plugins} do
+      assert {:error, "ring_app.greet needs name"} =
+               Mcp.call("ring_app.greet", %{}, Target, plugins)
+
+      assert {:error, "ring_app.greet needs name"} =
+               Mcp.call("ring_app.greet", "not a map", Target, plugins)
+
+      assert {:ok, %{greeting: "Hello, Ada!"}} =
+               Mcp.call("ring_app.greet", %{"name" => "Ada"}, Target, plugins)
     end
 
     test "a name no active plugin declares is unknown", %{plugins: plugins} do
