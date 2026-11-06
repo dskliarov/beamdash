@@ -72,7 +72,7 @@ defmodule Beamdash.Kubectl do
          files
          |> Enum.filter(&(&1 == "config" or String.ends_with?(&1, [".yaml", ".yml"])))
          |> Enum.sort()
-         |> Enum.map(&%{name: Path.rootname(&1), path: Path.join(dir, &1)})}
+         |> Enum.map(&%{name: cluster_name(&1), path: Path.join(dir, &1)})}
 
       {:error, reason} ->
         {:error, {:kubeconfig_list_failed, reason}}
@@ -153,26 +153,57 @@ defmodule Beamdash.Kubectl do
   @spec list_namespaces(String.t() | nil, (list(String.t()) -> {binary(), integer()})) ::
           {:ok, [String.t()]} | {:error, term()}
   def list_namespaces(kubeconfig, exec \\ &run_kubectl/1) do
-    args =
-      kubeconfig_args(kubeconfig) ++
-        [
-          "--request-timeout=5s",
-          "get",
-          "namespaces",
-          "-o",
-          "jsonpath={.items[*].metadata.name}"
-        ]
+    with {:ok, context} <- cluster_context(kubeconfig, exec) do
+      args =
+        kubeconfig_args(kubeconfig) ++
+          context_args(context) ++
+          [
+            "--request-timeout=5s",
+            "get",
+            "namespaces",
+            "-o",
+            "jsonpath={.items[*].metadata.name}"
+          ]
 
-    case exec.(args) do
-      {output, 0} ->
-        {:ok, output |> String.trim() |> String.split(~r/\s+/, trim: true)}
+      case exec.(args) do
+        {output, 0} ->
+          {:ok, output |> String.trim() |> String.split(~r/\s+/, trim: true)}
 
-      {output, status} ->
-        {:error, {:namespace_list_failed, {status, String.trim(output)}}}
+        {output, status} ->
+          {:error, {:namespace_list_failed, {status, String.trim(output)}}}
+      end
     end
   catch
     kind, reason -> {:error, {:namespace_list_failed, {kind, reason}}}
   end
+
+  # The cluster picked in the UI is passed to kubectl as --context, so the
+  # kubeconfig file is only read, never rewritten. A file with no context of
+  # that name (a multi-cluster `config`) uses its own current context.
+  defp cluster_context(nil, _exec), do: {:ok, nil}
+  defp cluster_context("", _exec), do: {:ok, nil}
+
+  defp cluster_context(kubeconfig, exec) do
+    name = cluster_name(kubeconfig)
+
+    with {:ok, names} <- context_names(kubeconfig, exec) do
+      {:ok, if(name in names, do: name)}
+    end
+  end
+
+  defp context_names(kubeconfig, exec) do
+    case exec.(kubeconfig_args(kubeconfig) ++ ["config", "get-contexts", "-o", "name"]) do
+      {output, 0} -> {:ok, String.split(output, "\n", trim: true)}
+      {output, status} -> {:error, {:context_list_failed, {status, String.trim(output)}}}
+    end
+  catch
+    kind, reason -> {:error, {:context_list_failed, {kind, reason}}}
+  end
+
+  defp context_args(nil), do: []
+  defp context_args(name), do: ["--context", name]
+
+  defp cluster_name(path), do: path |> Path.basename() |> Path.rootname()
 
   @doc """
   Containers in `pod` (`connect/6` and `list_binaries/5` need one to pick

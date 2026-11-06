@@ -72,11 +72,22 @@ defmodule BeamdashWeb.McpPlugTest do
     assert result["serverInfo"]["name"] == "beamdash"
   end
 
-  test "tools/list offers the four read-only tools" do
+  test "tools/list offers the read-only tools" do
     tools = body(rpc("tools/list")) |> get_in(["result", "tools"])
 
     assert Enum.sort(Enum.map(tools, & &1["name"])) ==
-             ["ets_tables", "list_processes", "node_info", "process_details"]
+             Enum.sort([
+               "app_info",
+               "app_list",
+               "app_tree",
+               "crashes",
+               "ets_tables",
+               "list_processes",
+               "logs",
+               "module_summary",
+               "node_info",
+               "process_details"
+             ])
   end
 
   test "a notification gets 202 and no body" do

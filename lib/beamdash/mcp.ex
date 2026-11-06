@@ -2,10 +2,11 @@ defmodule Beamdash.Mcp do
   @moduledoc """
   The read-only tools the MCP endpoint (`BeamdashWeb.McpPlug`) offers to a
   coding agent. Each one reads the node beamdash is attached to through the
-  same calls the web pages use, and returns plain data.
+  same calls the web pages use, and returns plain data. Crashes and logs are
+  what beamdash has already collected from the node.
   """
 
-  alias Beamdash.{Format, Memory, Target}
+  alias Beamdash.{Apps, Crashes, Format, Logs, Memory, Target}
 
   @default_limit 100
   @max_limit 1000
@@ -50,6 +51,77 @@ defmodule Beamdash.Mcp do
       description:
         "The ETS tables of the attached node, largest memory first: name, type, size, memory and owner.",
       inputSchema: %{type: "object", properties: %{}}
+    },
+    %{
+      name: "app_list",
+      description:
+        "The applications running on the attached node, as the Applications tab lists them: name, description, version and master.",
+      inputSchema: %{type: "object", properties: %{}}
+    },
+    %{
+      name: "app_info",
+      description:
+        "One application: description, version, start type, folder, environment, the applications that need it and its module count.",
+      inputSchema: %{
+        type: "object",
+        properties: %{
+          app: %{type: "string", description: "The application name, as app_list shows it."}
+        },
+        required: ["app"]
+      }
+    },
+    %{
+      name: "app_tree",
+      description:
+        "The process tree of one application, from its application master: each process's name, label and children, and its secondary links (`also`).",
+      inputSchema: %{
+        type: "object",
+        properties: %{
+          app: %{type: "string", description: "The application name, as app_list shows it."}
+        },
+        required: ["app"]
+      }
+    },
+    %{
+      name: "module_summary",
+      description:
+        "A loaded module: its file, version, behaviours, exports, owning application and whether its source is available.",
+      inputSchema: %{
+        type: "object",
+        properties: %{
+          module: %{type: "string", description: "The module name, e.g. lists."}
+        },
+        required: ["module"]
+      }
+    },
+    %{
+      name: "crashes",
+      description:
+        "Recent crash reports from the node, newest first: the process, its initial call, the class and reason of the crash, and the stack.",
+      inputSchema: %{
+        type: "object",
+        properties: %{
+          limit: %{
+            type: "integer",
+            description: "How many to return (default #{@default_limit}, at most #{@max_limit})."
+          }
+        }
+      }
+    },
+    %{
+      name: "logs",
+      description:
+        "Recent log lines from the node, newest first: time, level, process, location and message.",
+      inputSchema: %{
+        type: "object",
+        properties: %{
+          limit: %{
+            type: "integer",
+            description: "How many to return (default #{@default_limit}, at most #{@max_limit})."
+          },
+          level: %{type: "string", description: "Only lines at this level, e.g. error."}
+        }
+      }
     }
   ]
 
@@ -100,8 +172,75 @@ defmodule Beamdash.Mcp do
     end
   end
 
+  defp run("app_list", _args, node, _server), do: answer(Apps.list(node))
+
+  defp run("app_info", args, node, _server) do
+    with {:ok, app} <- app_name(args), do: found(Apps.info(node, app), app)
+  end
+
+  defp run("app_tree", args, node, _server) do
+    with {:ok, app} <- app_name(args), do: found(Apps.tree(node, app), app)
+  end
+
+  defp run("module_summary", args, node, _server) do
+    with {:ok, mod} <- module_name(args) do
+      case Apps.module_summary(node, mod) do
+        nil -> {:error, "#{mod} is not loaded on the node, or the node did not say"}
+        summary -> {:ok, json(summary)}
+      end
+    end
+  end
+
+  defp run("crashes", args, _node, _server) do
+    reports = Crashes.reports() |> Enum.take(limit(args))
+    {:ok, json(Enum.map(reports, &%{&1 | at: iso(&1.at)}))}
+  end
+
+  defp run("logs", args, _node, _server) do
+    entries =
+      Logs.entries()
+      |> filter_level(args)
+      |> Enum.take(limit(args))
+      |> Enum.map(
+        &%{at: iso(&1.at), level: &1.level, pid: &1.pid, where: &1.where, message: &1.message}
+      )
+
+    {:ok, json(entries)}
+  end
+
   defp answer({:ok, data}), do: {:ok, json(data)}
   defp answer({:error, reason}), do: {:error, "the node did not answer: #{inspect(reason)}"}
+
+  defp found({:ok, nil}, name), do: {:error, "#{name} is not on the node"}
+  defp found(other, _name), do: answer(other)
+
+  defp app_name(%{"app" => name}) when is_binary(name), do: known_atom(name, "application")
+  defp app_name(_args), do: {:error, "app must be the application name, as app_list shows it"}
+
+  defp module_name(%{"module" => name}) when is_binary(name) do
+    case known_atom("Elixir." <> name, "module") do
+      {:ok, _} = found -> found
+      _ -> known_atom(name, "module")
+    end
+  end
+
+  defp module_name(_args), do: {:error, "module must be the module name, e.g. lists"}
+
+  defp known_atom(name, kind) do
+    {:ok, String.to_existing_atom(name)}
+  rescue
+    ArgumentError ->
+      {:error,
+       "no #{kind} named #{name} is known; take the name from app_list, a process or a log line"}
+  end
+
+  defp filter_level(entries, %{"level" => level}) when is_binary(level),
+    do: Enum.filter(entries, &(to_string(&1.level) == level))
+
+  defp filter_level(entries, _args), do: entries
+
+  defp iso(%DateTime{} = at), do: DateTime.to_iso8601(at)
+  defp iso(other), do: other
 
   defp sort_by_memory(list), do: Enum.sort_by(list, & &1.memory, :desc)
 

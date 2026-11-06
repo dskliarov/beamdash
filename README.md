@@ -625,10 +625,11 @@ The agent includes these compatibility and reliability improvements:
 beamdash serves the node it is attached to over MCP (JSON-RPC over HTTP) at
 `http://127.0.0.1:4000/mcp`, for coding agents. The tools are read-only:
 
-- `node_info`: name, OTP and ERTS versions, process count, memory, uptime
-- `list_processes`: processes, largest memory first (`limit`, default 100)
-- `process_details`: memory, GC, reductions and mailbox of one process (`pid`)
-- `ets_tables`: ETS tables, largest memory first
+- `node_info`, `list_processes`, `process_details`, `ets_tables`: the node,
+  its processes and ETS tables
+- `app_list`, `app_info`, `app_tree`, `module_summary`: applications, their
+  process trees and modules
+- `crashes`, `logs`: crash reports and log lines beamdash has collected
 
 Only loopback clients are accepted, and a request with a non-loopback `Host`
 or `Origin` is refused, so a web page cannot reach it. Connect beamdash to a
@@ -639,6 +640,11 @@ For Claude Code:
 ```
 claude mcp add --transport http beamdash http://127.0.0.1:4000/mcp
 ```
+
+The `erlang-triage` skill in `skills/erlang-triage/` uses these tools to find
+bottlenecks and crashes and recommend fixes. Setup for Claude Code and Claude
+Desktop, the skill installation, and examples are in
+[docs/mcp.md](docs/mcp.md).
 
 ## License
 

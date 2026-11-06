@@ -76,5 +76,52 @@ defmodule Beamdash.McpTest do
       assert {:ok, tables} = Mcp.call("ets_tables", %{}, target)
       assert Enum.any?(tables, &(&1.name == :ac_tab))
     end
+
+    test "app_list names the running applications, kernel among them", %{target: target} do
+      assert {:ok, apps} = Mcp.call("app_list", %{}, target)
+      assert Enum.any?(apps, &(&1.name == :kernel))
+    end
+
+    test "app_info and app_tree describe a running application", %{target: target} do
+      assert {:ok, %{vsn: vsn}} = Mcp.call("app_info", %{"app" => "kernel"}, target)
+      assert is_binary(vsn)
+
+      assert {:ok, %{count: count}} = Mcp.call("app_tree", %{"app" => "kernel"}, target)
+      assert is_integer(count)
+    end
+
+    test "an application name that is not known is refused, with a hint", %{target: target} do
+      assert {:error, message} =
+               Mcp.call("app_tree", %{"app" => "no_such_application_xyz"}, target)
+
+      assert message =~ "app_list"
+    end
+
+    test "app_info needs the app argument", %{target: target} do
+      assert {:error, "app must be" <> _} = Mcp.call("app_info", %{}, target)
+    end
+
+    test "module_summary describes a loaded module", %{target: target} do
+      assert {:ok, %{module: :application}} =
+               Mcp.call("module_summary", %{"module" => "application"}, target)
+    end
+
+    test "module_summary says so for a module the node does not have", %{target: target} do
+      assert {:error, message} = Mcp.call("module_summary", %{"module" => "Beamdash.Mcp"}, target)
+      assert message =~ "not loaded"
+    end
+
+    test "crashes and logs answer with lists, newest first", %{target: target} do
+      assert {:ok, crashes} = Mcp.call("crashes", %{"limit" => 5}, target)
+      assert is_list(crashes) and length(crashes) <= 5
+
+      assert {:ok, entries} = Mcp.call("logs", %{"limit" => 5}, target)
+      assert is_list(entries) and length(entries) <= 5
+    end
+
+    test "logs filters by level", %{target: target} do
+      assert {:ok, entries} = Mcp.call("logs", %{"level" => "error"}, target)
+      assert Enum.all?(entries, &(&1.level == :error))
+    end
   end
 end
