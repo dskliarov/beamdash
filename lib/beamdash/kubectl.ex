@@ -153,9 +153,10 @@ defmodule Beamdash.Kubectl do
   @spec list_namespaces(String.t() | nil, (list(String.t()) -> {binary(), integer()})) ::
           {:ok, [String.t()]} | {:error, term()}
   def list_namespaces(kubeconfig, exec \\ &run_kubectl/1) do
-    with :ok <- select_context(kubeconfig, exec) do
+    with {:ok, context} <- cluster_context(kubeconfig, exec) do
       args =
         kubeconfig_args(kubeconfig) ++
+          context_args(context) ++
           [
             "--request-timeout=5s",
             "get",
@@ -176,32 +177,26 @@ defmodule Beamdash.Kubectl do
     kind, reason -> {:error, {:namespace_list_failed, {kind, reason}}}
   end
 
-  # A kubeconfig's current-context can name another cluster in the same file,
-  # so the cluster picked in the UI becomes the current context first. A file
-  # with no context of that name (a multi-cluster `config`) keeps its own.
-  defp select_context(nil, _exec), do: :ok
-  defp select_context("", _exec), do: :ok
+  # The cluster picked in the UI is passed to kubectl as --context, so the
+  # kubeconfig file is only read, never rewritten. A file with no context of
+  # that name (a multi-cluster `config`) uses its own current context.
+  defp cluster_context(nil, _exec), do: {:ok, nil}
+  defp cluster_context("", _exec), do: {:ok, nil}
 
-  defp select_context(kubeconfig, exec) do
+  defp cluster_context(kubeconfig, exec) do
     name = cluster_name(kubeconfig)
 
     case exec.(kubeconfig_args(kubeconfig) ++ ["config", "get-contexts", "-o", "name"]) do
       {output, 0} ->
-        if name in String.split(output, "\n", trim: true),
-          do: use_context(kubeconfig, name, exec),
-          else: :ok
+        {:ok, if(name in String.split(output, "\n", trim: true), do: name)}
 
       {output, status} ->
-        {:error, {:namespace_list_failed, {status, String.trim(output)}}}
+        {:error, {:context_list_failed, {status, String.trim(output)}}}
     end
   end
 
-  defp use_context(kubeconfig, name, exec) do
-    case exec.(kubeconfig_args(kubeconfig) ++ ["config", "use-context", name]) do
-      {_output, 0} -> :ok
-      {output, status} -> {:error, {:namespace_list_failed, {status, String.trim(output)}}}
-    end
-  end
+  defp context_args(nil), do: []
+  defp context_args(name), do: ["--context", name]
 
   defp cluster_name(path), do: path |> Path.basename() |> Path.rootname()
 

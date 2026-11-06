@@ -142,7 +142,7 @@ defmodule Beamdash.KubectlTest do
                Kubectl.list_namespaces(nil, exec)
     end
 
-    test "makes the cluster's context current, then lists the namespaces from it" do
+    test "lists the namespaces from the cluster's context without switching the file's current context" do
       test_pid = self()
 
       exec = fn args ->
@@ -150,7 +150,6 @@ defmodule Beamdash.KubectlTest do
 
         case args do
           ["--kubeconfig", _, "config", "get-contexts", "-o", "name"] -> {"other\nprod\n", 0}
-          ["--kubeconfig", _, "config", "use-context", "prod"] -> {"Switched.\n", 0}
           _ -> {"default\n", 0}
         end
       end
@@ -171,24 +170,19 @@ defmodule Beamdash.KubectlTest do
                        [
                          "--kubeconfig",
                          "/home/me/.kube/prod.yaml",
-                         "config",
-                         "use-context",
-                         "prod"
-                       ]}
-
-      assert_received {:kubectl,
-                       [
-                         "--kubeconfig",
-                         "/home/me/.kube/prod.yaml",
+                         "--context",
+                         "prod",
                          "--request-timeout=5s",
                          "get",
                          "namespaces",
                          "-o",
                          "jsonpath={.items[*].metadata.name}"
                        ]}
+
+      refute_received {:kubectl, [_, _, "config", "use-context" | _]}
     end
 
-    test "a file without a context of the cluster's name keeps its current context" do
+    test "a file without a context of the cluster's name lists from its own current context" do
       test_pid = self()
 
       exec = fn args ->
@@ -201,23 +195,21 @@ defmodule Beamdash.KubectlTest do
       end
 
       assert {:ok, ["default"]} = Kubectl.list_namespaces("/home/me/.kube/config", exec)
-      refute_received {:kubectl, [_, _, "config", "use-context" | _]}
+      refute_received {:kubectl, ["--kubeconfig", _, "--context" | _]}
     end
 
-    test "a failed context switch is reported and nothing is listed" do
-      test_pid = self()
-
+    test "a failed context listing is reported and nothing is listed" do
       exec = fn args ->
-        send(test_pid, {:kubectl, args})
-
         case args do
-          ["--kubeconfig", _, "config", "get-contexts", "-o", "name"] -> {"prod\n", 0}
-          ["--kubeconfig", _, "config", "use-context", _] -> {"permission denied", 1}
-          _ -> flunk("namespaces must not be listed")
+          ["--kubeconfig", _, "config", "get-contexts", "-o", "name"] ->
+            {"unable to read kubeconfig", 1}
+
+          _ ->
+            flunk("namespaces must not be listed")
         end
       end
 
-      assert {:error, {:namespace_list_failed, {1, "permission denied"}}} =
+      assert {:error, {:context_list_failed, {1, "unable to read kubeconfig"}}} =
                Kubectl.list_namespaces("/home/me/.kube/prod.yaml", exec)
     end
 
