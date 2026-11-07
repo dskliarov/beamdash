@@ -194,7 +194,9 @@ defmodule Beamdash.Logs do
       do: {:noreply, state}
 
   def handle_info({:beamdash_target, {:connected, node}}, state) do
-    new = state |> stop() |> Map.put(:node, node) |> start()
+    stopped = stop(state)
+    notify(stopped, :cleared)
+    new = start(%{stopped | node: node, entries: [], pending: [], dropped: 0})
     {:noreply, changed(state, new)}
   end
 

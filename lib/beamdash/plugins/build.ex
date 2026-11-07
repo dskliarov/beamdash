@@ -1176,6 +1176,7 @@ defmodule Beamdash.Plugins.Build do
          :ok <- one_entry(beams, prefix),
          {:ok, plugin} <- declaration(beams, prefix),
          :ok <- page_shapes(plugin, prefix),
+         :ok <- valid_tools(plugin, prefix, beams),
          :ok <- valid_pages(plugin, beams),
          :ok <- imports_exist(beams) do
       {:ok, plugin}
@@ -1371,6 +1372,54 @@ defmodule Beamdash.Plugins.Build do
 
           {:__live__, 0} not in beams[page].exports ->
             "page module #{inspect(page)} must `use Beamdash.Plugin.Page`"
+
+          true ->
+            nil
+        end
+      end)
+
+    if bad, do: {:error, bad}, else: :ok
+  end
+
+  # `use Beamdash.Plugin` checks the MCP tools at compile time, as it does the
+  # pages; a hand-written __beamdash_plugin__/0 skips that.
+  defp valid_tools(plugin, prefix, beams) do
+    tools = Map.get(plugin, :mcp_tools, [])
+
+    cond do
+      Enum.find(tools, &(not tool_shape?(&1, prefix))) ->
+        {:error,
+         "the plugin declaration of #{inspect(prefix)} has an invalid MCP tool. A tool is " <>
+           "%{name: slug, description: string, input_schema: map, call: {module, fun}}, " <>
+           "and its module is #{inspect(prefix)} or nested under it"}
+
+      length(Enum.uniq_by(tools, & &1.name)) != length(tools) ->
+        {:error, "the plugin declaration of #{inspect(prefix)} has two MCP tools with one name"}
+
+      true ->
+        tool_calls(tools, beams)
+    end
+  end
+
+  defp tool_shape?(
+         %{name: name, description: description, input_schema: schema, call: {m, f}},
+         prefix
+       ),
+       do:
+         Plugin.__valid_slug__?(name) and is_binary(description) and is_map(schema) and
+           is_atom(m) and m not in [nil, true, false] and is_atom(f) and named_under?(m, prefix)
+
+  defp tool_shape?(_, _), do: false
+
+  defp tool_calls(tools, beams) do
+    bad =
+      Enum.find_value(tools, fn %{call: {mod, fun}} ->
+        cond do
+          not Map.has_key?(beams, mod) ->
+            "MCP tool module #{inspect(mod)} is not defined by the plugin"
+
+          {fun, 1} not in beams[mod].exports ->
+            "MCP tool #{inspect(mod)}.#{fun}/1 is not exported"
 
           true ->
             nil

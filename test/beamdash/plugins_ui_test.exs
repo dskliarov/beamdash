@@ -23,7 +23,7 @@ defmodule Beamdash.PluginsUiTest do
   @endpoint BeamdashWeb.Endpoint
   @moduletag :capture_log
 
-  @hello [HelloPlugin, HelloPlugin.HelloLive]
+  @hello [HelloPlugin, HelloPlugin.HelloLive, HelloPlugin.Tools]
   # compiled and loaded at runtime
   @compile {:no_warn_undefined, @hello}
 

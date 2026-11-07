@@ -106,13 +106,15 @@ All tools need beamdash connected to a node. Names for `app`, `module` and
 | `app_list` | none | Running applications: name, description, version, master |
 | `app_info` | `app` | One application's version, start type, folder, environment, `needed_by` |
 | `app_tree` | `app` | The application's process tree, from its application master |
-| `module_summary` | `module`, e.g. `lists` or `Beamdash.Mcp` | File, version, behaviours, exports, owning application, source availability |
+| `module_summary` | `module`, e.g. `lists` or `Beamdash.Mcp` | File, version, behaviours, exports, owning application, source availability; `source` is the path it was compiled from, and `local_file` the source file on this computer when a source folder has it |
 | `crashes` | `limit` (default 100, max 1000) | Recent crash reports, newest first: process, initial call, class, reason, stack |
 | `logs` | `limit`, optional `level` (e.g. `error`) | Recent log lines, newest first: time, level, process, location, message |
 
 `crashes` and `logs` only contain what beamdash has collected since it
 connected to the node. Logs are kept for the last 2,000 entries and crash
 reports for the last 500.
+
+Plugins can add tools. A plugin that declares `mcp_tools:` offers each one as `<app>.<name>`, for example `riak_core.ring`, only while its application runs on the attached node. A tool that raises, returns something other than `{:ok, data}` or `{:error, message}`, or takes longer than 5 seconds is reported as an error to the assistant; beamdash keeps running.
 
 ## Examples
 

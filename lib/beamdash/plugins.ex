@@ -199,6 +199,7 @@ defmodule Beamdash.Plugins do
           pages: entry.plugin.pages,
           module: entry.prefix,
           main: Beamdash.Plugin.main_page(entry.plugin),
+          mcp_tools: Map.get(entry.plugin, :mcp_tools, []),
           supports: for({supported, _req} <- entry.supports, do: supported)
         }
       end

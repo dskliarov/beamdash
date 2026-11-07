@@ -16,10 +16,12 @@ defmodule Beamdash.RiakCorePluginTest do
     RiakCorePlugin.Components,
     RiakCorePlugin.Data,
     RiakCorePlugin.Riak,
+    RiakCorePlugin.Tools,
     RiakCorePlugin.RingChart,
     RiakCorePlugin.RingLive,
     RiakCorePlugin.MembersLive,
     RiakCorePlugin.VnodesLive,
+    RiakCorePlugin.LoadLive,
     RiakCorePlugin.HandoffsLive,
     RiakCorePlugin.AdminLive
   ]
@@ -52,7 +54,7 @@ defmodule Beamdash.RiakCorePluginTest do
     %{dir: dir}
   end
 
-  test "installs by path: five pages, supports riak_core ~> 0.10", %{dir: dir} do
+  test "installs by path: six pages, supports riak_core ~> 0.10", %{dir: dir} do
     id = System.unique_integer([:positive])
     target = start_supervised!({Target, name: :"rcp_target_#{id}"}, id: :"target_#{id}")
 
@@ -74,10 +76,19 @@ defmodule Beamdash.RiakCorePluginTest do
 
     assert %{source: :path, plugin: %{name: "riak_core", pages: pages}, status: :waiting} = entry
     assert entry.supports == [{:riak_core, "~> 0.10"}]
-    assert Enum.map(pages, & &1.slug) == ["ring", "members", "vnodes", "handoffs", "admin"]
+
+    assert Enum.map(pages, & &1.slug) == [
+             "ring",
+             "members",
+             "vnodes",
+             "load",
+             "handoffs",
+             "admin"
+           ]
+
     assert Enum.sort(entry.modules) == Enum.sort(@modules)
 
-    assert length(RiakCorePlugin.__beamdash_plugin__().pages) == 5
+    assert length(RiakCorePlugin.__beamdash_plugin__().pages) == 6
     # loaded from the plugin's ebin, and it runs here: no riak_core attached
     assert RiakCorePlugin.Data.error_message(:not_connected) == "no node is attached"
     assert RiakCorePlugin.Riak.ring(target) == {:error, "no node is attached"}

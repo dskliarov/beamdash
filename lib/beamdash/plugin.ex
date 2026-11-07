@@ -67,7 +67,7 @@ defmodule Beamdash.Plugin do
 
   alias Beamdash.{Apps, Target}
 
-  @options [:name, :pages, :main]
+  @options [:name, :pages, :main, :mcp_tools]
   @required [:name, :pages]
 
   @doc """
@@ -79,6 +79,10 @@ defmodule Beamdash.Plugin do
     * `:pages` (required): a list of `{slug, label, module}` tuples.
     * `:main`: the slug of the main page, one of `:pages`. Defaults to the
       first page.
+    * `:mcp_tools`: read-only tools for beamdash's MCP endpoint, as
+      `{name, description, input_schema, {module, fun}}`. `fun/1` takes the
+      call's arguments (a map) and returns `{:ok, data}` or `{:error, message}`.
+      The tool is offered as `<app>.<name>` while the plugin is active.
 
   Defines `__beamdash_plugin__/0`, which returns
   `%{name: name, pages: [%{slug: slug, label: label, module: module}],
@@ -232,13 +236,15 @@ defmodule Beamdash.Plugin do
 
       [key | _] when key in [:apps, :beamdash, :versions] ->
         fail.(
-          "unknown option #{inspect(key)}. The supported options are :name, :pages and :main. " <>
+          "unknown option #{inspect(key)}. The supported options are :name, :pages, :main and :mcp_tools. " <>
             "Supported applications, and the beamdash version, go in mix.exs as " <>
             "`runtime: false` deps, for example {:riak_core, \"~> 0.10\", runtime: false}"
         )
 
       [key | _] ->
-        fail.("unknown option #{inspect(key)}. The supported options are :name, :pages and :main")
+        fail.(
+          "unknown option #{inspect(key)}. The supported options are :name, :pages, :main and :mcp_tools"
+        )
     end
 
     case keys -- Enum.uniq(keys) do
@@ -255,7 +261,13 @@ defmodule Beamdash.Plugin do
     end
 
     pages = pages!(Keyword.fetch!(opts, :pages), env, fail)
-    %{name: name, pages: pages, main: main!(Keyword.get(opts, :main), pages, fail)}
+
+    %{
+      name: name,
+      pages: pages,
+      main: main!(Keyword.get(opts, :main), pages, fail),
+      mcp_tools: mcp_tools!(Keyword.get(opts, :mcp_tools, []), env, fail)
+    }
   end
 
   defp main!(nil, [first | _], _fail), do: first.slug
@@ -325,5 +337,75 @@ defmodule Beamdash.Plugin do
 
   defp page!(other, _env, fail) do
     fail.(":pages must be a list of {slug, label, module} tuples, got: #{Macro.to_string(other)}")
+  end
+
+  defp mcp_tools!(tools, env, fail) do
+    unless is_list(tools) do
+      fail.(
+        ":mcp_tools must be a list of {name, description, input_schema, {module, fun}}, " <>
+          "got: #{Macro.to_string(tools)}"
+      )
+    end
+
+    tools = Enum.map(tools, &mcp_tool!(&1, env, fail))
+
+    tools
+    |> Enum.map(& &1.name)
+    |> Enum.reduce(MapSet.new(), fn name, seen ->
+      if MapSet.member?(seen, name),
+        do: fail.("duplicate MCP tool #{inspect(name)} in :mcp_tools")
+
+      MapSet.put(seen, name)
+    end)
+
+    tools
+  end
+
+  defp mcp_tool!(
+         {:{}, _, [name_ast, description_ast, schema_ast, {module_ast, fun}]} = tool,
+         env,
+         fail
+       ) do
+    {name, _} = Code.eval_quoted(name_ast, [], env)
+    {description, _} = Code.eval_quoted(description_ast, [], env)
+    {schema, _} = Code.eval_quoted(schema_ast, [], env)
+    module = Macro.expand(module_ast, env)
+
+    unless __valid_slug__?(name) do
+      fail.(
+        "invalid MCP tool name #{inspect(name)} in :mcp_tools. A name is a slug, like \"ring\""
+      )
+    end
+
+    unless is_binary(description) do
+      fail.("the description of MCP tool #{inspect(name)} must be a string")
+    end
+
+    unless is_map(schema) do
+      fail.("the input schema of MCP tool #{inspect(name)} must be a map")
+    end
+
+    unless is_atom(module) and module not in [nil, true, false] and is_atom(fun) and
+             nested_under?(module, env.module) do
+      fail.(
+        "the call of MCP tool #{inspect(name)} must be {module, fun}, with a module that is " <>
+          "#{inspect(env.module)} or nested under it, got: #{Macro.to_string(tool)}"
+      )
+    end
+
+    %{name: name, description: description, input_schema: schema, call: {module, fun}}
+  end
+
+  defp mcp_tool!(other, _env, fail) do
+    fail.(
+      ":mcp_tools must be a list of {name, description, input_schema, {module, fun}} tuples, " <>
+        "got: #{Macro.to_string(other)}"
+    )
+  end
+
+  defp nested_under?(module, entry) do
+    name = Atom.to_string(module)
+    base = Atom.to_string(entry)
+    name == base or String.starts_with?(name, base <> ".")
   end
 end

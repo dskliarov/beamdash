@@ -17,6 +17,106 @@ defmodule Beamdash.McpTest do
     assert :unknown_tool = Mcp.call("kill_process", %{})
   end
 
+  defmodule StubPlugins do
+    use GenServer
+
+    def start_link(active), do: GenServer.start_link(__MODULE__, active)
+
+    @impl true
+    def init(active), do: {:ok, active}
+
+    @impl true
+    def handle_call(:active, _from, active), do: {:reply, active, active}
+  end
+
+  defmodule Tools do
+    def ok(args), do: {:ok, %{got: args}}
+    def error(_args), do: {:error, "nope"}
+    def raises(_args), do: raise("boom")
+    def odd(_args), do: :odd
+    def greet(%{"name" => name}), do: {:ok, %{greeting: "Hello, #{name}!"}}
+  end
+
+  describe "tools of active plugins" do
+    setup do
+      tool = fn name, fun ->
+        %{
+          name: name,
+          description: "Tool #{name}",
+          input_schema: %{type: "object", properties: %{}},
+          call: {Tools, fun}
+        }
+      end
+
+      tools = [
+        tool.("ok", :ok),
+        tool.("error", :error),
+        tool.("raises", :raises),
+        tool.("odd", :odd),
+        %{
+          name: "greet",
+          description: "Tool greet",
+          input_schema: %{type: "object", required: ["name"]},
+          call: {Tools, :greet}
+        }
+      ]
+
+      plugins = start_supervised!({StubPlugins, [%{app: :ring_app, mcp_tools: tools}]})
+      %{plugins: plugins}
+    end
+
+    test "are listed as app.tool, with their schema and no call", %{plugins: plugins} do
+      assert %{
+               name: "ring_app.ok",
+               description: "Tool ok",
+               inputSchema: %{type: "object", properties: %{}}
+             } in Mcp.tools(plugins)
+
+      refute Enum.any?(Mcp.tools(plugins), &Map.has_key?(&1, :call))
+    end
+
+    test "run with their arguments and return the data", %{plugins: plugins} do
+      assert {:ok, %{got: %{"x" => 1}}} = Mcp.call("ring_app.ok", %{"x" => 1}, Target, plugins)
+    end
+
+    test "report an error they return", %{plugins: plugins} do
+      assert {:error, "nope"} = Mcp.call("ring_app.error", %{}, Target, plugins)
+    end
+
+    test "report a raise instead of raising", %{plugins: plugins} do
+      assert {:error, "ring_app.raises raised boom"} =
+               Mcp.call("ring_app.raises", %{}, Target, plugins)
+    end
+
+    test "report a value that is not a result", %{plugins: plugins} do
+      assert {:error, "ring_app.odd returned :odd"} =
+               Mcp.call("ring_app.odd", %{}, Target, plugins)
+    end
+
+    test "a call without a required argument says which one is missing", %{plugins: plugins} do
+      assert {:error, "ring_app.greet needs name"} =
+               Mcp.call("ring_app.greet", %{}, Target, plugins)
+
+      assert {:error, "ring_app.greet needs name"} =
+               Mcp.call("ring_app.greet", "not a map", Target, plugins)
+
+      assert {:ok, %{greeting: "Hello, Ada!"}} =
+               Mcp.call("ring_app.greet", %{"name" => "Ada"}, Target, plugins)
+    end
+
+    test "a name no active plugin declares is unknown", %{plugins: plugins} do
+      assert :unknown_tool = Mcp.call("ring_app.gone", %{}, Target, plugins)
+      assert :unknown_tool = Mcp.call("other_app.ok", %{}, Target, plugins)
+    end
+
+    test "tools of a plugin that is not active are not offered" do
+      plugins = start_supervised!({StubPlugins, []}, id: :no_plugins)
+
+      refute Enum.any?(Mcp.tools(plugins), &String.starts_with?(&1.name, "ring_app."))
+      assert :unknown_tool = Mcp.call("ring_app.ok", %{}, Target, plugins)
+    end
+  end
+
   describe "on a connected node" do
     setup do
       {peer, node} = Fixture.start_peer()

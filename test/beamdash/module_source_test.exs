@@ -84,7 +84,9 @@ defmodule Beamdash.ModuleSourceTest do
       :ok = Beamdash.Settings.put_source_dir("src_local_app", local)
 
       assert ModuleSource.available?(node, :src_local_demo)
-      assert %{has_source: true} = Beamdash.Apps.module_summary(node, :src_local_demo)
+
+      assert %{has_source: true, local_file: ^copy} =
+               Beamdash.Apps.module_summary(node, :src_local_demo)
 
       assert {:ok, %{kind: :local, path: ^copy, text: ^text, truncated: false}} =
                ModuleSource.get(node, :src_local_demo)

@@ -17,7 +17,7 @@ defmodule Beamdash.PluginApiTest do
   @moduletag :capture_log
 
   # compiled and loaded at runtime, in setup_all
-  @compile {:no_warn_undefined, [HelloPlugin, HelloPlugin.HelloLive]}
+  @compile {:no_warn_undefined, [HelloPlugin, HelloPlugin.HelloLive, HelloPlugin.Tools]}
 
   @fixture Path.expand("../fixtures/plugins/hello_plugin", __DIR__)
 
@@ -40,7 +40,7 @@ defmodule Beamdash.PluginApiTest do
     Enum.each(modules, &Code.ensure_loaded!/1)
 
     on_exit(fn ->
-      for mod <- [HelloPlugin, HelloPlugin.HelloLive] do
+      for mod <- [HelloPlugin, HelloPlugin.HelloLive, HelloPlugin.Tools] do
         :code.purge(mod)
         :code.delete(mod)
         :code.purge(mod)
@@ -95,16 +95,32 @@ defmodule Beamdash.PluginApiTest do
 
   describe "the fixture plugin" do
     test "compiles without warnings", ctx do
-      assert Enum.sort(ctx.modules) == [HelloPlugin, HelloPlugin.HelloLive]
+      assert Enum.sort(ctx.modules) == [HelloPlugin, HelloPlugin.HelloLive, HelloPlugin.Tools]
       assert ctx.warnings == [], ctx.stderr
     end
 
     test "__beamdash_plugin__/0 is its declaration" do
-      assert HelloPlugin.__beamdash_plugin__() == %{
+      assert %{
                name: "Hello",
                pages: [%{slug: "hello", label: "Hello", module: HelloPlugin.HelloLive}],
-               main: "hello"
-             }
+               main: "hello",
+               mcp_tools: [
+                 %{
+                   name: "greet",
+                   description: "Greet someone by name",
+                   input_schema: %{
+                     type: "object",
+                     properties: %{name: %{type: "string"}},
+                     required: ["name"]
+                   },
+                   call: {HelloPlugin.Tools, :greet}
+                 }
+               ]
+             } = HelloPlugin.__beamdash_plugin__()
+    end
+
+    test "the greet tool greets the name it is given" do
+      assert {:ok, %{greeting: "Hello, Ada!"}} = HelloPlugin.Tools.greet(%{"name" => "Ada"})
     end
 
     test "the fixture is not part of beamdash's compile paths" do
@@ -121,7 +137,7 @@ defmodule Beamdash.PluginApiTest do
           {"a missing :name", ~s|pages: [{"ok", "OK", Some.Page}]|, ~r/missing :name/},
           {"missing :pages", ~s|name: "x"|, ~r/missing :pages/},
           {"an unknown key", ~s|name: "x", #{@pages}, colour: :red|,
-           ~r/unknown option :colour\. The supported options are :name, :pages and :main$/},
+           ~r/unknown option :colour\. The supported options are :name, :pages, :main and :mcp_tools$/},
           {"a main page that isn't one of the pages", ~s|name: "x", #{@pages}, main: "nope"|,
            ~r/:main must be the slug of one of the pages \("ok"\), got: "nope"/},
           {":apps", ~s|name: "x", #{@pages}, apps: [riak_core: "~> 1.0"]|,
@@ -143,7 +159,19 @@ defmodule Beamdash.PluginApiTest do
           {"a label that isn't a binary", ~s|name: "x", pages: [{"a", :label, P.A}]|, ~r/label/},
           {"a page module that isn't a module", ~s|name: "x", pages: [{"a", "A", "P.A"}]|,
            ~r/module/},
-          {"a page that isn't a 3-tuple", ~s|name: "x", pages: [{"a", P.A}]|, ~r/pages/}
+          {"a page that isn't a 3-tuple", ~s|name: "x", pages: [{"a", P.A}]|, ~r/pages/},
+          {"an MCP tool name that isn't a slug",
+           ~s|name: "x", #{@pages}, mcp_tools: [{"Bad Name", "T", %{}, {__MODULE__.Tools, :ring}}]|,
+           ~r/invalid MCP tool name "Bad Name"/},
+          {"an MCP tool whose schema isn't a map",
+           ~s|name: "x", #{@pages}, mcp_tools: [{"t", "T", [], {__MODULE__.Tools, :ring}}]|,
+           ~r/input schema of MCP tool "t" must be a map/},
+          {"an MCP tool in another module",
+           ~s|name: "x", #{@pages}, mcp_tools: [{"t", "T", %{}, {Other.Tools, :ring}}]|,
+           ~r/nested under it/},
+          {"two MCP tools with one name",
+           ~s|name: "x", #{@pages}, mcp_tools: [{"t", "T", %{}, {__MODULE__.Tools, :a}}, {"t", "U", %{}, {__MODULE__.Tools, :b}}]|,
+           ~r/duplicate MCP tool "t"/}
         ] do
       # Source and options, not the regex: compiled regexes can't be escaped
       # on OTP 28 with Elixir < 1.19.
@@ -185,13 +213,46 @@ defmodule Beamdash.PluginApiTest do
                    %{slug: "three", label: "Three", module: Module.concat(mod, Three)}
                  ],
                  # the first page, as none is named
-                 main: "one"
+                 main: "one",
+                 mcp_tools: []
                }
       after
         :code.purge(mod)
         :code.delete(mod)
         :code.purge(mod)
       end
+    end
+  end
+
+  test "mcp_tools are kept as declared, with their module and function" do
+    mod = unique(ToolPlugin)
+
+    source = """
+    defmodule #{inspect(mod)} do
+      use Beamdash.Plugin,
+        name: "Tools",
+        pages: [{"one", "One", __MODULE__.One}],
+        mcp_tools: [{"ring", "The ring", %{type: "object", properties: %{}}, {__MODULE__.Tools, :ring}}]
+    end
+    """
+
+    try do
+      Code.compile_string(source)
+
+      assert [
+               %{
+                 name: "ring",
+                 description: "The ring",
+                 input_schema: %{type: "object", properties: %{}},
+                 call: {tools, :ring}
+               }
+             ] = mod.__beamdash_plugin__().mcp_tools
+
+      assert tools == Module.concat(mod, Tools)
+    after
+      :code.purge(mod)
+      :code.delete(mod)
+      :code.purge(mod)
     end
   end
 

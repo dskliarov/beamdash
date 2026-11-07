@@ -346,7 +346,7 @@ defmodule Beamdash.PluginsBuildTest do
   describe "scan/1" do
     test "the fixture" do
       assert {:ok, %{prefix: HelloPlugin, modules: modules}} = Build.scan(@fixture)
-      assert Enum.sort(modules) == [HelloPlugin, HelloPlugin.HelloLive]
+      assert Enum.sort(modules) == [HelloPlugin, HelloPlugin.HelloLive, HelloPlugin.Tools]
     end
 
     test "refuses a module beamdash already has, before compiling", %{tmp: tmp} do
@@ -519,13 +519,17 @@ defmodule Beamdash.PluginsBuildTest do
 
       try do
         assert {:ok, modules} = compile_quiet(@fixture, ebin)
-        assert Enum.sort(modules) == [HelloPlugin, HelloPlugin.HelloLive]
+        assert Enum.sort(modules) == [HelloPlugin, HelloPlugin.HelloLive, HelloPlugin.Tools]
 
-        assert {:ok, %{name: "Hello", pages: [%{slug: "hello", module: HelloPlugin.HelloLive}]}} =
-                 Build.check(modules, HelloPlugin, ebin)
+        assert {:ok,
+                %{
+                  name: "Hello",
+                  pages: [%{slug: "hello", module: HelloPlugin.HelloLive}],
+                  mcp_tools: [%{name: "greet", call: {HelloPlugin.Tools, :greet}}]
+                }} = Build.check(modules, HelloPlugin, ebin)
       after
         Code.delete_path(ebin)
-        cleanup_modules([HelloPlugin, HelloPlugin.HelloLive])
+        cleanup_modules([HelloPlugin, HelloPlugin.HelloLive, HelloPlugin.Tools])
       end
     end
 
@@ -694,7 +698,15 @@ defmodule Beamdash.PluginsBuildTest do
         {~S|%{name: "C", pages: [:junk]}|, ~r/invalid page/},
         {~S|%{name: "C", pages: [%{slug: "p", label: "P", module: X.P}], main: "q"}|,
          ~r/main page that isn't one of its pages: "q"/},
-        {~S|%{name: :c, pages: []}|, ~r/plugin declaration/}
+        {~S|%{name: :c, pages: []}|, ~r/plugin declaration/},
+        {~S|%{name: "C", pages: [], mcp_tools: [%{name: "Bad Name", description: "d", input_schema: %{}, call: {__MODULE__.T, :f}}]}|,
+         ~r/invalid MCP tool/},
+        {~S|%{name: "C", pages: [], mcp_tools: [%{name: "t", description: "d", input_schema: %{}, call: {X.T, :f}}]}|,
+         ~r/invalid MCP tool/},
+        {~S|%{name: "C", pages: [], mcp_tools: [%{name: "t", description: "d", input_schema: %{}, call: {__MODULE__.T, :f}}]}|,
+         ~r/MCP tool module .* is not defined by the plugin/},
+        {~S|%{name: "C", pages: [], mcp_tools: [%{name: "t", description: "d", input_schema: %{}, call: {__MODULE__.T, :f}}, %{name: "t", description: "e", input_schema: %{}, call: {__MODULE__.T, :g}}]}|,
+         ~r/two MCP tools with one name/}
       ]
 
       for {{decl, expected}, i} <- Enum.with_index(cases) do
@@ -992,7 +1004,7 @@ defmodule Beamdash.PluginsBuildTest do
         assert HelloPlugin.__beamdash_plugin__().name == "Hello"
         assert List.to_string(:code.which(HelloPlugin)) =~ "path_ebin"
       after
-        cleanup_modules([HelloPlugin, HelloPlugin.HelloLive])
+        cleanup_modules([HelloPlugin, HelloPlugin.HelloLive, HelloPlugin.Tools])
       end
     end
   end
