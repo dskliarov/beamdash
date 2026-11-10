@@ -59,6 +59,14 @@ defmodule Beamdash.ReportsTest do
     refute File.read!(Settings.path()) =~ token
   end
 
+  test "concurrent client creates all keep their place" do
+    1..20
+    |> Task.async_stream(&Reports.create_client("client #{&1}"))
+    |> Stream.run()
+
+    assert length(Reports.clients()) == 20
+  end
+
   test "a blank client name is refused" do
     assert {:error, "Give the client a name" <> _} = Reports.create_client("  ")
     assert Reports.clients() == []

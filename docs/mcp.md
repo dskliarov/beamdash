@@ -122,8 +122,10 @@ reports for the last 500.
 
 `snapshots` and `anomaly_history` read what beamdash stored while snapshot
 collection was on in its settings. Snapshots are kept for 7 days and anomaly
-episodes for 30 days. While collection is off, or the event store is not
-running, both tools return an error instead of rows.
+episodes for 30 days. Anomaly episodes are recorded only while the Insights
+page is open in beamdash, since its anomaly checks run only then. While
+collection is off, or the event store is not running, both tools return an
+error instead of rows.
 
 `memory_history` reads the memory samples beamdash stored, so it needs
 snapshot collection on, like `snapshots`. `ets_rows` reads the live node, and

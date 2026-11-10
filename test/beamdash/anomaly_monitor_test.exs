@@ -122,4 +122,37 @@ defmodule Beamdash.AnomalyMonitorTest do
     assert pid10 == pid(10)
     assert %{readiness: {:collecting, 0, 8}, findings: []} = AnomalyMonitor.current(ctx.monitor)
   end
+
+  test "checks run while a watcher is alive, and the last one leaving closes the episodes", ctx do
+    watcher =
+      spawn(fn ->
+        receive do
+          :stop -> :ok
+        end
+      end)
+
+    :ok = AnomalyMonitor.watch(ctx.monitor, watcher)
+    assert eventually(fn -> AnomalyMonitor.current(ctx.monitor).checked_at end)
+
+    set(ctx.world, procs: procs(true))
+    ticks(ctx, 9)
+    send(watcher, :stop)
+
+    assert eventually(fn -> AnomalyMonitor.history(ctx.monitor) != [] end)
+    assert %{readiness: {:collecting, 0, 8}, findings: []} = AnomalyMonitor.current(ctx.monitor)
+  end
+
+  defp eventually(fun, tries \\ 100) do
+    cond do
+      fun.() ->
+        true
+
+      tries == 0 ->
+        false
+
+      true ->
+        Process.sleep(5)
+        eventually(fun, tries - 1)
+    end
+  end
 end

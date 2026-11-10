@@ -300,6 +300,29 @@ defmodule Beamdash.LogsLiveTest do
     assert html =~ "<pre>boom</pre>"
   end
 
+  test "Tree view shows a JSON line as a tree", ctx do
+    {_, socket} = ctx |> mount() |> render()
+    message = ~S|{"event":"ready","items":[1,2]}|
+
+    socket = info(socket, {:beamdash_logs, {:entries, [new_entry(8, message)]}})
+    {_, socket} = render(socket)
+    {_, socket} = socket |> event("toggle_entry", %{"id" => "8", "row" => "g-8"}) |> render()
+    {html, _} = socket |> event("term_view", %{"view" => "tree"}) |> render()
+
+    assert html =~ ~r/aria-selected="true"[^>]*phx-value-view="tree"/
+    assert html =~ ~s(class="term-tree")
+    refute html =~ "Tree needs a JSON message"
+  end
+
+  test "Tree view on a plain-text line falls back to Pretty with a note", ctx do
+    {_, socket} = ctx |> mount() |> render()
+    {_, socket} = socket |> event("toggle_entry", %{"id" => "4", "row" => "g-4"}) |> render()
+    {html, _} = socket |> event("term_view", %{"view" => "tree"}) |> render()
+
+    assert html =~ "Tree needs a JSON message. Showing Pretty."
+    assert "boom" in pre_texts(html)
+  end
+
   test "JSON log messages display escaped keys and values with the original available", ctx do
     {_, socket} = ctx |> mount() |> render()
 

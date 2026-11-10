@@ -44,14 +44,16 @@ defmodule Beamdash.Reports do
         "created_at" => System.system_time(:millisecond)
       }
 
-      :ok = Settings.put_report_clients(Settings.report_clients() ++ [client])
+      locked(fn -> Settings.put_report_clients(Settings.report_clients() ++ [client]) end)
       {:ok, token}
     end
   end
 
   @doc "Removes the client `id`; its token stops working at once."
   def revoke_client(id) when is_binary(id) do
-    Settings.put_report_clients(Enum.reject(Settings.report_clients(), &(&1["id"] == id)))
+    locked(fn ->
+      Settings.put_report_clients(Enum.reject(Settings.report_clients(), &(&1["id"] == id)))
+    end)
   end
 
   @doc "The client whose token is `token`, or `:error`."
@@ -205,4 +207,6 @@ defmodule Beamdash.Reports do
   end
 
   defp hash(token), do: Base.encode16(:crypto.hash(:sha256, token), case: :lower)
+
+  defp locked(fun), do: :global.trans({{__MODULE__, :clients}, self()}, fun)
 end

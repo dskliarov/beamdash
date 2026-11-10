@@ -51,6 +51,7 @@ defmodule BeamdashWeb.InsightsLive do
 
     if connected?(socket) do
       :ok = Target.subscribe()
+      :ok = AnomalyMonitor.watch()
       send(self(), :tick)
     end
 

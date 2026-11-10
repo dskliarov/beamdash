@@ -1,13 +1,15 @@
 defmodule Beamdash.AnomalyMonitor do
   @moduledoc """
-  Checks the connected node's processes for anomalies every two seconds,
-  with `Beamdash.Insights.Anomaly` once enough samples are in.
+  Checks the connected node's processes for anomalies every two seconds while
+  something watches it (`watch/2`), with `Beamdash.Insights.Anomaly` once enough
+  samples are in.
 
   A finding that repeats in consecutive checks is one episode. It stays open
   until a check no longer flags it, then moves to the history. `current/1`
   returns the latest check, `history/2` the closed episodes, and
-  `history(server, clear: true)` also removes them. A disconnect or a node
-  change closes the open episodes, tagged with the node they were seen on.
+  `history(server, clear: true)` also removes them. A disconnect, a node
+  change, or the last watcher leaving closes the open episodes, tagged with the
+  node they were seen on.
   """
 
   use GenServer
@@ -34,16 +36,20 @@ defmodule Beamdash.AnomalyMonitor do
   @doc "Checks now."
   def tick(server \\ __MODULE__), do: GenServer.call(server, :tick, :infinity)
 
+  @doc "Keeps checks running while `pid` is alive. Checks stop when the last watcher exits."
+  def watch(server \\ __MODULE__, pid \\ self()), do: GenServer.call(server, {:watch, pid})
+
   @impl true
   def init(opts) do
     state =
       Map.merge(fresh(nil), %{
         closed: [],
         interval: Keyword.get(opts, :interval, @interval),
-        source: Map.merge(default_source(), Map.new(Keyword.get(opts, :source, %{})))
+        source: Map.merge(default_source(), Map.new(Keyword.get(opts, :source, %{}))),
+        watchers: %{},
+        timer: nil
       })
 
-    schedule(state.interval)
     {:ok, state}
   end
 
@@ -66,11 +72,24 @@ defmodule Beamdash.AnomalyMonitor do
 
   def handle_call(:tick, _from, state), do: {:reply, :ok, run(state)}
 
+  def handle_call({:watch, pid}, _from, state) do
+    ref = Process.monitor(pid)
+    state = %{state | watchers: Map.put(state.watchers, ref, pid)}
+    state = if state.timer, do: state, else: arm(state, 0)
+    {:reply, :ok, state}
+  end
+
   @impl true
-  def handle_info(:tick, state) do
-    state = run(state)
-    schedule(state.interval)
-    {:noreply, state}
+  def handle_info({:tick, timer}, %{timer: timer} = state) do
+    {:noreply, state |> Map.put(:timer, nil) |> run() |> reschedule()}
+  end
+
+  def handle_info({:tick, _stale}, state), do: {:noreply, state}
+
+  def handle_info({:DOWN, ref, :process, _pid, _reason}, state) do
+    watchers = Map.delete(state.watchers, ref)
+    state = %{state | watchers: watchers}
+    {:noreply, if(map_size(watchers) == 0, do: pause(state), else: state)}
   end
 
   defp default_source do
@@ -192,6 +211,22 @@ defmodule Beamdash.AnomalyMonitor do
   defp tracked(%{procs: procs}), do: map_size(procs)
   defp tracked(_), do: 0
 
-  defp schedule(:infinity), do: :ok
-  defp schedule(ms), do: Process.send_after(self(), :tick, ms)
+  defp pause(state) do
+    state
+    |> retire(Map.values(state.open))
+    |> Map.merge(fresh(state.node))
+    |> Map.put(:timer, nil)
+  end
+
+  defp reschedule(state) do
+    if map_size(state.watchers) > 0, do: arm(state, state.interval), else: state
+  end
+
+  defp arm(state, :infinity), do: %{state | timer: nil}
+
+  defp arm(state, ms) do
+    token = make_ref()
+    Process.send_after(self(), {:tick, token}, ms)
+    %{state | timer: token}
+  end
 end
