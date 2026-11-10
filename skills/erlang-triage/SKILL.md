@@ -12,7 +12,7 @@ If a tool says beamdash is not connected, ask the user to connect it in beamdash
 
 `ets_rows` reads the live node: up to 20 rows of one table, within one second. Keep its limit small (5 to 10), and treat the rows as evidence of what is stored, not as a full dump.
 
-`source_check` compares an application's version (its commit) with the git checkout beamdash has for it. Use its `status`: `match` means the source is the code the node runs; `mismatch` or `no_ref` means the code may differ from what runs, so say so in every finding that cites source; `dirty` means the checkout has `changed` uncommitted files, so the source may differ from the commit the node runs; `no_folder` means no source folder is configured for the app, so use the source path search below; `no_git` means the folder is not a git checkout.
+`source_check` compares an application's version (its commit) with the git checkout beamdash has for it. Use its `status`: `match` means the source is the code the node runs; `mismatch` or `no_ref` means the code may differ from what runs, so say so in every finding that cites source; `dirty` means the checkout has `changed` uncommitted files, so the source may differ from the commit the node runs; `no_folder` means no source folder is configured for the app, so use the source path search below; `no_git` means the folder is not a git checkout; `git_error` means it is at the built commit but git could not list its changes, so treat it like `dirty` and say so.
 
 ## Choose a mode
 

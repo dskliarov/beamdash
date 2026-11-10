@@ -185,6 +185,49 @@ defmodule Beamdash.StoreTest do
     assert [%{node: "a@host"}] = Store.query(:anomalies, [node: "a@host"], ctx.name)
   end
 
+  test "record_unless stores a row only once per match inside the window", ctx do
+    same = [client_id: "c1", run_id: "r1"]
+
+    row = %{
+      at: @now,
+      node: "app@host",
+      subject: "triage",
+      data: %{"client_id" => "c1", "run_id" => "r1"}
+    }
+
+    assert :stored = Store.record_unless(:ai_analyses, row, same, @now - @day, ctx.name)
+    assert :existing = Store.record_unless(:ai_analyses, row, same, @now - @day, ctx.name)
+    assert [_] = Store.query(:ai_analyses, [], ctx.name)
+
+    other = %{row | data: %{"client_id" => "c2", "run_id" => "r1"}}
+
+    assert :stored =
+             Store.record_unless(
+               :ai_analyses,
+               other,
+               [client_id: "c2", run_id: "r1"],
+               @now - @day,
+               ctx.name
+             )
+  end
+
+  test "record_unless ignores a match older than the window", ctx do
+    same = [client_id: "c1", run_id: "r1"]
+
+    old = %{
+      at: @now - 2 * @day,
+      node: "app@host",
+      subject: "triage",
+      data: %{"client_id" => "c1", "run_id" => "r1"}
+    }
+
+    fresh = %{old | at: @now}
+
+    assert :stored = Store.record_unless(:ai_analyses, old, same, @now - 2 * @day, ctx.name)
+    assert :stored = Store.record_unless(:ai_analyses, fresh, same, @now - @day, ctx.name)
+    assert [_, _] = Store.query(:ai_analyses, [], ctx.name)
+  end
+
   test "policy merges overrides onto the defaults" do
     Application.put_env(:beamdash, :retention, %{logs: %{max_age_days: 1}})
 

@@ -44,6 +44,16 @@ defmodule Beamdash.SourceCheckTest do
              SourceCheck.check(@vsn, System.tmp_dir!(), runner(@head, status))
   end
 
+  test "a checkout whose changes cannot be listed is a git error, not a missing checkout" do
+    git = fn
+      ["rev-parse", "HEAD"], _folder -> {:ok, @head <> "\n"}
+      ["status" | _], _folder -> :error
+    end
+
+    assert %{status: "git_error", ref: "3be90c014", head: @head} =
+             SourceCheck.check(@vsn, System.tmp_dir!(), git)
+  end
+
   test "a checkout at the built commit with no changes matches" do
     assert %{status: "match", ref: "3be90c014", changed: 0} =
              SourceCheck.check(@vsn, System.tmp_dir!(), runner(@head))

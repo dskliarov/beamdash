@@ -199,9 +199,7 @@ defmodule BeamdashWeb.LogsLive do
   end
 
   defp event("term_view", %{"view" => view}, socket),
-    do:
-      {:noreply,
-       socket |> assign(term_view: TermView.parse_view(view)) |> reset_rows()}
+    do: {:noreply, socket |> assign(term_view: TermView.parse_view(view)) |> reset_rows()}
 
   # One detail row is open at a time: the checks and parents below belong to it.
   defp event("tree_detail", %{"id" => id}, socket) do

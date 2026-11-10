@@ -66,6 +66,14 @@ defmodule Beamdash.Store do
   def record(kind, rows, server \\ __MODULE__), do: GenServer.call(server, {:record, kind, rows})
 
   @doc """
+  Stores `row` of `kind` unless a row of `kind` at or after `from` (unix ms)
+  already has `same` (`[key: value]`, matched against its `data`). Returns
+  `:stored` or `:existing`. The check and the write happen in one step.
+  """
+  def record_unless(kind, row, same, from, server \\ __MODULE__),
+    do: GenServer.call(server, {:record_unless, kind, row, same, from})
+
+  @doc """
   Rows of `kind` with `at` in `from..to` (unix ms), newest first. Options:
   `:from`, `:to`, `:limit` (default 100), and any key field to filter on.
   """
@@ -98,19 +106,22 @@ defmodule Beamdash.Store do
 
   @impl true
   def handle_call({:record, kind, rows}, _from, state) do
-    keys = Map.fetch!(@kinds, kind)
-    cols = ["at", "node"] ++ Enum.map(keys, &Atom.to_string/1) ++ ["data"]
-    sql = "INSERT INTO #{kind} (#{Enum.join(cols, ", ")}) VALUES (#{marks(length(cols))})"
-
-    transaction(state.db, fn ->
-      for row <- rows do
-        key_values = Enum.map(keys, &key_value(Map.get(row, &1)))
-        data = row |> Map.get(:data, %{}) |> jsonable() |> Jason.encode!()
-        run(state.db, sql, [Map.fetch!(row, :at), Map.fetch!(row, :node) | key_values] ++ [data])
-      end
-    end)
-
+    transaction(state.db, fn -> Enum.each(rows, &insert(state.db, kind, &1)) end)
     {:reply, :ok, state}
+  end
+
+  def handle_call({:record_unless, kind, row, same, from}, _from, state) do
+    reply =
+      transaction(state.db, fn ->
+        if duplicate?(state.db, kind, same, from) do
+          :existing
+        else
+          insert(state.db, kind, row)
+          :stored
+        end
+      end)
+
+    {:reply, reply, state}
   end
 
   def handle_call({:query, kind, opts}, _from, state) do
@@ -242,8 +253,9 @@ defmodule Beamdash.Store do
     run(db, "BEGIN IMMEDIATE")
 
     try do
-      fun.()
+      result = fun.()
       run(db, "COMMIT")
+      result
     rescue
       e ->
         run(db, "ROLLBACK")
@@ -264,6 +276,21 @@ defmodule Beamdash.Store do
       {:row, row} -> collect(db, stmt, [row | acc])
       :done -> Enum.reverse(acc)
     end
+  end
+
+  defp insert(db, kind, row) do
+    keys = Map.fetch!(@kinds, kind)
+    cols = ["at", "node"] ++ Enum.map(keys, &Atom.to_string/1) ++ ["data"]
+    sql = "INSERT INTO #{kind} (#{Enum.join(cols, ", ")}) VALUES (#{marks(length(cols))})"
+    key_values = Enum.map(keys, &key_value(Map.get(row, &1)))
+    data = row |> Map.get(:data, %{}) |> jsonable() |> Jason.encode!()
+    run(db, sql, [Map.fetch!(row, :at), Map.fetch!(row, :node) | key_values] ++ [data])
+  end
+
+  defp duplicate?(db, kind, same, from) do
+    conds = Enum.map_join(same, " AND ", fn _ -> "json_extract(data, ?) = ?" end)
+    args = Enum.flat_map(same, fn {key, value} -> ["$.#{key}", value] end)
+    run(db, "SELECT 1 FROM #{kind} WHERE at >= ? AND #{conds} LIMIT 1", [from | args]) != []
   end
 
   defp conditions(keys, opts) do

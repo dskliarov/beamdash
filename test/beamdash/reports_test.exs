@@ -99,6 +99,19 @@ defmodule Beamdash.ReportsTest do
     assert [_] = Store.query(:ai_analyses)
   end
 
+  test "concurrent repeats of a run are stored once", %{dir: dir} do
+    start_store(dir)
+    {_token, client} = client!()
+
+    results =
+      1..20
+      |> Task.async_stream(fn _ -> Reports.publish(client, report(), "app@host") end)
+      |> Enum.map(fn {:ok, result} -> result end)
+
+    assert Enum.count(results, &match?({:ok, "run-1", :stored}, &1)) == 1
+    assert [_] = Store.query(:ai_analyses)
+  end
+
   test "another client's run with the same run_id is stored", %{dir: dir} do
     start_store(dir)
     {_, laptop} = client!("laptop")

@@ -13,6 +13,7 @@ defmodule Beamdash.SourceCheck do
     * `no_ref`: the version names no commit
     * `mismatch`: the checkout's HEAD is not the commit the version names
     * `dirty`: the folder has uncommitted changes (`changed` counts them)
+    * `git_error`: the checkout is at the built commit, but git could not list its changes
     * `match`: the checkout is the built commit, with no changes
 
   `git` takes git's arguments and the folder, and returns `{:ok, output}` or
@@ -38,7 +39,7 @@ defmodule Beamdash.SourceCheck do
       case changed(folder, git) do
         {:ok, 0} -> %{status: "match", ref: ref, head: head, changed: 0}
         {:ok, n} -> %{status: "dirty", ref: ref, head: head, changed: n}
-        :error -> %{status: "no_git"}
+        :error -> %{status: "git_error", ref: ref, head: head}
       end
     else
       %{status: "mismatch", ref: ref, head: head}

@@ -114,7 +114,7 @@ All tools need beamdash connected to a node. Names for `app`, `module` and
 | `anomaly_history` | `window` in minutes (default 60, max 10080), optional `measure` and `pid`, `limit` | Anomaly episodes stored for the node, newest first: start time, pid, measure, duration, text |
 | `memory_history` | `window` in minutes (default 1440, max 10080), optional `table`, `limit` (default 500, max 1000) | Memory samples stored for the node, newest first: time, memory, atom and ETS table counts; with `table`, that table's type, size, memory and owner at each sample (`null` when it was not among the largest then) |
 | `ets_rows` | `table` (name from `ets_tables`), optional `limit` (default 10, max 20) | Up to `limit` rows of one ETS table, read within one second: `rows` as text, `keypos`, and `stop` (`complete`, `rows` or `time`) |
-| `source_check` | `app` | Whether the application's source folder is the code the node runs: `status` (`match`, `mismatch`, `dirty`, `no_ref`, `no_git` or `no_folder`), the commit in its version, the folder's HEAD, and `changed` (uncommitted files) |
+| `source_check` | `app` | Whether the application's source folder is the code the node runs: `status` (`match`, `mismatch`, `dirty`, `no_ref`, `no_git`, `git_error` or `no_folder`), the commit in its version, the folder's HEAD, and `changed` (uncommitted files) |
 
 `crashes` and `logs` only contain what beamdash has collected since it
 connected to the node. Logs are kept for the last 2,000 entries and crash

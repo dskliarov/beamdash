@@ -73,32 +73,28 @@ defmodule Beamdash.Reports do
   """
   def publish(client, params, node) do
     with {:ok, report} <- validate(params) do
-      cond do
-        Process.whereis(Store) == nil -> {:error, :store_down}
-        existing?(client, report["run_id"]) -> {:ok, report["run_id"], :existing}
-        true -> store(client, report, node)
-      end
+      if Process.whereis(Store) == nil,
+        do: {:error, :store_down},
+        else: store(client, report, node)
     end
   end
 
   defp store(client, report, node) do
+    now = System.system_time(:millisecond)
+
     row = %{
-      at: System.system_time(:millisecond),
+      at: now,
       node: to_string(node),
       subject: report["subject"],
       data: Map.merge(report, %{"client_id" => client["id"], "client" => client["name"]})
     }
 
-    :ok = Store.record(:ai_analyses, [row])
-    {:ok, report["run_id"], :stored}
-  end
+    same = [client_id: client["id"], run_id: report["run_id"]]
 
-  defp existing?(client, run_id) do
-    from = System.system_time(:millisecond) - @dedupe_ms
-
-    :ai_analyses
-    |> Store.query(from: from, limit: 1_000)
-    |> Enum.any?(&(&1.data["client_id"] == client["id"] and &1.data["run_id"] == run_id))
+    case Store.record_unless(:ai_analyses, row, same, now - @dedupe_ms) do
+      :stored -> {:ok, report["run_id"], :stored}
+      :existing -> {:ok, report["run_id"], :existing}
+    end
   end
 
   defp validate(%{} = params) do
