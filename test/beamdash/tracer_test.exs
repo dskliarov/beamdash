@@ -219,6 +219,51 @@ defmodule Beamdash.TracerTest do
     assert length(Enum.filter(Tracer.entries(ctx.tracer), &(&1.fun == :add))) == 3
   end
 
+  test "a limit holds under concurrent calls from many processes", ctx do
+    assert :ok = Tracer.start_trace(:beamdash_fixture, :add, 2, [limit: 2], ctx.tracer)
+
+    1..200
+    |> Task.async_stream(fn i -> :erpc.call(ctx.node, :beamdash_fixture, :add, [i, i]) end,
+      max_concurrency: 50
+    )
+    |> Stream.run()
+
+    assert_receive {:beamdash_trace, {:limit_reached, {:beamdash_fixture, :add, 2}, 2}}, 5_000
+    Process.sleep(300)
+
+    calls = Tracer.entries(ctx.tracer) |> Enum.filter(&(&1.fun == :add))
+    assert length(calls) == 2
+    assert Enum.all?(calls, &match?({:return, _}, &1.result))
+  end
+
+  test "calls and returns queued behind an overload do not pass the limit", ctx do
+    assert :ok = Tracer.start_trace(:beamdash_fixture, :add, 2, [limit: 2], ctx.tracer)
+    a = ctx.node |> :erpc.call(:erlang, :self, []) |> :erlang.pid_to_list()
+    b = ctx.node |> :erpc.call(:erlang, :self, []) |> :erlang.pid_to_list()
+
+    call = fn pid, args ->
+      {:erlyberly_trace_log,
+       {:call,
+        fn: {:beamdash_fixture, :add, args}, pid: pid, timetamp_call_us: 1, stack_trace: []}}
+    end
+
+    ret = fn pid, args, result ->
+      {:erlyberly_trace_log,
+       {:return_from,
+        fn: {:beamdash_fixture, :add, args}, pid: pid, result: result, timetamp_return_us: 2}}
+    end
+
+    send(ctx.tracer, call.(a, [1, 1]))
+    send(ctx.tracer, call.(a, [2, 2]))
+    send(ctx.tracer, {:erlyberly_trace_overload, 1_023})
+    for i <- 3..7, do: send(ctx.tracer, call.(b, [i, i]))
+    send(ctx.tracer, ret.(a, [2, 2], 4))
+    send(ctx.tracer, ret.(a, [1, 1], 2))
+
+    calls = Tracer.entries(ctx.tracer) |> Enum.filter(&(&1.fun == :add)) |> Enum.reverse()
+    assert Enum.map(calls, & &1.result) == [{:return, 2}, {:return, 4}]
+  end
+
   test "a trace without a limit runs until stopped", ctx do
     assert :ok = Tracer.start_trace(:beamdash_fixture, :add, 2, ctx.tracer)
     assert Tracer.limits(ctx.tracer) == %{}

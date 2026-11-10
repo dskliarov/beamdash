@@ -12,6 +12,7 @@ defmodule BeamdashWeb.Router do
   end
 
   forward "/mcp", BeamdashWeb.McpPlug
+  forward "/reports", BeamdashWeb.ReportsPlug
 
   # before the live routes: "/plugins/:plugin/:page" would match it too
   scope "/plugins", BeamdashWeb do
@@ -38,6 +39,7 @@ defmodule BeamdashWeb.Router do
       live "/profile", ProfileLive
       live "/crashes", CrashLive
       live "/insights", InsightsLive
+      live "/snapshots", SnapshotsLive
       live "/settings", SettingsLive
       live "/plugins/:plugin/:page", PluginLive
     end

@@ -122,7 +122,10 @@ defmodule Beamdash.InsightsTest do
 
     assert {:ok, [big, small]} = Groups.group(idle ++ busy, rates, 2)
     assert %{size: 30, kind: {:gen_server, 100}, initial_call: {{:idle, :init, 1}, 100}} = big
+    assert %{summary: "Typical memory, idle, mailboxes empty"} = big
     assert %{size: 10, rate: 900_000, running_pct: 100.0} = small
+    assert %{summary: "Large memory, busy, mailboxes backed up"} = small
+    assert small.note == "Work piles up faster than it is handled. Likely a bottleneck."
     assert length(small.members) == 5
     assert {:error, _} = Groups.group(Enum.take(idle, 1), %{}, 3)
   end
@@ -458,10 +461,14 @@ defmodule Beamdash.InsightsTest do
     html =
       base
       |> Map.merge(%{
-        history: history,
         procs: procs,
         by_pid: Map.new(procs, &{&1.pid, &1}),
-        findings: Anomaly.detect(history, procs, %{})
+        anomaly: %{
+          readiness: Anomaly.readiness(history),
+          findings: Anomaly.detect(history, procs, %{}),
+          checked_at: nil,
+          tracked: map_size(history.procs)
+        }
       })
       |> BeamdashWeb.InsightsLive.render()
       |> Phoenix.LiveViewTest.rendered_to_string()

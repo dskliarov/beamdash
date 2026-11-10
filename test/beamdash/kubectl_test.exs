@@ -91,22 +91,41 @@ defmodule Beamdash.KubectlTest do
     end
 
     test "passes --kubeconfig when a cluster is given" do
-      exec = fn args ->
-        assert args == [
-                 "--kubeconfig",
-                 "/home/me/.kube/prod.yaml",
-                 "get",
-                 "pods",
-                 "-n",
-                 "prod",
-                 "-o",
-                 "jsonpath={.items[*].metadata.name}"
-               ]
+      exec = fn
+        ["--kubeconfig", "/home/me/.kube/prod.yaml", "config", "get-contexts", "-o", "name"] ->
+          {"other\n", 0}
 
-        {"my-pod-1\n", 0}
+        args ->
+          assert args == [
+                   "--kubeconfig",
+                   "/home/me/.kube/prod.yaml",
+                   "get",
+                   "pods",
+                   "-n",
+                   "prod",
+                   "-o",
+                   "jsonpath={.items[*].metadata.name}"
+                 ]
+
+          {"my-pod-1\n", 0}
       end
 
       assert {:ok, ["my-pod-1"]} = Kubectl.list_pods("/home/me/.kube/prod.yaml", "prod", exec)
+    end
+
+    test "reads the pods of the cluster picked in the UI, not the file's current context" do
+      exec = fn
+        ["--kubeconfig", "/kube/prod.yaml", "config", "get-contexts", "-o", "name"] ->
+          {"other\nprod", 0}
+
+        ["--kubeconfig", "/kube/prod.yaml", "--context", "prod", "get", "pods" | _] ->
+          {"pod-a pod-b", 0}
+
+        args ->
+          flunk("unexpected kubectl call: #{inspect(args)}")
+      end
+
+      assert {:ok, ["pod-a", "pod-b"]} = Kubectl.list_pods("/kube/prod.yaml", "pace-keeper", exec)
     end
 
     test "a non-zero exit is reported" do
@@ -255,20 +274,24 @@ defmodule Beamdash.KubectlTest do
     end
 
     test "passes --kubeconfig when a cluster is given" do
-      exec = fn args ->
-        assert args == [
-                 "--kubeconfig",
-                 "/home/me/.kube/prod.yaml",
-                 "get",
-                 "pod",
-                 "-n",
-                 "prod",
-                 "my-pod",
-                 "-o",
-                 "jsonpath={.spec.containers[*].name}"
-               ]
+      exec = fn
+        ["--kubeconfig", "/home/me/.kube/prod.yaml", "config", "get-contexts", "-o", "name"] ->
+          {"other\n", 0}
 
-        {"gateway\n", 0}
+        args ->
+          assert args == [
+                   "--kubeconfig",
+                   "/home/me/.kube/prod.yaml",
+                   "get",
+                   "pod",
+                   "-n",
+                   "prod",
+                   "my-pod",
+                   "-o",
+                   "jsonpath={.spec.containers[*].name}"
+                 ]
+
+          {"gateway\n", 0}
       end
 
       assert {:ok, ["gateway"]} =
@@ -325,21 +348,25 @@ defmodule Beamdash.KubectlTest do
     end
 
     test "passes --kubeconfig when a cluster is given" do
-      exec = fn args ->
-        assert [
-                 "--kubeconfig",
-                 "/home/me/.kube/prod.yaml",
-                 "exec",
-                 "-n",
-                 "prod",
-                 "my-pod",
-                 "--",
-                 "sh",
-                 "-c",
-                 _script
-               ] = args
+      exec = fn
+        ["--kubeconfig", "/home/me/.kube/prod.yaml", "config", "get-contexts", "-o", "name"] ->
+          {"other\n", 0}
 
-        {"my_app\n", 0}
+        args ->
+          assert [
+                   "--kubeconfig",
+                   "/home/me/.kube/prod.yaml",
+                   "exec",
+                   "-n",
+                   "prod",
+                   "my-pod",
+                   "--",
+                   "sh",
+                   "-c",
+                   _script
+                 ] = args
+
+          {"my_app\n", 0}
       end
 
       assert {:ok, ["my_app"]} =
@@ -443,27 +470,33 @@ defmodule Beamdash.KubectlTest do
                )
     end
 
-    test "passes the kubeconfig path through to exec and open_forward" do
-      exec = fn args ->
-        assert [
-                 "--kubeconfig",
-                 "/home/me/.kube/prod.yaml"
-                 | _
-               ] = args
+    test "runs exec, port-forward and open_forward in the cluster picked in the UI, not the file's current context" do
+      exec = fn
+        ["--kubeconfig", "/kube/prod.yaml", "config", "get-contexts", "-o", "name"] ->
+          {"other\nprod\n", 0}
 
-        {"app@10.0.0.5\nsecret_cookie\n", 0}
+        args ->
+          assert ["--kubeconfig", "/kube/prod.yaml", "--context", "prod", "exec" | _] = args
+          {"app@10.0.0.5\nsecret_cookie\n", 0}
       end
 
-      open_forward = fn kubeconfig, _ns, _pod, {local, _remote} ->
-        assert kubeconfig == "/home/me/.kube/prod.yaml"
+      open_forward = fn base, _ns, _pod, {local, _remote} ->
+        assert base == ["--kubeconfig", "/kube/prod.yaml", "--context", "prod"]
         {:ok, fake_epmd(local, "app", 9999)}
       end
 
+      progress = fn label, command -> send(self(), {:progress, label, command}) end
+
       assert {:ok, %{node: :"app@10.0.0.5", cookie: :secret_cookie}} =
-               Kubectl.connect("/home/me/.kube/prod.yaml", "prod", "my-pod", "", "my_app",
+               Kubectl.connect("/kube/prod.yaml", "prod", "my-pod", "", "my_app",
                  exec: exec,
-                 open_forward: open_forward
+                 open_forward: open_forward,
+                 progress: progress
                )
+
+      assert_received {:progress, "Forwarding the pod's EPMD port", command}
+      assert command =~ "--context prod"
+      assert command =~ "port-forward"
     end
 
     test "falls back to relx-style eval when the Elixir rpc fails" do

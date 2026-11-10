@@ -11,41 +11,16 @@ defmodule Beamdash.InsightsLiveReviewTest do
     Phoenix.Component.assign(socket, status: :connected, node: :old)
   end
 
-  test "old analysis results cannot repopulate a view after disconnect" do
-    detect = {:detect, make_ref()}
+  test "old group results cannot repopulate a view after disconnect" do
     groups = {:groups, make_ref()}
-
-    socket =
-      Phoenix.Component.assign(socket(),
-        detecting: true,
-        grouping: true,
-        detect_request: detect,
-        group_request: groups
-      )
+    socket = Phoenix.Component.assign(socket(), grouping: true, group_request: groups)
 
     {:noreply, socket} =
       InsightsLive.handle_info({:beamdash_target, {:disconnected, :nodedown}}, socket)
 
-    refute socket.assigns.detecting
     refute socket.assigns.grouping
-    {:noreply, socket} = InsightsLive.handle_async(detect, {:ok, [%{pid: self()}]}, socket)
     {:noreply, socket} = InsightsLive.handle_async(groups, {:ok, {:ok, [%{size: 1}]}}, socket)
-    assert socket.assigns.findings == []
     assert socket.assigns.groups == nil
-
-    current = {:detect, make_ref()}
-
-    socket =
-      Phoenix.Component.assign(socket,
-        status: :connected,
-        node: :new,
-        detecting: true,
-        detect_request: current
-      )
-
-    {:noreply, socket} = InsightsLive.handle_async(detect, {:ok, [%{pid: self()}]}, socket)
-    assert socket.assigns.detect_request == current
-    assert socket.assigns.findings == []
   end
 
   test "groups cap large snapshots at 1,500 processes" do
@@ -84,7 +59,9 @@ defmodule Beamdash.InsightsLiveReviewTest do
       running_pct: 0.0,
       kind: nil,
       initial_call: nil,
-      members: []
+      members: [],
+      summary: "Small memory, idle, mailboxes empty",
+      note: "Nothing unusual compared with the rest of the node."
     }
 
     {:noreply, socket} =

@@ -1,6 +1,6 @@
 defmodule BeamdashWeb.SettingsLive do
   use Phoenix.LiveView
-  alias Beamdash.{Format, Jev, Kubectl, LastConnection, Settings, Target}
+  alias Beamdash.{Format, Jev, Kubectl, LastConnection, Reports, Settings, Target}
   alias BeamdashWeb.PluginsSettings
 
   @impl true
@@ -15,17 +15,22 @@ defmodule BeamdashWeb.SettingsLive do
        kev_port_error: nil,
        rpc_timeout_error: nil,
        trace_timeout_error: nil,
+       trace_call_limit_error: nil,
        ai_provider: Settings.ai_provider(),
        ai_notice: nil,
        ai_models: [],
        ai_loading: nil,
        auto_reconnect: Settings.auto_reconnect?(),
-       saved_connection: saved(),
+       snapshots_enabled: Settings.snapshots_enabled?(),
+       saved_connections: saved(),
        browser: nil,
        source_dirs: Settings.source_dirs(),
        notebooks_dir: tilde(Settings.notebooks_dir()),
        source_dir_error: nil,
        source_form: %{"app" => "", "dir" => ""},
+       report_clients: Reports.clients(),
+       report_client_error: nil,
+       new_report_token: nil,
        node_apps: node_apps()
      )
      |> assign_kubeconfig_dir(Settings.kubeconfig_dir())
@@ -75,7 +80,7 @@ defmodule BeamdashWeb.SettingsLive do
   end
 
   # nil: remembering is off in the configuration
-  defp saved, do: if(LastConnection.path(), do: LastConnection.get())
+  defp saved, do: if(LastConnection.path(), do: LastConnection.list())
 
   # The directory browser lists the local filesystem from the server: beamdash
   # runs on this machine, and a browser folder picker never reveals the full path.
@@ -226,6 +231,26 @@ defmodule BeamdashWeb.SettingsLive do
   end
 
   @impl true
+  def handle_event("create_report_client", %{"name" => name}, socket) do
+    case Reports.create_client(name) do
+      {:ok, token} ->
+        {:noreply,
+         assign(socket,
+           report_clients: Reports.clients(),
+           report_client_error: nil,
+           new_report_token: token
+         )}
+
+      {:error, message} ->
+        {:noreply, assign(socket, report_client_error: message, new_report_token: nil)}
+    end
+  end
+
+  def handle_event("revoke_report_client", %{"id" => id}, socket) do
+    :ok = Reports.revoke_client(id)
+    {:noreply, assign(socket, report_clients: Reports.clients(), new_report_token: nil)}
+  end
+
   def handle_event("remove_source_dir", %{"app" => app}, socket) do
     :ok = Settings.delete_source_dir(app)
     {:noreply, assign(socket, source_dirs: Settings.source_dirs(), source_dir_error: nil)}
@@ -249,7 +274,7 @@ defmodule BeamdashWeb.SettingsLive do
           socket
       end
 
-    {:noreply, assign(socket, saved_connection: saved())}
+    {:noreply, assign(socket, saved_connections: saved())}
   end
 
   @impl true
@@ -258,6 +283,12 @@ defmodule BeamdashWeb.SettingsLive do
     :ok = Settings.put_auto_reconnect(enabled)
     unless enabled, do: Target.stop_reconnect()
     {:noreply, assign(socket, auto_reconnect: enabled)}
+  end
+
+  def handle_event("toggle_snapshots", _, socket) do
+    enabled = not Settings.snapshots_enabled?()
+    :ok = Settings.put_snapshots_enabled(enabled)
+    {:noreply, assign(socket, snapshots_enabled: enabled)}
   end
 
   @impl true
@@ -301,6 +332,18 @@ defmodule BeamdashWeb.SettingsLive do
 
       _ ->
         {:noreply, assign(socket, trace_timeout_error: "Wait a number of seconds from 1 to 120.")}
+    end
+  end
+
+  def handle_event("set_trace_call_limit", %{"calls" => value}, socket) do
+    case Integer.parse(String.trim(value)) do
+      {calls, ""} when calls in 1..1_000_000 ->
+        :ok = Settings.put_trace_call_limit(calls)
+        {:noreply, assign(socket, trace_call_limit_error: nil)}
+
+      _ ->
+        {:noreply,
+         assign(socket, trace_call_limit_error: "Enter a number of calls from 1 to 1,000,000.")}
     end
   end
 
@@ -401,32 +444,31 @@ defmodule BeamdashWeb.SettingsLive do
         <h3 id="conn-setting-heading">Connection</h3>
         <div class="settings-toggle-row">
           <div>
-            <strong>Remembered node and cookie</strong>
+            <strong>Remembered connections</strong>
             <p class="muted small" id="saved-connection">
               <%= cond do %>
-                <% @saved_connection == nil -> %>
+                <% @saved_connections == nil -> %>
                   Remembering is turned off in the configuration.
-                <% @saved_connection.node == "" -> %>
-                  Nothing saved yet. The node and cookie of the next successful connection
-                  fill the connection bar, also after beamdash restarts.
+                <% @saved_connections == [] -> %>
+                  Nothing saved yet. A connection that works is kept in the connection bar,
+                  also after beamdash restarts.
                 <% true -> %>
-                  <span class="mono">{@saved_connection.node}</span>
-                  · {if @saved_connection.cookie == "", do: "no cookie", else: "cookie saved"}.
-                  They fill the connection bar, also after beamdash restarts.
+                  {length(@saved_connections)} saved. Each one can be reconnected or deleted from
+                  the connection bar. Saved cookies are kept there too.
               <% end %>
             </p>
           </div>
           <button
-            :if={@saved_connection && @saved_connection.node != ""}
+            :if={@saved_connections not in [nil, []]}
             type="button"
             id="forget-connection"
             class="secondary"
             phx-click="forget_connection"
           >
-            Forget
+            Forget all
           </button>
         </div>
-        <p :if={@saved_connection} class="muted small">
+        <p :if={@saved_connections} class="muted small">
           Kept in <span class="mono">{LastConnection.path()}</span>, readable only by you.
         </p>
         <div class="settings-toggle-row">
@@ -449,6 +491,27 @@ defmodule BeamdashWeb.SettingsLive do
             class={["settings-switch", @auto_reconnect && "on"]}
           ><span class="settings-switch-knob" aria-hidden="true"></span></button>
           <span class="small" role="status">{if @auto_reconnect, do: "On", else: "Off"}</span>
+        </div>
+        <div class="settings-toggle-row">
+          <div>
+            <strong id="snapshots-setting-label">Collect snapshots</strong>
+            <p id="snapshots-setting-help" class="muted small">
+              While connected, sample the node every 30 seconds and keep its busiest and largest
+              processes, with their details, for the Snapshots tab. Anomaly history is kept the
+              same way. Off hides both tabs and stops those samples; logs are still kept.
+            </p>
+          </div>
+          <button
+            type="button"
+            id="snapshots-enabled"
+            role="switch"
+            aria-checked={to_string(@snapshots_enabled)}
+            aria-labelledby="snapshots-setting-label"
+            aria-describedby="snapshots-setting-help"
+            phx-click="toggle_snapshots"
+            class={["settings-switch", @snapshots_enabled && "on"]}
+          ><span class="settings-switch-knob" aria-hidden="true"></span></button>
+          <span class="small" role="status">{if @snapshots_enabled, do: "On", else: "Off"}</span>
         </div>
         <form
           id="kubeconfig-dir-form"
@@ -544,6 +607,55 @@ defmodule BeamdashWeb.SettingsLive do
             class="secondary"
             phx-click="reset_notebooks_dir"
           >Reset</button>
+        </form>
+      </section>
+      <section class="mem-panel settings-card" aria-labelledby="report-clients-heading">
+        <h3 id="report-clients-heading">Report clients</h3>
+        <p class="muted small">
+          Agents that publish triage reports to beamdash, such as the erlang-triage skill, send them
+          to <span class="mono">POST /reports</span>
+          with their token as <span class="mono">Authorization: Bearer</span>. Each client has its own token. It is
+          shown once, when the client is created. Revoke a client to stop its token at once.
+        </p>
+        <ul :if={@report_clients != []} id="report-clients" class="settings-list">
+          <li :for={client <- @report_clients} class="settings-toggle-row">
+            <div>
+              <strong>{client["name"]}</strong>
+              <p class="mono small">{client["id"]}</p>
+            </div>
+            <button
+              type="button"
+              class="secondary"
+              phx-click="revoke_report_client"
+              phx-value-id={client["id"]}
+              aria-label={"Revoke the report client #{client["name"]}"}
+            >
+              Revoke
+            </button>
+          </li>
+        </ul>
+        <div :if={@new_report_token} id="new-report-token" class="settings-toggle-row" role="status">
+          <div>
+            <strong>Token for the new client</strong>
+            <p class="small">Copy it now. beamdash will not show it again.</p>
+            <code class="mono">{@new_report_token}</code>
+          </div>
+        </div>
+        <form id="report-client-form" class="settings-toggle-row" phx-submit="create_report_client">
+          <div>
+            <label for="report-client-name"><strong>Client name</strong></label>
+            <input
+              type="text"
+              id="report-client-name"
+              name="name"
+              class="mono"
+              placeholder="laptop-claude"
+              autocomplete="off"
+              spellcheck="false"
+            />
+            <p :if={@report_client_error} role="alert" class="small error">{@report_client_error}</p>
+          </div>
+          <button type="submit">Create</button>
         </form>
       </section>
       <section class="mem-panel settings-card" aria-labelledby="source-setting-heading">
@@ -752,6 +864,33 @@ defmodule BeamdashWeb.SettingsLive do
               min="1"
               max="120"
               value={div(Settings.trace_timeout(), 1000)}
+              class="mono"
+              style="width: 7em"
+            />
+            <button type="submit" class="small-btn">Save</button>
+          </form>
+          <form
+            id="trace-call-limit-form"
+            class="settings-toggle-row"
+            phx-submit="set_trace_call_limit"
+          >
+            <div>
+              <label for="trace-call-limit"><strong>Trace stop after</strong></label>
+              <p class="muted small">
+                How many calls a new trace records before it stops by itself. The trace tab
+                starts with this value in its limit field.
+              </p>
+              <p :if={@trace_call_limit_error} class="error small" role="alert">
+                {@trace_call_limit_error}
+              </p>
+            </div>
+            <input
+              id="trace-call-limit"
+              name="calls"
+              type="number"
+              min="1"
+              max="1000000"
+              value={Settings.trace_call_limit()}
               class="mono"
               style="width: 7em"
             />

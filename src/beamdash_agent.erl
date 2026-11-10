@@ -328,7 +328,8 @@ app_tree(Name) ->
                           P <- [whereis(N)], is_pid(P)],
             {Seen, Links, Extra} =
                 app_walk(queue:from_list([Root]), #{}, [], [], app_groupl(Root), Avoid),
-            Procs = [#{pid => P, name => app_reg_name(P), label => app_label(P)}
+            Procs = [maps:merge(#{pid => P, name => app_reg_name(P), label => app_label(P)},
+                                app_load(P))
                      || P <- maps:keys(Seen)],
             #{root => Root, procs => Procs,
               links => lists:reverse(Links), extra => lists:reverse(Extra)};
@@ -397,6 +398,12 @@ app_groupl(P) ->
     case process_info(P, group_leader) of
         {group_leader, GL} -> GL;
         _ -> nil
+    end.
+
+app_load(P) ->
+    case process_info(P, [message_queue_len, reductions]) of
+        [{message_queue_len, M}, {reductions, R}] -> #{mailbox => M, reductions => R};
+        undefined -> #{mailbox => 0, reductions => 0}
     end.
 
 app_reg_name(P) ->

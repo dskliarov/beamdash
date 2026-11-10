@@ -7,7 +7,8 @@ defmodule Beamdash.Insights.Groups do
   Each process is a point of standardized features: memory, queue and
   reductions rate (log scale), whether it is running, and its OTP kind.
   Each group is described by its size, typical values, most common kind
-  and initial call, and its biggest members.
+  and initial call, its biggest members, and a plain-language `summary`
+  and `note`, both compared with a typical process on the node.
   """
   alias Beamdash.Insights.Series
 
@@ -18,8 +19,8 @@ defmodule Beamdash.Insights.Groups do
   `{:ok, [group]}` for `procs` (`Beamdash.Target.processes/0`) with
   reductions `rates`, in `k` groups (fewer when there are few processes),
   biggest group first. A group is `%{size, share_pct, memory, queue, rate,
-  kind, initial_call, running_pct, members}`; typical values are medians
-  and `members` the #{5} largest by memory.
+  kind, initial_call, running_pct, summary, note, members}`; typical values
+  are medians and `members` the #{5} largest by memory.
   """
   def group(procs, rates, k \\ 5, opts \\ []) do
     procs = procs |> Enum.sort_by(& &1.memory, :desc) |> Enum.take(@max_points)
@@ -40,12 +41,13 @@ defmodule Beamdash.Insights.Groups do
 
       labels = Nx.to_flat_list(model.labels)
       total = length(procs)
+      overall_memory = median(Enum.map(procs, & &1.memory))
 
       groups =
         procs
         |> Enum.zip(labels)
         |> Enum.group_by(&elem(&1, 1), &elem(&1, 0))
-        |> Enum.map(fn {_label, members} -> describe(members, rates, total) end)
+        |> Enum.map(fn {_label, members} -> describe(members, rates, total, overall_memory) end)
         |> Enum.sort_by(& &1.size, :desc)
 
       {:ok, groups}
@@ -72,18 +74,17 @@ defmodule Beamdash.Insights.Groups do
     x |> Nx.subtract(mean) |> Nx.divide(sd)
   end
 
-  defp describe(members, rates, total) do
-    median = fn values ->
-      values = values |> Enum.map(&(&1 || 0)) |> Enum.sort()
-      Enum.at(values, div(length(values), 2))
-    end
+  defp describe(members, rates, total, overall_memory) do
+    memory = median(Enum.map(members, & &1.memory))
+    queue = median(Enum.map(members, & &1.message_queue_len))
+    rate = median(Enum.map(members, &rates[&1.pid]))
 
     %{
       size: length(members),
       share_pct: Float.round(length(members) * 100 / total, 1),
-      memory: median.(Enum.map(members, & &1.memory)),
-      queue: median.(Enum.map(members, & &1.message_queue_len)),
-      rate: median.(Enum.map(members, &rates[&1.pid])),
+      memory: memory,
+      queue: queue,
+      rate: rate,
       running_pct:
         Float.round(
           Enum.count(members, &(&1.status in [:running, :runnable])) * 100 / length(members),
@@ -91,8 +92,45 @@ defmodule Beamdash.Insights.Groups do
         ),
       kind: most_common(members, & &1[:kind]),
       initial_call: most_common(members, & &1[:initial_call]),
-      members: members |> Enum.sort_by(& &1.memory, :desc) |> Enum.take(5)
+      members: members |> Enum.sort_by(& &1.memory, :desc) |> Enum.take(5),
+      summary: summary(memory, queue, rate, overall_memory),
+      note: note(memory, queue, rate, overall_memory)
     }
+  end
+
+  defp median(values) do
+    values = values |> Enum.map(&(&1 || 0)) |> Enum.sort()
+    Enum.at(values, div(length(values), 2))
+  end
+
+  defp summary(memory, queue, rate, overall_memory) do
+    [
+      memory_text(memory, overall_memory),
+      if(rate > 0, do: "busy", else: "idle"),
+      if(queue > 0, do: "mailboxes backed up", else: "mailboxes empty")
+    ]
+    |> Enum.join(", ")
+    |> String.capitalize()
+  end
+
+  defp memory_text(memory, overall) when memory >= 2 * overall, do: "large memory"
+  defp memory_text(memory, overall) when 2 * memory <= overall, do: "small memory"
+  defp memory_text(_memory, _overall), do: "typical memory"
+
+  defp note(memory, queue, rate, overall) do
+    cond do
+      queue > 0 and rate > 0 ->
+        "Work piles up faster than it is handled. Likely a bottleneck."
+
+      queue > 0 ->
+        "Messages wait while these processes do nothing. They may be blocked on a call."
+
+      rate == 0 and memory >= 2 * overall ->
+        "Holds a lot of memory while idle. Check whether its data can be trimmed."
+
+      true ->
+        "Nothing unusual compared with the rest of the node."
+    end
   end
 
   # the most common value and its share, or nil when none is set

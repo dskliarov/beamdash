@@ -30,6 +30,7 @@ defmodule BeamdashWeb.AppsLive do
         info: nil,
         view: :tree,
         tree_mode: :graph,
+        tree_metric: :structure,
         plugin_css?: false,
         selected: nil,
         proc: nil,
@@ -139,6 +140,10 @@ defmodule BeamdashWeb.AppsLive do
 
   def handle_event("tree_mode", %{"mode" => mode}, socket) when mode in ~w(graph tree),
     do: {:noreply, assign(socket, tree_mode: String.to_existing_atom(mode))}
+
+  def handle_event("tree_metric", %{"by" => by}, socket)
+      when by in ~w(structure reductions mailbox),
+      do: {:noreply, assign(socket, tree_metric: String.to_existing_atom(by))}
 
   def handle_event("view", %{"view" => "plugin:" <> app}, socket) do
     case Enum.find(plugin_tabs(socket.assigns), &(Atom.to_string(&1.app) == app)) do
@@ -392,6 +397,27 @@ defmodule BeamdashWeb.AppsLive do
                 {label}
               </button>
             </nav>
+            <nav :if={@tree} class="seg" role="tablist" aria-label="Process tree order">
+              <span class="muted small">Order by</span>
+              <button
+                :for={
+                  {by, {label, title}} <- [
+                    structure: {"Structure", "The tree as the links give it"},
+                    reductions: {"Reductions", "Reductions so far; busiest branches first"},
+                    mailbox: {"Mailbox", "Queued messages; longest queues first"}
+                  ]
+                }
+                type="button"
+                role="tab"
+                class={["seg-btn", @tree_metric == by && "active"]}
+                aria-selected={to_string(@tree_metric == by)}
+                title={title}
+                phx-click="tree_metric"
+                phx-value-by={by}
+              >
+                {label}
+              </button>
+            </nav>
 
             <div :if={@selected} class="apps-selected" role="status">
               <span class="mono">
@@ -422,6 +448,7 @@ defmodule BeamdashWeb.AppsLive do
               root={@tree.root}
               selected={@selected}
               syntax={@syntax}
+              metric={@tree_metric}
             />
             <BeamdashWeb.AppChart.outline
               :if={@tree && @tree_mode == :tree}
@@ -429,6 +456,7 @@ defmodule BeamdashWeb.AppsLive do
               root={@tree.root}
               selected={@selected}
               syntax={@syntax}
+              metric={@tree_metric}
             />
             <p
               :if={@tree && @tree_mode == :graph && Enum.any?(Map.values(@names), &(&1.also != []))}

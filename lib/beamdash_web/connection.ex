@@ -25,9 +25,10 @@ defmodule BeamdashWeb.Connection do
   or a pod listing is on (label, command, elapsed seconds), shown in the bar
   while it runs.
 
-  The form starts with the last node and cookie that connected
-  (`Beamdash.LastConnection`, kept across restarts); a node typed in this
-  session that failed to connect is offered instead until one succeeds.
+  The bar lists the saved connections (`Beamdash.LastConnection`, kept across
+  restarts). Clicking one connects it, and each can be deleted. The form
+  starts with the first saved node and cookie; a node typed in this session
+  that failed to connect is offered instead until one succeeds.
   """
   import Phoenix.Component, only: [assign: 3]
   import Phoenix.LiveView, only: [attach_hook: 4, connected?: 1, push_navigate: 2]
@@ -44,7 +45,8 @@ defmodule BeamdashWeb.Connection do
 
   def on_mount(:default, _params, _session, socket) do
     %{status: status, node: node} = Target.status()
-    saved = LastConnection.get()
+    saved = LastConnection.list()
+    direct = Enum.find(saved, &(&1["kind"] == "node")) || %{}
     kube_saved = Settings.kube_selection()
     clusters = kube_clusters(Settings.kubeconfig_dir())
 
@@ -61,8 +63,9 @@ defmodule BeamdashWeb.Connection do
           status: status,
           node: node,
           info: nil,
-          node_input: if(node, do: Atom.to_string(node), else: last_node(saved.node)),
-          cookie_input: saved.cookie,
+          node_input: if(node, do: Atom.to_string(node), else: last_node(direct["node"] || "")),
+          cookie_input: direct["cookie"] || "",
+          saved: saved,
           error: nil,
           method: Settings.connection_method(),
           kube_cluster: cluster,
@@ -111,7 +114,7 @@ defmodule BeamdashWeb.Connection do
     case Target.connect(node, if(cookie == "", do: nil, else: cookie)) do
       {:ok, info} ->
         # remembered for the form, also after a restart
-        LastConnection.put(node, if(cookie == "", do: nil, else: cookie))
+        LastConnection.put(%{"kind" => "node", "node" => node, "cookie" => cookie})
         :persistent_term.erase(@last_node)
 
         # the page hears {:connected, node} from Target as well
@@ -123,7 +126,8 @@ defmodule BeamdashWeb.Connection do
            info: info,
            error: nil,
            cookie_input: cookie,
-           kube_target: nil
+           kube_target: nil,
+           saved: LastConnection.list()
          )
          |> to_system()}
 
@@ -160,6 +164,7 @@ defmodule BeamdashWeb.Connection do
     case method do
       "direct" -> {:halt, select_conn_method(socket, :direct)}
       "kubectl" -> {:halt, select_conn_method(socket, :kubectl)}
+      "saved" -> {:halt, select_conn_method(socket, :saved)}
       _ -> {:halt, socket}
     end
   end
@@ -338,6 +343,24 @@ defmodule BeamdashWeb.Connection do
     end
   end
 
+  def handle_event("forget_saved", %{"id" => id}, socket) do
+    LastConnection.delete(id)
+    {:halt, update(socket, saved: LastConnection.list())}
+  end
+
+  def handle_event("connect_saved", %{"id" => id}, socket) do
+    case Enum.find(socket.assigns.conn.saved, &(&1["id"] == id)) do
+      %{"kind" => "node"} = entry ->
+        handle_event("connect", %{"node" => entry["node"], "cookie" => entry["cookie"]}, socket)
+
+      %{} = entry ->
+        {:halt, connect_saved_kube(socket, entry)}
+
+      _ ->
+        {:halt, socket}
+    end
+  end
+
   def handle_event(_event, _params, socket), do: {:cont, socket}
 
   @doc false
@@ -458,9 +481,9 @@ defmodule BeamdashWeb.Connection do
     end
   end
 
-  def handle_info({:beamdash_kube_progress, ref, label, command}, socket) do
+  def handle_info({:beamdash_kube_event, ref, event}, socket) do
     if socket.assigns.conn.kube_restore_ref == ref,
-      do: {:halt, put_progress(socket, :kube_progress, progress_step(label, command))},
+      do: {:halt, kube_event(socket, event)},
       else: {:halt, socket}
   end
 
@@ -470,6 +493,8 @@ defmodule BeamdashWeb.Connection do
         {:halt, update(socket, connecting: nil)}
 
       {:ok, info} ->
+        save_kube_connection(ctx, info.node)
+
         # the page hears {:connected, node} from Target as well
         {:halt,
          socket
@@ -487,9 +512,13 @@ defmodule BeamdashWeb.Connection do
              kube_target(
                {:kubectl, %{kubeconfig: ctx.cluster, namespace: ctx.namespace, pod: ctx.pod}},
                socket.assigns.conn.kube_clusters
-             )
+             ),
+           saved: LastConnection.list()
          )
          |> to_system()}
+
+      {:error, {:saved_pod_unavailable, reason}} ->
+        {:halt, saved_pod_unavailable(socket, ctx, reason)}
 
       {:error, reason} ->
         {:halt,
@@ -671,13 +700,14 @@ defmodule BeamdashWeb.Connection do
   end
 
   # The listing runs in a task, since a pod or container can be slow to answer.
-  # Its steps report what they run as `{:beamdash_kube_progress, ref, label, command}`
-  # and the result comes back as `{:beamdash_kube_listed, ref, cluster, namespace, result}`;
-  # a result for a ref no longer current is dropped.
+  # Its steps and the pod names, once listed, come back as
+  # `{:beamdash_kube_event, ref, event}`, and the result as
+  # `{:beamdash_kube_listed, ref, cluster, namespace, result}`; anything for a
+  # ref no longer current is dropped.
   defp start_kube_listing(socket, cluster, namespace, stage, saved) do
     ref = make_ref()
     pid = self()
-    report = fn label, command -> send(pid, {:beamdash_kube_progress, ref, label, command}) end
+    report = fn event -> send(pid, {:beamdash_kube_event, ref, event}) end
 
     {:ok, _} =
       Task.start(fn ->
@@ -688,12 +718,18 @@ defmodule BeamdashWeb.Connection do
     update(socket, kube_restore_ref: ref)
   end
 
+  defp kube_event(socket, {:progress, label, command}),
+    do: put_progress(socket, :kube_progress, progress_step(label, command))
+
+  defp kube_event(socket, {:pods, pods}), do: update(socket, kube_pods: pods)
+
   defp kube_listing(cluster, namespace, :pods, saved, report) do
     case Kubectl.list_pods(cluster, namespace, reported(report, "Listing pods in #{namespace}")) do
       {:ok, []} ->
         {:ok, %{pods: []}}
 
       {:ok, pods} ->
+        report.({:pods, pods})
         same_namespace = saved["cluster"] == cluster and saved["namespace"] == namespace
         pod = if same_namespace and saved["pod"] in pods, do: saved["pod"], else: List.first(pods)
         container_listing(cluster, namespace, pod, %{pods: pods}, saved, report)
@@ -758,7 +794,7 @@ defmodule BeamdashWeb.Connection do
 
   defp reported(report, label) do
     fn args ->
-      report.(label, Kubectl.command_line(args))
+      report.({:progress, label, Kubectl.command_line(args)})
       Kubectl.run_kubectl(args)
     end
   end
@@ -785,6 +821,89 @@ defmodule BeamdashWeb.Connection do
     Target.connect_via_kubectl(ctx.cluster, ctx.namespace, ctx.pod, ctx.container, ctx.binary)
   catch
     :exit, reason -> {:error, {:connect_failed, reason}}
+  end
+
+  defp connect_saved(entry) do
+    Target.connect_saved_kubectl(entry)
+  catch
+    :exit, reason -> {:error, {:connect_failed, reason}}
+  end
+
+  defp connect_saved_kube(socket, entry) do
+    if socket.assigns.conn.connecting do
+      socket
+    else
+      ctx = %{
+        cluster: entry["kubeconfig"],
+        namespace: entry["namespace"],
+        pod: entry["pod"],
+        container: entry["container"],
+        binary: entry["binary"]
+      }
+
+      Settings.put_kube_selection(%{
+        "cluster" => ctx.cluster,
+        "namespace" => ctx.namespace,
+        "pod" => ctx.pod,
+        "container" => ctx.container,
+        "binary" => ctx.binary
+      })
+
+      pid = self()
+
+      {:ok, _} =
+        Task.start(fn -> send(pid, {:beamdash_kube_connected, ctx, connect_saved(entry)}) end)
+
+      socket
+      |> update(
+        kube_cluster: ctx.cluster,
+        kube_namespace: ctx.namespace,
+        kube_pod: ctx.pod,
+        kube_container: ctx.container,
+        kube_binary: ctx.binary,
+        error: nil
+      )
+      |> put_progress(:connecting, progress_step("Connecting…", nil))
+    end
+  end
+
+  defp save_kube_connection(ctx, node) do
+    LastConnection.put(%{
+      "kind" => "kubectl",
+      "node" => Atom.to_string(node),
+      "cookie" => cookie_text(Target.cookie()),
+      "kubeconfig" => ctx.cluster,
+      "namespace" => ctx.namespace,
+      "pod" => ctx.pod,
+      "container" => ctx.container,
+      "binary" => ctx.binary
+    })
+  end
+
+  defp cookie_text(nil), do: ""
+  defp cookie_text(cookie) when is_atom(cookie), do: Atom.to_string(cookie)
+  defp cookie_text(cookie) when is_binary(cookie), do: cookie
+
+  defp saved_pod_unavailable(socket, ctx, reason) do
+    socket
+    |> update(
+      error:
+        "Could not reach the saved pod #{ctx.pod} (#{Format.error(reason)}). Pick a pod and connect.",
+      connecting: nil,
+      kube_namespace: ctx.namespace,
+      kube_pods: nil,
+      kube_pods_listing: true,
+      kube_pod: "",
+      kube_containers: nil,
+      kube_container: nil,
+      kube_binaries: nil,
+      kube_binary: nil
+    )
+    |> start_kube_listing(ctx.cluster, ctx.namespace, :pods, %{
+      "cluster" => ctx.cluster,
+      "namespace" => ctx.namespace,
+      "pod" => ""
+    })
   end
 
   # One tick chain at a time: it runs while any progress is active and clears

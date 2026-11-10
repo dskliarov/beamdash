@@ -86,16 +86,16 @@ defmodule Beamdash.Kubectl do
   @spec list_pods(String.t() | nil, String.t(), (list(String.t()) -> {binary(), integer()})) ::
           {:ok, [String.t()]} | {:error, term()}
   def list_pods(kubeconfig, namespace, exec \\ &run_kubectl/1) do
-    args =
-      kubeconfig_args(kubeconfig) ++
-        ["get", "pods", "-n", namespace, "-o", "jsonpath={.items[*].metadata.name}"]
+    with {:ok, base} <- cluster_args(kubeconfig, exec) do
+      case exec.(
+             base ++ ["get", "pods", "-n", namespace, "-o", "jsonpath={.items[*].metadata.name}"]
+           ) do
+        {output, 0} ->
+          {:ok, output |> String.trim() |> String.split(~r/\s+/, trim: true)}
 
-    case exec.(args) do
-      {output, 0} ->
-        {:ok, output |> String.trim() |> String.split(~r/\s+/, trim: true)}
-
-      {output, status} ->
-        {:error, {:pod_list_failed, {status, String.trim(output)}}}
+        {output, status} ->
+          {:error, {:pod_list_failed, {status, String.trim(output)}}}
+      end
     end
   catch
     kind, reason -> {:error, {:pod_list_failed, {kind, reason}}}
@@ -203,6 +203,13 @@ defmodule Beamdash.Kubectl do
   defp context_args(nil), do: []
   defp context_args(name), do: ["--context", name]
 
+  defp cluster_args(nil, _exec), do: {:ok, []}
+
+  defp cluster_args(kubeconfig, exec) do
+    with {:ok, context} <- cluster_context(kubeconfig, exec),
+         do: {:ok, kubeconfig_args(kubeconfig) ++ context_args(context)}
+  end
+
   defp cluster_name(path), do: path |> Path.basename() |> Path.rootname()
 
   @doc """
@@ -218,24 +225,18 @@ defmodule Beamdash.Kubectl do
         ) ::
           {:ok, [String.t()]} | {:error, term()}
   def list_containers(kubeconfig, namespace, pod, exec \\ &run_kubectl/1) do
-    args =
-      kubeconfig_args(kubeconfig) ++
-        [
-          "get",
-          "pod",
-          "-n",
-          namespace,
-          pod,
-          "-o",
-          "jsonpath={.spec.containers[*].name}"
-        ]
+    with {:ok, base} <- cluster_args(kubeconfig, exec) do
+      args =
+        base ++
+          ["get", "pod", "-n", namespace, pod, "-o", "jsonpath={.spec.containers[*].name}"]
 
-    case exec.(args) do
-      {output, 0} ->
-        {:ok, output |> String.trim() |> String.split(~r/\s+/, trim: true)}
+      case exec.(args) do
+        {output, 0} ->
+          {:ok, output |> String.trim() |> String.split(~r/\s+/, trim: true)}
 
-      {output, status} ->
-        {:error, {:container_list_failed, {status, String.trim(output)}}}
+        {output, status} ->
+          {:error, {:container_list_failed, {status, String.trim(output)}}}
+      end
     end
   catch
     kind, reason -> {:error, {:container_list_failed, {kind, reason}}}
@@ -259,12 +260,14 @@ defmodule Beamdash.Kubectl do
   def list_binaries(kubeconfig, namespace, pod, container, exec \\ &run_kubectl/1) do
     command = ["sh", "-c", @list_binaries_script]
 
-    case exec.(exec_args(kubeconfig, namespace, pod, container, command)) do
-      {output, 0} ->
-        {:ok, output |> String.split("\n", trim: true) |> Enum.uniq() |> Enum.sort()}
+    with {:ok, base} <- cluster_args(kubeconfig, exec) do
+      case exec.(exec_args(base, namespace, pod, container, command)) do
+        {output, 0} ->
+          {:ok, output |> String.split("\n", trim: true) |> Enum.uniq() |> Enum.sort()}
 
-      {output, status} ->
-        {:error, {:binary_list_failed, {status, String.trim(output)}}}
+        {output, status} ->
+          {:error, {:binary_list_failed, {status, String.trim(output)}}}
+      end
     end
   catch
     kind, reason -> {:error, {:binary_list_failed, {kind, reason}}}
@@ -301,6 +304,9 @@ defmodule Beamdash.Kubectl do
 
   `opts[:progress]` is called as `progress.(label, command)` before each
   step, with the kubectl command line it runs (`nil` for steps that run none).
+
+  `opts[:known]` is a `{node, cookie}` read from this pod before (a saved
+  connection): it is used as it is, and the pod is not asked again.
   """
   @spec connect(String.t() | nil, String.t(), String.t(), String.t(), String.t(), keyword()) ::
           {:ok, %{node: node(), cookie: atom(), tunnel: %Tunnel{}}} | {:error, term()}
@@ -314,20 +320,20 @@ defmodule Beamdash.Kubectl do
       exec.(args)
     end
 
-    with {:ok, {node, cookie}} <-
-           discover(kubeconfig, namespace, pod, container, binary, discovery_exec),
+    with {:ok, base} <- cluster_args(kubeconfig, exec),
+         {:ok, {node, cookie}} <-
+           known_or_discover(opts, base, namespace, pod, container, binary, discovery_exec),
          [short_name, _host] <- String.split(Atom.to_string(node), "@", parts: 2),
          {:ok, epmd_local} <- free_local_port(),
          :ok <-
            step(
              progress,
              "Forwarding the pod's EPMD port",
-             port_forward_command(kubeconfig, namespace, pod, {epmd_local, @epmd_port})
+             port_forward_command(base, namespace, pod, {epmd_local, @epmd_port})
            ),
-         {:ok, epmd_forward} <-
-           open_forward.(kubeconfig, namespace, pod, {epmd_local, @epmd_port}) do
+         {:ok, epmd_forward} <- open_forward.(base, namespace, pod, {epmd_local, @epmd_port}) do
       case open_dist_forward(
-             kubeconfig,
+             base,
              namespace,
              pod,
              short_name,
@@ -359,15 +365,14 @@ defmodule Beamdash.Kubectl do
     end
   end
 
-  defp open_dist_forward(
-         kubeconfig,
-         namespace,
-         pod,
-         short_name,
-         epmd_local,
-         progress,
-         open_forward
-       ) do
+  defp known_or_discover(opts, base, namespace, pod, container, binary, discovery_exec) do
+    case Keyword.get(opts, :known) do
+      nil -> discover(base, namespace, pod, container, binary, discovery_exec)
+      known -> {:ok, known}
+    end
+  end
+
+  defp open_dist_forward(base, namespace, pod, short_name, epmd_local, progress, open_forward) do
     with :ok <- step(progress, "Reading the node's distribution port from EPMD", nil),
          {:ok, dist_port} <- discover_dist_port(epmd_local, short_name),
          {:ok, dist_local} <- free_local_port(),
@@ -375,9 +380,9 @@ defmodule Beamdash.Kubectl do
            step(
              progress,
              "Forwarding the node's distribution port",
-             port_forward_command(kubeconfig, namespace, pod, {dist_local, dist_port})
+             port_forward_command(base, namespace, pod, {dist_local, dist_port})
            ),
-         {:ok, dist_forward} <- open_forward.(kubeconfig, namespace, pod, {dist_local, dist_port}) do
+         {:ok, dist_forward} <- open_forward.(base, namespace, pod, {dist_local, dist_port}) do
       {:ok, {dist_local, dist_forward}}
     end
   end
@@ -397,14 +402,14 @@ defmodule Beamdash.Kubectl do
 
   ## Discovery (kubectl exec ... rpc), no tunnel needed
 
-  defp discover(kubeconfig, namespace, pod, container, binary, exec) do
+  defp discover(base, namespace, pod, container, binary, exec) do
     release_bin =
       if Path.type(binary) == :absolute, do: binary, else: Path.join(@release_bin_dir, binary)
 
     with {:error, elixir_reason} <-
-           discover_with(kubeconfig, namespace, pod, container, release_bin, :elixir, exec),
+           discover_with(base, namespace, pod, container, release_bin, :elixir, exec),
          {:error, erlang_reason} <-
-           discover_with(kubeconfig, namespace, pod, container, release_bin, :erlang, exec) do
+           discover_with(base, namespace, pod, container, release_bin, :erlang, exec) do
       {:error, {:discovery_failed, {elixir_reason, erlang_reason}}}
     end
   end
@@ -413,8 +418,15 @@ defmodule Beamdash.Kubectl do
   # stdout. relx releases' `rpc` takes `Mod Fun Args` instead; their `eval`
   # runs an expression on the node and prints its return value as a term
   # (with or without an `{ok, _}` wrapper, depending on the relx version).
-  defp discover_with(kubeconfig, namespace, pod, container, release_bin, flavor, exec) do
-    args = exec_args(kubeconfig, namespace, pod, container, [release_bin | command(flavor)])
+  defp discover_with(base, namespace, pod, container, release_bin, flavor, exec) do
+    args =
+      exec_args(
+        base,
+        namespace,
+        pod,
+        container,
+        [release_bin | command(flavor)]
+      )
 
     case exec.(args) do
       {output, 0} -> parse_discovery(flavor, output)
@@ -490,7 +502,7 @@ defmodule Beamdash.Kubectl do
 
   ## kubectl port-forward (kept open until `close/1`)
 
-  defp open_port_forward(kubeconfig, namespace, pod, {local_port, remote_port}) do
+  defp open_port_forward(base, namespace, pod, {local_port, remote_port}) do
     case System.find_executable("kubectl") do
       nil ->
         {:error, :kubectl_not_found}
@@ -502,7 +514,7 @@ defmodule Beamdash.Kubectl do
             [
               :binary,
               :exit_status,
-              args: port_forward_args(kubeconfig, namespace, pod, {local_port, remote_port})
+              args: port_forward_args(base, namespace, pod, {local_port, remote_port})
             ]
           )
 
@@ -563,9 +575,9 @@ defmodule Beamdash.Kubectl do
 
   # `-c container` only when one is given: a single-container pod needs
   # none, `kubectl exec` already defaults to its one container.
-  defp exec_args(kubeconfig, namespace, pod, container, command) do
-    base = kubeconfig_args(kubeconfig) ++ ["exec", "-n", namespace, pod]
-    with_container = if container in [nil, ""], do: base, else: base ++ ["-c", container]
+  defp exec_args(base, namespace, pod, container, command) do
+    exec = base ++ ["exec", "-n", namespace, pod]
+    with_container = if container in [nil, ""], do: exec, else: exec ++ ["-c", container]
     with_container ++ ["--"] ++ command
   end
 
@@ -616,13 +628,12 @@ defmodule Beamdash.Kubectl do
       else: "'" <> String.replace(arg, "'", "'\\''") <> "'"
   end
 
-  defp port_forward_args(kubeconfig, namespace, pod, {local_port, remote_port}) do
-    kubeconfig_args(kubeconfig) ++
-      ["port-forward", "-n", namespace, "pod/#{pod}", "#{local_port}:#{remote_port}"]
+  defp port_forward_args(base, namespace, pod, {local_port, remote_port}) do
+    base ++ ["port-forward", "-n", namespace, "pod/#{pod}", "#{local_port}:#{remote_port}"]
   end
 
-  defp port_forward_command(kubeconfig, namespace, pod, ports),
-    do: command_line(port_forward_args(kubeconfig, namespace, pod, ports))
+  defp port_forward_command(base, namespace, pod, ports),
+    do: command_line(port_forward_args(base, namespace, pod, ports))
 
   defp step(progress, label, command) do
     progress.(label, command)

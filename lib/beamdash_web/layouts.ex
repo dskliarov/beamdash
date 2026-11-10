@@ -53,6 +53,17 @@ defmodule BeamdashWeb.Layouts do
     if Application.get_env(:beamdash, :has_k8s, false), do: "Kubernetes", else: "kubectl"
   end
 
+  defp saved_title(%{"kind" => "kubectl"} = entry), do: entry["pod"]
+  defp saved_title(entry), do: entry["node"]
+
+  defp saved_meta(%{"kind" => "kubectl"} = entry) do
+    [Path.rootname(Path.basename(entry["kubeconfig"])), entry["namespace"], entry["container"]]
+    |> Enum.reject(&(&1 in [nil, ""]))
+    |> Enum.join(" · ")
+  end
+
+  defp saved_meta(_entry), do: "direct"
+
   attr :progress, :map, required: true, doc: "a step: label, command (or nil), elapsed seconds"
 
   defp progress_line(assigns) do
@@ -122,6 +133,59 @@ defmodule BeamdashWeb.Layouts do
             >
               {kube_method_label()}
             </button>
+            <button
+              type="button"
+              class={["seg-btn", Map.get(@conn, :method, :direct) == :saved && "active"]}
+              aria-pressed={to_string(Map.get(@conn, :method, :direct) == :saved)}
+              phx-click="set_conn_method"
+              phx-value-method="saved"
+            >
+              Saved
+            </button>
+          </div>
+
+          <div :if={Map.get(@conn, :method, :direct) == :saved} class="conn-rows">
+            <ul
+              :if={Map.get(@conn, :saved, []) != []}
+              id="saved-connections"
+              class="saved-connections"
+              aria-label="Saved connections"
+            >
+              <li :for={entry <- @conn.saved} class="saved-connection">
+                <button
+                  type="button"
+                  class="secondary small-btn saved-connect"
+                  phx-click="connect_saved"
+                  phx-value-id={entry["id"]}
+                  disabled={not is_nil(@conn[:connecting])}
+                >
+                  <span class="saved-name">{saved_title(entry)}</span>
+                  <span class="saved-meta">{saved_meta(entry)}</span>
+                </button>
+                <button
+                  type="button"
+                  class="icon-btn delete-saved"
+                  phx-click="forget_saved"
+                  phx-value-id={entry["id"]}
+                  aria-label={"Delete #{saved_title(entry)} (#{saved_meta(entry)})"}
+                  title="Delete"
+                >
+                  <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
+                    <path
+                      d="M3 4h10M6.5 4V2.5h3V4M4.5 4l.6 9.5h5.8l.6-9.5"
+                      fill="none"
+                      stroke="currentColor"
+                      stroke-width="1.4"
+                      stroke-linecap="round"
+                      stroke-linejoin="round"
+                    />
+                  </svg>
+                </button>
+              </li>
+            </ul>
+            <p :if={Map.get(@conn, :saved, []) == []} class="conn-hint muted small">
+              No saved connections yet. A connection that works is kept here.
+            </p>
           </div>
 
           <form
@@ -403,7 +467,9 @@ defmodule BeamdashWeb.Layouts do
        {"/", :processes, "Processes", "Processes", "p"},
        {"/gc", :gc, "GC", "Garbage collection", "c"},
        {"/crashes", :crashes, "Crashes", "Crash reports", "x"},
-       {"/insights", :insights, "Insights", "Insights: anomalies and groups (Nx)", "i"}
+       {"/insights", :insights, "Insights", "Insights: anomalies and groups (Nx)", "i"},
+       {"/snapshots", :snapshots, "Snapshots",
+        "Stored snapshots of processes that need attention", "d"}
      ]},
     {"Tracing",
      [
@@ -415,6 +481,14 @@ defmodule BeamdashWeb.Layouts do
 
   @doc "The tab groups: `[{group, [{path, key, label, title, shortcut}]}]`."
   def tab_groups, do: @groups
+
+  defp visible_groups do
+    if Beamdash.Settings.snapshots_enabled?() do
+      @groups
+    else
+      for {group, tabs} <- @groups, do: {group, Enum.reject(tabs, &(elem(&1, 1) == :snapshots))}
+    end
+  end
 
   attr :active, :any, required: true, doc: "a tab's key, or {:plugin, app, slug}"
   attr :syntax, :atom, required: true
@@ -435,7 +509,7 @@ defmodule BeamdashWeb.Layouts do
   More and has no shortcut.
   """
   def nav(assigns) do
-    assigns = assign(assigns, groups: @groups)
+    assigns = assign(assigns, groups: visible_groups())
 
     ~H"""
     <nav class="tabs" id="main-nav" phx-hook="NavOverflow" aria-label="Main">

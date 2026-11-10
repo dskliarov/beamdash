@@ -16,6 +16,7 @@ defmodule BeamdashWeb.LogsTable do
   alias Beamdash.Format
   alias Beamdash.Logs.{Filter, Parse, Pretty}
   alias Beamdash.Target
+  alias BeamdashWeb.TermView
 
   attr :info, :map, required: true, doc: "`Beamdash.Logs.info/1`"
   attr :node, :atom, default: nil
@@ -130,6 +131,8 @@ defmodule BeamdashWeb.LogsTable do
     default: nil,
     doc: "the attached node, when connected: pids link to its processes"
 
+  attr :term_view, :atom, default: :pretty
+
   def table(assigns) do
     ~H"""
     <div class="log logs-table" role="table" aria-label="Log lines" tabindex="0">
@@ -230,6 +233,7 @@ defmodule BeamdashWeb.LogsTable do
             :if={row.count == 1 and open?(row)}
             entry={row.entry}
             node={@node}
+            term_view={@term_view}
           />
           <div :if={row.expanded?} class="logs-lines" role="rowgroup">
             <div :for={{e, spans} <- row.lines} class={["logs-line", e.id in row.open && "open"]}>
@@ -251,7 +255,7 @@ defmodule BeamdashWeb.LogsTable do
                 <span class="logs-line-msg" role="cell">{masked(spans)}</span>
                 <span role="cell"></span>
               </div>
-              <.details :if={e.id in row.open} entry={e} node={@node} />
+              <.details :if={e.id in row.open} entry={e} node={@node} term_view={@term_view} />
             </div>
           </div>
         </div>
@@ -262,6 +266,7 @@ defmodule BeamdashWeb.LogsTable do
 
   attr :entry, :map, required: true
   attr :node, :atom, default: nil
+  attr :term_view, :atom, default: :pretty
 
   @json_time_keys ~w(time timestamp @timestamp ts)
 
@@ -280,6 +285,7 @@ defmodule BeamdashWeb.LogsTable do
         pairs: pairs,
         pair_map: Map.new(pairs),
         plain_pairs: if(json_rows == nil, do: pairs, else: []),
+        tree_value: if(json_rows, do: Jason.decode!(assigns.entry.message)),
         struct_rows:
           for(
             {key, value, true} <- json_rows || [],
@@ -293,54 +299,63 @@ defmodule BeamdashWeb.LogsTable do
     ~H"""
     <div class="detail log-detail" role="region">
       <form phx-submit="field_filter" class="logs-field-form">
-        <%= if @json_rows do %>
-          <table class="logs-json" aria-label="JSON message fields">
-            <tbody>
-              <tr :for={{key, value, string?} <- @json_rows}>
-                <th scope="row">
-                  <.field_pick
-                    :if={Map.has_key?(@pair_map, key)}
-                    name={key}
-                    value={@pair_map[key]}
-                  />
-                  <span :if={!Map.has_key?(@pair_map, key)}>{key}</span>
-                </th>
-                <td>
-                  <.json_cell key={key} value={value} string?={string?} node={@node} />
-                  <table
-                    :if={Map.has_key?(@struct_rows, key)}
-                    class="logs-json logs-struct"
-                    aria-label={"Fields in #{key}"}
-                  >
-                    <tbody>
-                      <tr :for={{k, v} <- @struct_rows[key]}>
-                        <th scope="row"><.field_pick name={k} value={v} /></th>
-                        <td class="mono">{v}</td>
-                      </tr>
-                    </tbody>
-                  </table>
-                </td>
-              </tr>
-            </tbody>
-          </table>
-          <p :if={@json_rows == []} class="muted small">Empty JSON object or array.</p>
-          <details class="logs-json-original">
-            <summary>Original message</summary><pre>{@entry.message}</pre>
-          </details>
-        <% else %>
-          <pre>{pretty_message(@entry.message)}</pre>
-          <table
-            :if={@plain_pairs != []}
-            class="logs-json logs-struct"
-            aria-label="Fields in this message"
-          >
-            <tbody>
-              <tr :for={{key, value} <- @plain_pairs}>
-                <th scope="row"><.field_pick name={key} value={value} /></th>
-                <td class="mono">{value}</td>
-              </tr>
-            </tbody>
-          </table>
+        <TermView.view_switch view={@term_view} />
+        <%= cond do %>
+          <% @term_view == :raw -> %>
+            <pre>{@entry.message}</pre>
+          <% @term_view == :tree and @json_rows -> %>
+            <TermView.term value={@tree_value} syntax={:elixir} view={:tree} />
+          <% @json_rows -> %>
+            <table class="logs-json" aria-label="JSON message fields">
+              <tbody>
+                <tr :for={{key, value, string?} <- @json_rows}>
+                  <th scope="row">
+                    <.field_pick
+                      :if={Map.has_key?(@pair_map, key)}
+                      name={key}
+                      value={@pair_map[key]}
+                    />
+                    <span :if={!Map.has_key?(@pair_map, key)}>{key}</span>
+                  </th>
+                  <td>
+                    <.json_cell key={key} value={value} string?={string?} node={@node} />
+                    <table
+                      :if={Map.has_key?(@struct_rows, key)}
+                      class="logs-json logs-struct"
+                      aria-label={"Fields in #{key}"}
+                    >
+                      <tbody>
+                        <tr :for={{k, v} <- @struct_rows[key]}>
+                          <th scope="row"><.field_pick name={k} value={v} /></th>
+                          <td class="mono">{v}</td>
+                        </tr>
+                      </tbody>
+                    </table>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+            <p :if={@json_rows == []} class="muted small">Empty JSON object or array.</p>
+            <details class="logs-json-original">
+              <summary>Original message</summary><pre>{@entry.message}</pre>
+            </details>
+          <% true -> %>
+            <TermView.text segments={Pretty.segments(@entry.message)} />
+            <p :if={@term_view == :tree} class="muted small">
+              Tree needs a JSON message. Showing Pretty.
+            </p>
+            <table
+              :if={@plain_pairs != []}
+              class="logs-json logs-struct"
+              aria-label="Fields in this message"
+            >
+              <tbody>
+                <tr :for={{key, value} <- @plain_pairs}>
+                  <th scope="row"><.field_pick name={key} value={value} /></th>
+                  <td class="mono">{value}</td>
+                </tr>
+              </tbody>
+            </table>
         <% end %>
         <table class="props">
           <tr :if={@time?}>

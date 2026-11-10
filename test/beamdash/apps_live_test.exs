@@ -61,6 +61,16 @@ defmodule Beamdash.AppsLiveTest do
     assert socket.assigns.tree_mode == :graph
   end
 
+  test "the Order by switch sets the metric the tree is ordered by", ctx do
+    socket = Component.assign(cold_socket(ctx.node), tree_metric: :structure)
+
+    {:noreply, socket} = AppsLive.handle_event("tree_metric", %{"by" => "reductions"}, socket)
+    assert socket.assigns.tree_metric == :reductions
+
+    {:noreply, socket} = AppsLive.handle_event("tree_metric", %{"by" => "mailbox"}, socket)
+    assert socket.assigns.tree_metric == :mailbox
+  end
+
   # the start_async task's result, as LiveView hands it back
   defp async_result(socket, key) do
     assert_receive {:phoenix, :async_result, {:start, {_ref, nil, ^key, result}}}, 15_000

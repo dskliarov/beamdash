@@ -1,16 +1,44 @@
 defmodule Beamdash.McpTest do
   use ExUnit.Case, async: false
 
-  alias Beamdash.{Format, Mcp, Target}
+  alias Beamdash.{Format, Mcp, Settings, Store, Target}
   alias Beamdash.Test.Fixture
 
   defp unique_name, do: :"mcp_target_#{System.unique_integer([:positive])}"
+
+  defp start_store do
+    dir = Path.join(System.tmp_dir!(), "beamdash_mcp_#{System.unique_integer([:positive])}")
+    start_supervised!({Store, path: Path.join(dir, "events.sqlite3"), purge_interval: :infinity})
+    on_exit(fn -> File.rm_rf(dir) end)
+  end
+
+  defp snapshot(at, node, pid, reason) do
+    %{
+      at: at,
+      node: node,
+      pid: pid,
+      reason: reason,
+      data: %{"process" => %{"memory" => 1_000}, "rate" => 0}
+    }
+  end
 
   test "every tool says so when no node is connected" do
     target = start_supervised!({Target, name: unique_name()})
 
     assert {:error, "beamdash is not connected to a node"} =
              Mcp.call("node_info", %{}, target)
+  end
+
+  test "the new tools say so when no node is connected" do
+    target = start_supervised!({Target, name: unique_name()})
+
+    for {name, args} <- [
+          {"memory_history", %{}},
+          {"ets_rows", %{"table" => "ac_tab"}},
+          {"source_check", %{"app" => "kernel"}}
+        ] do
+      assert {:error, "beamdash is not connected to a node"} = Mcp.call(name, args, target)
+    end
   end
 
   test "a name that is not one of the tools is reported as unknown" do
@@ -222,6 +250,180 @@ defmodule Beamdash.McpTest do
     test "logs filters by level", %{target: target} do
       assert {:ok, entries} = Mcp.call("logs", %{"level" => "error"}, target)
       assert Enum.all?(entries, &(&1.level == :error))
+    end
+
+    test "snapshots lists the attached node's rows, newest first, with an optional reason", %{
+      node: node,
+      target: target
+    } do
+      start_store()
+      :ok = Settings.put_snapshots_enabled(true)
+      on_exit(fn -> :ok = Settings.put_snapshots_enabled(false) end)
+
+      now = System.system_time(:millisecond)
+      name = Atom.to_string(node)
+
+      :ok =
+        Store.record(:snapshots, [
+          snapshot(now - 2_000, name, "#PID<0.3.0>", "memory"),
+          snapshot(now - 1_000, name, "#PID<0.1.0>", "load"),
+          snapshot(now - 1_000, "other@host", "#PID<0.2.0>", "load")
+        ])
+
+      assert {:ok, [newest, oldest]} = Mcp.call("snapshots", %{}, target)
+      assert %{pid: "<0.1.0>", reason: "load"} = newest
+      assert %{pid: "<0.3.0>", reason: "memory"} = oldest
+      assert {:ok, [%{pid: "<0.3.0>"}]} = Mcp.call("snapshots", %{"reason" => "memory"}, target)
+
+      assert {:error, "pid must look like" <> _} =
+               Mcp.call("snapshots", %{"pid" => "nope"}, target)
+    end
+
+    test "anomaly_history lists the attached node's episodes, filtered by pid and measure", %{
+      node: node,
+      target: target
+    } do
+      start_store()
+      :ok = Settings.put_snapshots_enabled(true)
+      on_exit(fn -> :ok = Settings.put_snapshots_enabled(false) end)
+
+      now = System.system_time(:millisecond)
+
+      :ok =
+        Store.record(:anomalies, [
+          %{
+            at: now - 1_000,
+            node: Atom.to_string(node),
+            pid: "#PID<0.5.0>",
+            measure: "mailbox",
+            data: %{"kind" => "rising", "text" => "queue grew", "duration_ms" => 500}
+          }
+        ])
+
+      assert {:ok, [episode]} = Mcp.call("anomaly_history", %{"pid" => "<0.5.0>"}, target)
+      assert %{pid: "<0.5.0>", measure: "mailbox"} = episode
+      assert {:ok, []} = Mcp.call("anomaly_history", %{"measure" => "reductions"}, target)
+    end
+
+    test "memory_history lists the node's samples, with one table's entry when asked", %{
+      node: node,
+      target: target
+    } do
+      start_store()
+      :ok = Settings.put_snapshots_enabled(true)
+      on_exit(fn -> :ok = Settings.put_snapshots_enabled(false) end)
+
+      now = System.system_time(:millisecond)
+      name = Atom.to_string(node)
+
+      rig_locks = %{
+        "name" => "rig_locks",
+        "type" => "set",
+        "size" => 3,
+        "memory" => 400,
+        "owner" => "<0.9.0>"
+      }
+
+      :ok =
+        Store.record(:memory, [
+          %{
+            at: now - 2_000,
+            node: name,
+            data: %{
+              "memory" => %{"total" => 100},
+              "atom_count" => 5,
+              "ets_count" => 1,
+              "tables" => [rig_locks]
+            }
+          },
+          %{
+            at: now - 1_000,
+            node: name,
+            data: %{
+              "memory" => %{"total" => 200},
+              "atom_count" => 6,
+              "ets_count" => 2,
+              "tables" => []
+            }
+          },
+          %{
+            at: now - 1_000,
+            node: "other@host",
+            data: %{
+              "memory" => %{"total" => 999},
+              "atom_count" => 1,
+              "ets_count" => 0,
+              "tables" => []
+            }
+          }
+        ])
+
+      assert {:ok, %{rows: [newest, oldest], truncated: false}} =
+               Mcp.call("memory_history", %{}, target)
+
+      assert %{memory: 200, atom_count: 6, ets_count: 2} = newest
+      refute Map.has_key?(newest, :table)
+      assert %{memory: 100} = oldest
+
+      assert {:ok, %{rows: [without, with_table]}} =
+               Mcp.call("memory_history", %{"table" => "rig_locks"}, target)
+
+      assert %{table: nil} = without
+
+      assert %{table: %{name: "rig_locks", type: "set", size: 3, memory: 400, owner: "<0.9.0>"}} =
+               with_table
+
+      assert {:ok, %{rows: [_], truncated: true}} =
+               Mcp.call("memory_history", %{"limit" => 1}, target)
+    end
+
+    test "ets_rows reads rows of a table, capped at the limit", %{target: target} do
+      assert {:ok, %{table: :ac_tab, rows: rows, stop: stop}} =
+               Mcp.call("ets_rows", %{"table" => "ac_tab", "limit" => 1}, target)
+
+      assert length(rows) <= 1
+      assert stop in [:complete, :rows, :time]
+    end
+
+    test "ets_rows says what is wrong with the table it was given", %{target: target} do
+      assert {:error, "table must be" <> _} = Mcp.call("ets_rows", %{}, target)
+
+      assert {:error, message} = Mcp.call("ets_rows", %{"table" => "no_such_table_xyz"}, target)
+      assert message =~ "ets_tables"
+    end
+
+    test "source_check reports an application without a configured folder", %{target: target} do
+      assert {:ok, %{app: :kernel, status: "no_folder", vsn: vsn}} =
+               Mcp.call("source_check", %{"app" => "kernel"}, target)
+
+      assert is_binary(vsn)
+    end
+
+    test "source_check names an application that is not on the node", %{target: target} do
+      assert {:error, message} =
+               Mcp.call("source_check", %{"app" => "no_such_application_xyz"}, target)
+
+      assert message =~ "app_list"
+    end
+
+    test "the stored history says so when snapshot collection is off", %{target: target} do
+      start_store()
+      :ok = Settings.put_snapshots_enabled(false)
+
+      assert {:error, "snapshot collection is off" <> _} = Mcp.call("snapshots", %{}, target)
+
+      assert {:error, "snapshot collection is off" <> _} =
+               Mcp.call("anomaly_history", %{}, target)
+
+      assert {:error, "snapshot collection is off" <> _} =
+               Mcp.call("memory_history", %{}, target)
+    end
+
+    test "the stored history says so when the event store is not running", %{target: target} do
+      :ok = Settings.put_snapshots_enabled(true)
+      on_exit(fn -> :ok = Settings.put_snapshots_enabled(false) end)
+
+      assert {:error, "the event store is not running"} = Mcp.call("snapshots", %{}, target)
     end
   end
 end
