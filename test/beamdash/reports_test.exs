@@ -7,7 +7,7 @@ defmodule Beamdash.ReportsTest do
     dir = Path.join(System.tmp_dir!(), "beamdash_reports_#{System.unique_integer([:positive])}")
     previous = Settings.snapshots_enabled?()
     on_exit(fn -> File.rm_rf(dir) end)
-    on_exit(fn -> :ok = Settings.put_report_clients([]) end)
+    on_exit(fn -> :ok = Settings.update_report_clients(fn _ -> [] end) end)
     on_exit(fn -> :ok = Settings.put_snapshots_enabled(previous) end)
     %{dir: dir}
   end

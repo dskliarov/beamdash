@@ -5,7 +5,7 @@ defmodule Beamdash.ReportClientsUITest do
   alias BeamdashWeb.SettingsLive
 
   setup do
-    on_exit(fn -> :ok = Beamdash.Settings.put_report_clients([]) end)
+    on_exit(fn -> :ok = Beamdash.Settings.update_report_clients(fn _ -> [] end) end)
     {:ok, socket} = SettingsLive.mount(%{}, %{}, %Phoenix.LiveView.Socket{})
     %{socket: socket}
   end

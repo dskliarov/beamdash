@@ -55,7 +55,7 @@ defmodule BeamdashWeb.ReportsPlugTest do
   defp body(conn), do: Jason.decode!(conn.resp_body)
 
   setup do
-    on_exit(fn -> :ok = Settings.put_report_clients([]) end)
+    on_exit(fn -> :ok = Settings.update_report_clients(fn _ -> [] end) end)
     :ok
   end
 

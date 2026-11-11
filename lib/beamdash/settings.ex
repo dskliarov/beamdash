@@ -446,8 +446,11 @@ defmodule Beamdash.Settings do
     end
   end
 
-  def put_report_clients(clients) when is_list(clients) do
-    save("report_clients", if(clients != [], do: clients))
+  def update_report_clients(fun) when is_function(fun, 1) do
+    locked(fn ->
+      clients = fun.(report_clients())
+      write("report_clients", if(clients != [], do: clients))
+    end)
   end
 
   @doc """
@@ -590,7 +593,9 @@ defmodule Beamdash.Settings do
   # Other keys in the file are kept; `nil` removes `key`. Written to a temp
   # file then renamed, so a crash never leaves half a file. A failure to
   # save only loses the setting at the next start, so it is not an error.
-  defp save(key, value) do
+  defp save(key, value), do: locked(fn -> write(key, value) end)
+
+  defp write(key, value) do
     with path when is_binary(path) <- path(),
          :ok <- File.mkdir_p(Path.dirname(path)),
          saved = if(value == nil, do: Map.delete(read(), key), else: Map.put(read(), key, value)),
@@ -602,4 +607,6 @@ defmodule Beamdash.Settings do
       _ -> :ok
     end
   end
+
+  defp locked(fun), do: :global.trans({{__MODULE__, :file}, self()}, fun)
 end
