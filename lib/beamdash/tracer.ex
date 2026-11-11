@@ -212,8 +212,11 @@ defmodule Beamdash.Tracer do
   end
 
   def handle_info({:erlyberly_trace_overload, queue_len}, state) do
-    # erlyberly has already stopped tracing: every trace is gone.
-    state = %{state | traces: MapSet.new(), open: %{}, limits: %{}}
+    # erlyberly has already stopped tracing: every trace is gone. Limited traces
+    # stay at 0 so calls queued behind this message are not recorded, and open
+    # calls keep their stack so their returns complete them.
+    limits = Map.new(state.limits, fn {mfa, _} -> {mfa, 0} end)
+    state = %{state | traces: MapSet.new(), limits: limits}
     notify(state, {:overload, queue_len})
     notify(state, :traces_changed)
     {:noreply, state}

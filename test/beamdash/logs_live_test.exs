@@ -113,6 +113,12 @@ defmodule Beamdash.LogsLiveTest do
     |> Enum.map(fn [_, m] -> m |> String.replace(~r/<[^>]+>/, "") |> String.trim() end)
   end
 
+  # the visible text of each coloured term block (tags removed)
+  defp pre_texts(html) do
+    Regex.scan(~r/<pre class="term-text">(.*?)<\/pre>/s, html)
+    |> Enum.map(fn [_, body] -> String.replace(body, ~r/<[^>]+>/, "") end)
+  end
+
   test "rows oldest first, repeats grouped, with counts", ctx do
     {html, _} = ctx |> mount() |> render()
 
@@ -269,7 +275,7 @@ defmodule Beamdash.LogsLiveTest do
     # a line's metadata opens on click
     {html, socket} = socket |> event("toggle_entry", %{"id" => "2", "row" => "g-1"}) |> render()
     assert html =~ ~s(class="props")
-    assert html =~ "<pre>cache miss for key user:2</pre>"
+    assert "cache miss for key user:2" in pre_texts(html)
 
     {html, _} = socket |> event("toggle_row", %{"id" => "g-1"}) |> render()
     assert row_ids(html) == ["g-1"]
@@ -281,8 +287,40 @@ defmodule Beamdash.LogsLiveTest do
     {html, _} = socket |> event("toggle_entry", %{"id" => "4", "row" => "g-4"}) |> render()
 
     assert row_ids(html) == ["g-4"]
-    assert html =~ "<pre>boom</pre>"
+    assert "boom" in pre_texts(html)
     assert html =~ ~s(class="props")
+  end
+
+  test "switching the output format re-renders an open line", ctx do
+    {_, socket} = ctx |> mount() |> render()
+    {_, socket} = socket |> event("toggle_entry", %{"id" => "4", "row" => "g-4"}) |> render()
+    {html, _} = socket |> event("term_view", %{"view" => "raw"}) |> render()
+
+    assert html =~ ~r/aria-selected="true"[^>]*phx-value-view="raw"/
+    assert html =~ "<pre>boom</pre>"
+  end
+
+  test "Tree view shows a JSON line as a tree", ctx do
+    {_, socket} = ctx |> mount() |> render()
+    message = ~S|{"event":"ready","items":[1,2]}|
+
+    socket = info(socket, {:beamdash_logs, {:entries, [new_entry(8, message)]}})
+    {_, socket} = render(socket)
+    {_, socket} = socket |> event("toggle_entry", %{"id" => "8", "row" => "g-8"}) |> render()
+    {html, _} = socket |> event("term_view", %{"view" => "tree"}) |> render()
+
+    assert html =~ ~r/aria-selected="true"[^>]*phx-value-view="tree"/
+    assert html =~ ~s(class="term-tree")
+    refute html =~ "Tree needs a JSON message"
+  end
+
+  test "Tree view on a plain-text line falls back to Pretty with a note", ctx do
+    {_, socket} = ctx |> mount() |> render()
+    {_, socket} = socket |> event("toggle_entry", %{"id" => "4", "row" => "g-4"}) |> render()
+    {html, _} = socket |> event("term_view", %{"view" => "tree"}) |> render()
+
+    assert html =~ "Tree needs a JSON message. Showing Pretty."
+    assert "boom" in pre_texts(html)
   end
 
   test "JSON log messages display escaped keys and values with the original available", ctx do
@@ -479,7 +517,7 @@ defmodule Beamdash.LogsLiveTest do
     {_, socket} = render(socket)
     {html, _} = socket |> event("toggle_entry", %{"id" => "13", "row" => "g-13"}) |> render()
 
-    assert html =~ "got {ok, [1, 2]}"
+    assert "got {ok, [1, 2]}" in pre_texts(html)
   end
 
   test "a nested JSON message keeps the line's own metadata", ctx do
@@ -564,7 +602,7 @@ defmodule Beamdash.LogsLiveTest do
         socket |> event("toggle_entry", %{"id" => "#{id}", "row" => "g-#{id}"}) |> render()
 
       refute html =~ ~s(class="logs-json"), message
-      assert html =~ "<pre>", message
+      assert html =~ ~s(<pre class="term-text">), message
     end
   end
 

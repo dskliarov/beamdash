@@ -98,6 +98,25 @@ defmodule Beamdash.TargetTest do
     refute_received {:beamdash_target, _}
   end
 
+  test "a saved Kubernetes connection whose pod is gone is reported as such", ctx do
+    fake_kubectl("exit 1\n")
+
+    entry = %{
+      "kind" => "kubectl",
+      "node" => "my_app@my-pod",
+      "cookie" => "secret",
+      "kubeconfig" => nil,
+      "namespace" => "prod",
+      "pod" => "my-pod",
+      "container" => "",
+      "binary" => "/opt/my_app/bin/my_app"
+    }
+
+    caller = Task.async(fn -> Target.connect_saved_kubectl(entry, ctx.server) end)
+    assert {:error, {:saved_pod_unavailable, _}} = Task.await(caller, 10_000)
+    assert %{status: :disconnected} = Target.status(ctx.server)
+  end
+
   test "disconnect during a kubectl connect clears its progress at once", ctx do
     fake_kubectl("sleep 2\nexit 1\n")
     :ok = Target.subscribe_connecting()

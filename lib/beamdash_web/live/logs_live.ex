@@ -50,6 +50,7 @@ defmodule BeamdashWeb.LogsLive do
 
   alias Beamdash.{Format, Logs, Target}
   alias Beamdash.Logs.{Cascade, Filter, Group, Pretty, Tree}
+  alias BeamdashWeb.TermView
 
   @max_rows 1_000
   @max_entries 2_000
@@ -108,6 +109,7 @@ defmodule BeamdashWeb.LogsLive do
         tree: nil,
         tree_open: nil,
         tree_detail: MapSet.new(),
+        term_view: :pretty,
         tree_group_keys: [],
         tree_checked: [],
         tree_parent: [],
@@ -195,6 +197,9 @@ defmodule BeamdashWeb.LogsLive do
   defp event("tree_toggle", %{"id" => id}, socket) do
     {:noreply, assign(socket, tree_open: toggle(tree_open(socket.assigns), id))}
   end
+
+  defp event("term_view", %{"view" => view}, socket),
+    do: {:noreply, socket |> assign(term_view: TermView.parse_view(view)) |> reset_rows()}
 
   # One detail row is open at a time: the checks and parents below belong to it.
   defp event("tree_detail", %{"id" => id}, socket) do
@@ -1361,6 +1366,7 @@ defmodule BeamdashWeb.LogsLive do
         rows={@streams.rows}
         filter={@filter}
         node={if @status == :connected, do: @node}
+        term_view={@term_view}
       />
 
       <.crashes :if={@tab == :crashes} incidents={@cascades} />

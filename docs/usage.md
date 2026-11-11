@@ -95,7 +95,7 @@ The demo consumes the marker, crashes `demo_shop`, and its supervisor restarts t
 | Tracing | Trace | Function arguments, results and duration | `g t` |
 | Tracing | Seq | Messages caused by traced calls | `g q` |
 | Tracing | Profile | Function time, call counts or allocations | `g f` |
-| Settings | ⚙ | Saved connection, auto-reconnect, kubeconfig directory and optional Jev switch | `g ,` |
+| Settings | ⚙ | Saved connections, auto-reconnect, kubeconfig directory and optional Jev switch | `g ,` |
 
 Press `g`, then the second key; shortcuts do not fire while typing in a field. **?** lists them. Tabs that do not fit are under **More ▾**. Use **erl / ex** to change the displayed syntax for terms, functions and PIDs.
 

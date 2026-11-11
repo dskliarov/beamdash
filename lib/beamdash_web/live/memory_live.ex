@@ -7,7 +7,7 @@ defmodule BeamdashWeb.MemoryLive do
   """
   use Phoenix.LiveView
 
-  alias Beamdash.{Format, Memory, MemoryAdvisor, Target}
+  alias Beamdash.{Format, Memory, MemoryAdvisor, MemoryHistory, Settings, Store, Target}
 
   import BeamdashWeb.HelpTip, only: [tip: 1]
 
@@ -22,6 +22,9 @@ defmodule BeamdashWeb.MemoryLive do
   @browse_ms 2_000
   @example_rows 5
   @trend_windows [30, 60, 120, 300, 600]
+  @stored_windows [{900, "15 min"}, {3_600, "1 h"}, {21_600, "6 h"}, {86_400, "24 h"}]
+  @stored_points 1_000
+  @stored_rows 200
 
   # The parts erlang:memory() splits `total` into, in this (fixed) order;
   # each has its own colour (see app.css, --mem-*).
@@ -55,6 +58,9 @@ defmodule BeamdashWeb.MemoryLive do
         trend_history: [],
         visible_trends: MapSet.new(Keyword.keys(@parts)),
         trend_window: 300,
+        # stored samples, from Beamdash.Store: nil until the History page is opened
+        stored_window: 3_600,
+        stored: nil,
         recon: nil,
         error: nil,
         page: :leak,
@@ -226,6 +232,30 @@ defmodule BeamdashWeb.MemoryLive do
   defp load_tab(%{assigns: %{tab: :ets}} = socket), do: request_ets(socket)
   defp load_tab(%{assigns: %{tab: nil}} = socket), do: socket
   defp load_tab(socket), do: request_top(socket)
+
+  defp load_stored(%{assigns: %{page: :history}} = socket) do
+    %{node: node, stored_window: window} = socket.assigns
+
+    if Settings.snapshots_enabled?() and Process.whereis(Store) != nil do
+      from = System.system_time(:millisecond) - window * 1_000
+      rows = Store.query(:memory, node: to_string(node), from: from, limit: @stored_points)
+      changes = rows |> Enum.reverse() |> MemoryHistory.changes()
+
+      assign(socket,
+        stored: %{
+          enabled: true,
+          from: from,
+          points: changes,
+          rows: changes |> Enum.reverse() |> Enum.take(@stored_rows),
+          summary: MemoryHistory.summary(changes)
+        }
+      )
+    else
+      assign(socket, stored: %{enabled: false, rows: [], summary: nil})
+    end
+  end
+
+  defp load_stored(socket), do: socket
 
   # the node's answer comes back through handle_async/3
   defp action(socket, kind, run) do
@@ -521,8 +551,14 @@ defmodule BeamdashWeb.MemoryLive do
   ## Events
 
   @impl true
-  def handle_event("page", %{"page" => page}, socket) when page in ~w(forecast leak),
-    do: {:noreply, assign(socket, page: String.to_existing_atom(page))}
+  def handle_event("page", %{"page" => page}, socket) when page in ~w(forecast leak history) do
+    {:noreply, socket |> assign(page: String.to_existing_atom(page)) |> load_stored()}
+  end
+
+  def handle_event("stored_window", %{"window" => window}, socket)
+      when window in ~w(900 3600 21600 86400) do
+    {:noreply, socket |> assign(stored_window: String.to_integer(window)) |> load_stored()}
+  end
 
   def handle_event("tab", %{"tab" => tab}, socket) when tab in ~w(processes binary ets) do
     {:noreply,
@@ -869,6 +905,7 @@ defmodule BeamdashWeb.MemoryLive do
 
   def handle_info(:ets_tick, socket) do
     Process.send_after(self(), :ets_tick, @ets_refresh_ms)
+    socket = load_stored(socket)
 
     {:noreply,
      if(socket.assigns.status == :connected and socket.assigns.tab == :ets,
@@ -908,6 +945,7 @@ defmodule BeamdashWeb.MemoryLive do
       assign(assigns,
         parts_list: @parts,
         attrs: @attrs,
+        stored_windows: @stored_windows,
         parts: if(assigns.snap, do: parts(assigns.snap.memory), else: []),
         working: working(assigns)
       )
@@ -1073,7 +1111,13 @@ defmodule BeamdashWeb.MemoryLive do
 
         <nav class="seg mem-pages" role="tablist" aria-label="Memory pages">
           <button
-            :for={{page, label} <- [leak: "Look for a leak", forecast: "Forecast"]}
+            :for={
+              {page, label} <- [
+                leak: "Look for a leak",
+                forecast: "Forecast",
+                history: "History"
+              ]
+            }
             type="button"
             role="tab"
             aria-selected={to_string(@page == page)}
@@ -1087,6 +1131,81 @@ defmodule BeamdashWeb.MemoryLive do
 
         <div :if={@page == :forecast}>
           <.forecast forecast={@forecast} />
+        </div>
+
+        <div :if={@page == :history} class="mem-history">
+          <h2 class="mem-h2">History</h2>
+          <p class="guide">
+            Each sample the sampler stored: total memory, atoms and ETS tables, and the change since
+            the sample before it. Tables are the largest ones in each sample; the last column names
+            those that grew the most since the sample before.
+          </p>
+
+          <nav class="seg" role="tablist" aria-label="History window">
+            <button
+              :for={{seconds, label} <- @stored_windows}
+              type="button"
+              role="tab"
+              aria-selected={to_string(@stored_window == seconds)}
+              class={["seg-btn", @stored_window == seconds && "active"]}
+              phx-click="stored_window"
+              phx-value-window={seconds}
+            >
+              {label}
+            </button>
+          </nav>
+
+          <p :if={@stored && !@stored.enabled} class="muted small">
+            Memory history is off. Switch on snapshot collection in Settings to keep samples.
+          </p>
+          <p :if={@stored && @stored.enabled && is_nil(@stored.summary)} class="muted small">
+            No samples in this window yet.
+          </p>
+
+          <div :if={@stored && @stored.summary}>
+            <p class="small">
+              Total memory {Format.bytes(@stored.summary.from)} → {Format.bytes(@stored.summary.to)} ({growth_text(
+                @stored.summary.to - @stored.summary.from
+              )}), peak {Format.bytes(@stored.summary.peak)} · {Format.number(@stored.summary.samples)} samples
+            </p>
+
+            <.stored_trend points={@stored.points} from={@stored.from} window={@stored_window} />
+
+            <table class="mem-table">
+              <thead>
+                <tr>
+                  <th>Sampled (UTC)</th>
+                  <th class="num">Memory</th>
+                  <th class="num">Change</th>
+                  <th class="num">Atoms</th>
+                  <th class="num">ETS tables</th>
+                  <th>Grew most</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr :for={row <- @stored.rows}>
+                  <td class="mono small">{clock(row.at)}</td>
+                  <td class="num">{Format.bytes(row.memory)}</td>
+                  <td class={["num", growth_class(row.memory_delta)]}>
+                    {growth_text(row.memory_delta)}
+                  </td>
+                  <td class="num">
+                    {Format.number(row.atoms)}
+                    <span class="muted small">{count_text(row.atoms_delta)}</span>
+                  </td>
+                  <td class="num">
+                    {Format.number(row.ets)}
+                    <span class="muted small">{count_text(row.ets_delta)}</span>
+                  </td>
+                  <td class="small">
+                    <div :for={{name, grew} <- row.growing} class="mono">
+                      {name} {growth_text(grew)}
+                    </div>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
         </div>
 
         <div :if={@page == :leak}>
@@ -1352,6 +1471,60 @@ defmodule BeamdashWeb.MemoryLive do
       </svg>
       <p :if={@series == []} class="muted small">Select a memory kind to show its trend.</p>
       <p :if={@series != [] and @history == []} class="muted small">Collecting memory history…</p>
+      <div class="memory-trend-time muted small"><span>−{@window_label}</span><span>Now</span></div>
+    </div>
+    """
+  end
+
+  attr :points, :list, required: true
+  attr :from, :integer, required: true
+  attr :window, :integer, required: true
+
+  defp stored_trend(assigns) do
+    {min_value, max_value} = trend_bounds(Enum.map(assigns.points, & &1.memory))
+    scale = max(max_value - min_value, 1)
+    span = assigns.window * 1_000
+
+    coords =
+      for point <- assigns.points do
+        x = (point.at - assigns.from) * 600 / span
+        y = 150 - (point.memory - min_value) / scale * 145
+        {Float.round(x * 1.0, 1), Float.round(y * 1.0, 1)}
+      end
+
+    {_seconds, label} = List.keyfind(@stored_windows, assigns.window, 0)
+
+    assigns =
+      assign(assigns,
+        polyline: Enum.map_join(coords, " ", fn {x, y} -> "#{x},#{y}" end),
+        last: List.last(coords),
+        min_value: min_value,
+        max_value: max_value,
+        window_label: label
+      )
+
+    ~H"""
+    <div class="memory-trend-chart" id="stored-memory-trend">
+      <div class="memory-trend-axis" aria-hidden="true">
+        <span>{Format.bytes(@max_value)}</span><span>{Format.bytes(@min_value)}</span>
+      </div>
+      <svg
+        viewBox="0 0 600 155"
+        preserveAspectRatio="none"
+        role="img"
+        aria-label={"Stored total memory, last #{@window_label}"}
+      >
+        <line :for={y <- [5, 77.5, 150]} x1="0" x2="600" y1={y} y2={y} class="memory-trend-grid" />
+        <polyline points={@polyline} class="memory-trend-line" vector-effect="non-scaling-stroke" />
+        <circle
+          :if={@last}
+          cx={elem(@last, 0)}
+          cy={elem(@last, 1)}
+          r="3"
+          class="memory-trend-dot"
+          vector-effect="non-scaling-stroke"
+        />
+      </svg>
       <div class="memory-trend-time muted small"><span>−{@window_label}</span><span>Now</span></div>
     </div>
     """
@@ -1902,6 +2075,13 @@ defmodule BeamdashWeb.MemoryLive do
     do:
       "Memory by kind: " <>
         Enum.map_join(parts, ", ", fn {_, l, b, p} -> "#{l} #{Format.bytes(b)} (#{p}%)" end)
+
+  defp clock(at), do: at |> DateTime.from_unix!(:millisecond) |> Calendar.strftime("%H:%M:%S")
+
+  defp count_text(nil), do: "–"
+  defp count_text(0), do: "±0"
+  defp count_text(n) when n > 0, do: "+#{n}"
+  defp count_text(n), do: "#{n}"
 
   # Change over the history window (up to 5 minutes).
   defp growth([], _key), do: nil

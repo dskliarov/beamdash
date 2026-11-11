@@ -31,6 +31,9 @@ if config_env() == :test do
   config :beamdash, BeamdashWeb.Endpoint, server: false
   config :logger, level: :warning
 
+  # the event store is started by its tests with a temporary file
+  config :beamdash, :store_file, false
+
   # tests choose the local model themselves (Beamdash.Test.Fixture.put_jev_config/1)
   config :beamdash, Beamdash.Jev, nx: false
 

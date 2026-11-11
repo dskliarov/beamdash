@@ -248,8 +248,15 @@ defmodule Beamdash.ConnectionBarTest do
     assert mounted_bar().assigns.conn.method == :direct
   end
 
-  test "the last node and cookie that connected are offered again, also after a restart",
-       %{node: node} do
+  defp on_saved_tab(socket) do
+    Phoenix.Component.assign(
+      socket,
+      :conn,
+      Map.merge(socket.assigns.conn, %{saved: LastConnection.list(), method: :saved})
+    )
+  end
+
+  test "a connection that worked is offered again, also after a restart", %{node: node} do
     :ok = LastConnection.forget()
     :ok = Connection.forget_typed()
     path = LastConnection.path()
@@ -262,7 +269,9 @@ defmodule Beamdash.ConnectionBarTest do
         socket()
       )
 
-    assert LastConnection.get() == %{node: Atom.to_string(node), cookie: Fixture.cookie()}
+    assert [%{"kind" => "node", "node" => node_text, "cookie" => cookie}] = LastConnection.list()
+    assert node_text == Atom.to_string(node)
+    assert cookie == Fixture.cookie()
     # owner-only: the cookie gives full control of the node
     assert File.stat!(path).mode |> Bitwise.band(0o777) == 0o600
     assert File.stat!(Path.dirname(path)).mode |> Bitwise.band(0o777) == 0o700
@@ -274,6 +283,7 @@ defmodule Beamdash.ConnectionBarTest do
     assert s.assigns.conn.node_input == Atom.to_string(node)
     assert s.assigns.conn.cookie_input == Fixture.cookie()
     html = bar(s)
+    assert bar(on_saved_tab(s)) =~ ~s(id="saved-connections")
     assert html =~ ~s(value="#{node}")
     assert html =~ ~s(value="#{Fixture.cookie()}")
 
@@ -283,14 +293,126 @@ defmodule Beamdash.ConnectionBarTest do
 
     assert failed.assigns.conn.cookie_input == "x"
     :ok = LastConnection.reload()
-    assert LastConnection.get().node == Atom.to_string(node)
+    assert [%{"node" => saved_node}] = LastConnection.list()
+    assert saved_node == Atom.to_string(node)
+  end
 
-    # Forget in Settings empties the saved values and this page's form
+  test "a saved connection is connected from the bar with one click", %{node: node} do
+    :ok = LastConnection.forget()
+
+    :ok =
+      LastConnection.put(%{
+        "kind" => "node",
+        "node" => Atom.to_string(node),
+        "cookie" => Fixture.cookie()
+      })
+
+    [%{"id" => id}] = LastConnection.list()
+    :ok = Target.disconnect()
+
+    {:halt, _} = Connection.handle_event("connect_saved", %{"id" => id}, on_saved_tab(socket()))
+
+    assert %{status: :connected, node: ^node} = Target.status()
+  end
+
+  test "a saved connection is deleted from the bar", %{node: node} do
+    :ok = LastConnection.forget()
+    :ok = LastConnection.put(%{"kind" => "node", "node" => Atom.to_string(node), "cookie" => ""})
+    [%{"id" => id}] = LastConnection.list()
+    s = on_saved_tab(socket())
+    assert bar(s) =~ ~s[aria-label="Delete #{node} (direct)"]
+    assert bar(s) =~ ~s(<span class="saved-name">#{node}</span>)
+    assert bar(s) =~ ~s(class="icon-btn delete-saved")
+
+    {:halt, after_delete} = Connection.handle_event("forget_saved", %{"id" => id}, s)
+
+    assert after_delete.assigns.conn.saved == []
+    assert LastConnection.list() == []
+    assert bar(after_delete) =~ "No saved connections yet"
+  end
+
+  test "a saved Kubernetes connection shows its pod with the cluster, namespace and container" do
+    :ok = LastConnection.forget()
+
+    :ok =
+      LastConnection.put(%{
+        "kind" => "kubectl",
+        "node" => "app@app-1",
+        "cookie" => "",
+        "kubeconfig" => "/kube/prod.yaml",
+        "namespace" => "shop",
+        "pod" => "app-1",
+        "container" => "app",
+        "binary" => ""
+      })
+
+    html = bar(on_saved_tab(socket()))
+    assert html =~ ~s(<span class="saved-name">app-1</span>)
+    assert html =~ ~s(<span class="saved-meta">prod · shop · app</span>)
+    assert html =~ ~s[aria-label="Delete app-1 (prod · shop · app)"]
+  end
+
+  test "the Saved tab is chosen like Direct and Kubernetes, and kept for the next page", %{
+    node: node
+  } do
+    :ok = LastConnection.forget()
+    :ok = LastConnection.put(%{"kind" => "node", "node" => Atom.to_string(node), "cookie" => ""})
+    on_exit(fn -> Settings.put_connection_method(:direct) end)
+
+    {:halt, s} = Connection.handle_event("set_conn_method", %{"method" => "saved"}, socket())
+    assert s.assigns.conn.method == :saved
+    assert Settings.connection_method() == :saved
+    assert bar(on_saved_tab(s)) =~ ~s(id="saved-connections")
+    refute bar(s) =~ ~s(id="connect-form")
+
+    assert mounted_bar().assigns.conn.method == :saved
+  end
+
+  test "saving again moves a connection to the front, and only ten are kept" do
+    :ok = LastConnection.forget()
+
+    for i <- 1..12 do
+      :ok = LastConnection.put(%{"kind" => "node", "node" => "app#{i}@host", "cookie" => ""})
+    end
+
+    assert length(LastConnection.list()) == 10
+    assert hd(LastConnection.list())["node"] == "app12@host"
+
+    :ok = LastConnection.put(%{"kind" => "node", "node" => "app5@host", "cookie" => "new"})
+
+    assert length(LastConnection.list()) == 10
+    assert %{"node" => "app5@host", "cookie" => "new"} = hd(LastConnection.list())
+    assert Enum.count(LastConnection.list(), &(&1["node"] == "app5@host")) == 1
+  end
+
+  test "a file from before the list, with one node and cookie, is read as one connection" do
+    path = LastConnection.path()
+    File.mkdir_p!(Path.dirname(path))
+    File.write!(path, Jason.encode!(%{"node" => "old@host", "cookie" => "old"}))
+    :ok = LastConnection.reload()
+
+    assert [%{"kind" => "node", "node" => "old@host", "cookie" => "old"}] =
+             LastConnection.list()
+  end
+
+  test "Forget all in Settings empties the saved connections and this page's form", %{
+    node: node
+  } do
+    :ok = LastConnection.forget()
+
+    :ok =
+      LastConnection.put(%{
+        "kind" => "node",
+        "node" => Atom.to_string(node),
+        "cookie" => Fixture.cookie()
+      })
+
+    path = LastConnection.path()
+
     view = BeamdashWeb.SettingsLive
     {:ok, settings} = view.mount(%{}, %{}, socket())
     settings = Phoenix.Component.assign(settings, syntax: :erlang)
     html = view.render(settings.assigns) |> rendered_to_string()
-    assert html =~ "cookie saved"
     assert html =~ ~s(id="forget-connection")
     refute html =~ Fixture.cookie()
 
@@ -300,7 +422,7 @@ defmodule Beamdash.ConnectionBarTest do
     refute File.exists?(path)
     assert view.render(settings.assigns) |> rendered_to_string() =~ "Nothing saved yet"
     :ok = LastConnection.reload()
-    assert LastConnection.get() == %{node: "", cookie: ""}
+    assert LastConnection.list() == []
   end
 
   test "a connection saved before the renames to beamdash is still found" do
@@ -314,6 +436,7 @@ defmodule Beamdash.ConnectionBarTest do
     previous = Application.get_env(:beamdash, :last_connection_file)
     on_exit(fn -> Application.put_env(:beamdash, :last_connection_file, previous) end)
     :ok = LastConnection.forget()
+    file = LastConnection.path()
     Application.put_env(:beamdash, :last_connection_file, false)
     :ok = LastConnection.reload()
 
@@ -324,9 +447,9 @@ defmodule Beamdash.ConnectionBarTest do
         socket()
       )
 
-    refute File.exists?(previous)
+    refute File.exists?(file)
     :ok = LastConnection.reload()
-    assert LastConnection.get().node == ""
+    assert LastConnection.list() == []
   end
 
   test "the kubectl method is labelled Kubernetes when kubectl was found at startup" do
@@ -758,6 +881,99 @@ defmodule Beamdash.ConnectionBarTest do
 
     :ok = Target.disconnect()
     assert_receive {:beamdash_connecting, nil}, 10_000
+  end
+
+  test "List pods fills the pod dropdown in the bar" do
+    dir = Path.join(System.tmp_dir!(), "beamdash-list-pods-#{System.unique_integer([:positive])}")
+    File.mkdir_p!(dir)
+
+    # the release binaries are read with kubectl exec, which can take a while
+    File.write!(Path.join(dir, "kubectl"), """
+    #!/bin/sh
+    case " $* " in
+      *" get pods "*) printf 'pod-a pod-b' ;;
+      *" get pod "*) printf 'app' ;;
+      *" exec "*) sleep 2; printf '/app/bin/one' ;;
+      *) printf '' ;;
+    esac
+    """)
+
+    File.chmod!(Path.join(dir, "kubectl"), 0o700)
+    previous_path = System.get_env("PATH")
+    System.put_env("PATH", dir <> ":" <> (previous_path || ""))
+
+    on_exit(fn ->
+      if previous_path, do: System.put_env("PATH", previous_path), else: System.delete_env("PATH")
+      File.rm_rf!(dir)
+    end)
+
+    path = empty_kubeconfig()
+    s = on_cluster(path, %{method: :kubectl})
+
+    {:halt, s} = Connection.handle_event("list_kube_pods", %{"namespace" => "shop"}, s)
+
+    assert_receive {:beamdash_kube_event, ref, {:pods, pods} = event}, 10_000
+    {:halt, s} = Connection.handle_info({:beamdash_kube_event, ref, event}, s)
+    assert pods == ["pod-a", "pod-b"]
+    assert s.assigns.conn.kube_pods == ["pod-a", "pod-b"]
+    assert s.assigns.conn.kube_pods_listing
+    assert bar(s) =~ ~s(id="select-kube-pod-form")
+
+    assert_receive {:beamdash_kube_listed, ^ref, ^path, "shop", result}, 10_000
+    {:halt, s} = Connection.handle_info({:beamdash_kube_listed, ref, path, "shop", result}, s)
+    refute s.assigns.conn.kube_pods_listing
+    assert s.assigns.conn.kube_pod == "pod-a"
+  end
+
+  test "the List pods form on a real page fills the pod dropdown" do
+    dir = Path.join(System.tmp_dir!(), "beamdash-page-pods-#{System.unique_integer([:positive])}")
+    File.mkdir_p!(dir)
+
+    File.write!(Path.join(dir, "kubectl"), """
+    #!/bin/sh
+    case " $* " in
+      *" get pods "*) printf 'pod-a pod-b' ;;
+      *" get pod "*) printf 'app' ;;
+      *" exec "*) printf '/app/bin/one' ;;
+      *) printf 'default' ;;
+    esac
+    """)
+
+    File.chmod!(Path.join(dir, "kubectl"), 0o700)
+    previous_path = System.get_env("PATH")
+    previous_settings = Application.get_env(:beamdash, :settings_file)
+    System.put_env("PATH", dir <> ":" <> (previous_path || ""))
+    Application.put_env(:beamdash, :settings_file, Path.join(dir, "settings.json"))
+    Settings.reload()
+    :ok = Settings.put_connection_method(:kubectl)
+    :ok = Settings.put_kubeconfig_dir(dir)
+    path = Path.join(dir, "prod.yaml")
+    File.write!(path, "")
+    :ok = Settings.put_kube_selection(%{"cluster" => path})
+    Settings.reload()
+
+    on_exit(fn ->
+      if previous_path, do: System.put_env("PATH", previous_path), else: System.delete_env("PATH")
+      Application.put_env(:beamdash, :settings_file, previous_settings)
+      Settings.reload()
+      File.rm_rf!(dir)
+    end)
+
+    socket = mounted_bar()
+
+    {:halt, s} =
+      Phoenix.LiveView.Lifecycle.handle_event("list_kube_pods", %{"namespace" => "shop"}, socket)
+
+    assert s.assigns.conn.kube_pods_listing
+
+    assert_receive {:beamdash_kube_event, ref, {:pods, _}} = event, 10_000
+    {:halt, s} = Phoenix.LiveView.Lifecycle.handle_info(event, s)
+    assert s.assigns.conn.kube_pods == ["pod-a", "pod-b"]
+
+    assert_receive {:beamdash_kube_listed, ^ref, _, "shop", _} = listed, 10_000
+    {:halt, s} = Phoenix.LiveView.Lifecycle.handle_info(listed, s)
+    assert s.assigns.conn.kube_pods == ["pod-a", "pod-b"]
+    assert bar(s) =~ ~s(id="select-kube-pod-form")
   end
 
   test "switching to Direct clears a kubectl listing's progress line" do

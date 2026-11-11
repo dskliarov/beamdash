@@ -7,7 +7,8 @@ defmodule Beamdash.Settings do
   `{:beamdash_kubeconfig_dir, dir}`.
 
   The syntax and Jev switch last for this VM's lifetime. The decision
-  backend (Jev or Kev), the kubeconfig directory, auto-reconnect, local
+  backend (Jev or Kev), the kubeconfig directory, auto-reconnect, snapshot
+  collection, local
   source folders and plugins' own settings are also saved, as JSON
   in `<user config dir>/beamdash/settings.json`
   (next to `Beamdash.LastConnection`'s file), so it is still chosen after a
@@ -26,11 +27,15 @@ defmodule Beamdash.Settings do
   @trace_timeout_key {__MODULE__, :trace_timeout}
   @default_trace_timeout 30_000
   @trace_timeout_range 1_000..120_000
+  @trace_call_limit_key {__MODULE__, :trace_call_limit}
+  @default_trace_call_limit 5
+  @trace_call_limit_range 1..1_000_000
   @kube_key {__MODULE__, :kubeconfig_dir}
   @notebooks_key {__MODULE__, :notebooks_dir}
   @kube_selection_key {__MODULE__, :kube_selection}
   @connection_method_key {__MODULE__, :connection_method}
   @reconnect_key {__MODULE__, :auto_reconnect}
+  @snapshots_key {__MODULE__, :snapshots_enabled}
   @source_dirs_key {__MODULE__, :source_dirs}
   @ai_key {__MODULE__, :ai_provider}
   @syntaxes [:erlang, :elixir]
@@ -71,7 +76,13 @@ defmodule Beamdash.Settings do
   def connection_method do
     case :persistent_term.get(@connection_method_key, :unset) do
       :unset ->
-        method = if read()["connection_method"] == "kubectl", do: :kubectl, else: :direct
+        method =
+          case read()["connection_method"] do
+            "kubectl" -> :kubectl
+            "saved" -> :saved
+            _ -> :direct
+          end
+
         :persistent_term.put(@connection_method_key, method)
         method
 
@@ -80,7 +91,7 @@ defmodule Beamdash.Settings do
     end
   end
 
-  def put_connection_method(method) when method in [:direct, :kubectl] do
+  def put_connection_method(method) when method in [:direct, :kubectl, :saved] do
     :persistent_term.put(@connection_method_key, method)
     save("connection_method", Atom.to_string(method))
   end
@@ -284,6 +295,28 @@ defmodule Beamdash.Settings do
   end
 
   @doc """
+  How many calls a new trace records before it stops by itself, unless the
+  trace tab's own limit field says otherwise.
+  """
+  def trace_call_limit do
+    case :persistent_term.get(@trace_call_limit_key, :unset) do
+      :unset ->
+        n = saved_trace_call_limit()
+        :persistent_term.put(@trace_call_limit_key, n)
+        n
+
+      n ->
+        n
+    end
+  end
+
+  def put_trace_call_limit(n) when is_integer(n) and n in @trace_call_limit_range do
+    :persistent_term.put(@trace_call_limit_key, n)
+    save("trace_call_limit", if(n == @default_trace_call_limit, do: nil, else: n))
+    :ok
+  end
+
+  @doc """
   Whether beamdash's local model (Nx) was switched on (`true`) or off
   (`false`) in Settings, or `nil` when never switched: `NX_MODEL` then
   decides (see `Beamdash.Jev.configured?/1`). Saved for the next start.
@@ -379,6 +412,48 @@ defmodule Beamdash.Settings do
   end
 
   @doc """
+  Whether snapshot collection is on: `Beamdash.Sampler` stores process
+  snapshots and anomaly history, and the Snapshots tab and the History tab
+  are shown. Off until switched on in Settings; saved for the next start.
+  """
+  def snapshots_enabled? do
+    case :persistent_term.get(@snapshots_key, nil) do
+      nil ->
+        enabled = read()["snapshots_enabled"] == true
+        :persistent_term.put(@snapshots_key, enabled)
+        enabled
+
+      enabled ->
+        enabled
+    end
+  end
+
+  def put_snapshots_enabled(enabled) when is_boolean(enabled) do
+    :persistent_term.put(@snapshots_key, enabled)
+    save("snapshots_enabled", if(enabled, do: true))
+    :ok
+  end
+
+  @doc """
+  The clients allowed to publish reports (see `Beamdash.Reports`): maps with
+  `"id"`, `"name"`, `"hash"` (the SHA-256 of the client's token, never the
+  token itself) and `"created_at"`. Read from the file each time.
+  """
+  def report_clients do
+    case read()["report_clients"] do
+      clients when is_list(clients) -> Enum.filter(clients, &is_map/1)
+      _ -> []
+    end
+  end
+
+  def update_report_clients(fun) when is_function(fun, 1) do
+    locked(fn ->
+      clients = fun.(report_clients())
+      write("report_clients", if(clients != [], do: clients))
+    end)
+  end
+
+  @doc """
   Local folders holding applications' source code, `%{app_name => dir}`, for
   modules whose source isn't on the node (a release in a Kubernetes pod,
   say; see `Beamdash.LocalSource`). Saved for the next start.
@@ -467,10 +542,12 @@ defmodule Beamdash.Settings do
     :persistent_term.erase(@kube_selection_key)
     :persistent_term.erase(@connection_method_key)
     :persistent_term.erase(@reconnect_key)
+    :persistent_term.erase(@snapshots_key)
     :persistent_term.erase(@source_dirs_key)
     :persistent_term.erase(@ai_key)
     :persistent_term.erase(@rpc_timeout_key)
     :persistent_term.erase(@trace_timeout_key)
+    :persistent_term.erase(@trace_call_limit_key)
     :ok
   end
 
@@ -485,6 +562,13 @@ defmodule Beamdash.Settings do
     case read()["trace_timeout"] do
       ms when is_integer(ms) and ms in @trace_timeout_range -> ms
       _ -> @default_trace_timeout
+    end
+  end
+
+  defp saved_trace_call_limit do
+    case read()["trace_call_limit"] do
+      n when is_integer(n) and n in @trace_call_limit_range -> n
+      _ -> @default_trace_call_limit
     end
   end
 
@@ -509,7 +593,9 @@ defmodule Beamdash.Settings do
   # Other keys in the file are kept; `nil` removes `key`. Written to a temp
   # file then renamed, so a crash never leaves half a file. A failure to
   # save only loses the setting at the next start, so it is not an error.
-  defp save(key, value) do
+  defp save(key, value), do: locked(fn -> write(key, value) end)
+
+  defp write(key, value) do
     with path when is_binary(path) <- path(),
          :ok <- File.mkdir_p(Path.dirname(path)),
          saved = if(value == nil, do: Map.delete(read(), key), else: Map.put(read(), key, value)),
@@ -521,4 +607,6 @@ defmodule Beamdash.Settings do
       _ -> :ok
     end
   end
+
+  defp locked(fun), do: :global.trans({{__MODULE__, :file}, self()}, fun)
 end

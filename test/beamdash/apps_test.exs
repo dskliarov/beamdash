@@ -30,6 +30,29 @@ defmodule Beamdash.AppsTest do
     assert %{pid: ^b, children: [], also: [^a]} = nb
   end
 
+  test "tree nodes carry each process's mailbox and reductions" do
+    [m, a] = for _ <- 1..2, do: spawn(fn -> :ok end)
+
+    tree =
+      Apps.build(%{
+        root: m,
+        procs: [
+          %{pid: m, name: :undefined, label: :undefined, mailbox: 0, reductions: 7},
+          %{pid: a, name: :undefined, label: :undefined, mailbox: 4, reductions: 9}
+        ],
+        links: [{m, a}],
+        extra: []
+      })
+
+    assert %{
+             pid: ^m,
+             mailbox: 0,
+             reductions: 7,
+             children: [%{pid: ^a, mailbox: 4, reductions: 9}]
+           } =
+             tree.root
+  end
+
   test "the chart is laid out as Observer lays it out" do
     [m, sup, a, b] = for _ <- 1..4, do: spawn(fn -> :ok end)
     leaf = fn pid, name -> %{pid: pid, name: name, label: nil, children: [], also: []} end
@@ -89,6 +112,7 @@ defmodule Beamdash.AppsTest do
 
       assert {:ok, %{root: root, count: count}} = Apps.tree(node, :kernel)
       assert root.pid == kernel.master
+      assert is_integer(root.mailbox) and is_integer(root.reductions)
       assert count > 5
       names = flatten(root) |> Enum.map(& &1.name)
       assert :kernel_sup in names

@@ -29,11 +29,13 @@ defmodule BeamdashWeb.AppChart do
 
   attr :selected, :any, default: nil
   attr :syntax, :atom, required: true
+  attr :metric, :atom, default: :structure, values: [:structure, :reductions, :mailbox]
   attr :label, :string, default: "Application process tree"
   attr :class, :string, default: nil
 
   def chart(assigns) do
-    assigns = assign(assigns, layout: layout(assigns.root, &text(&1, assigns.syntax)))
+    root = by_load(assigns.root, assigns.metric)
+    assigns = assign(assigns, layout: layout(root, &label(&1, assigns.syntax, assigns.metric)))
 
     ~H"""
     <div class={["app-chart-scroll", @class]}>
@@ -78,9 +80,12 @@ defmodule BeamdashWeb.AppChart do
   attr :root, :map, required: true, doc: "Beamdash.Apps tree node"
   attr :selected, :any, default: nil
   attr :syntax, :atom, required: true
+  attr :metric, :atom, default: :structure, values: [:structure, :reductions, :mailbox]
   attr :id, :string, required: true
 
   def outline(assigns) do
+    assigns = assign(assigns, root: by_load(assigns.root, assigns.metric))
+
     ~H"""
     <div class="app-outline" id={@id}>
       <div class="tree-actions">
@@ -100,7 +105,7 @@ defmodule BeamdashWeb.AppChart do
         </button>
       </div>
       <ul class="term-items">
-        <.outline_node node={@root} depth={0} selected={@selected} syntax={@syntax} />
+        <.outline_node node={@root} depth={0} selected={@selected} syntax={@syntax} metric={@metric} />
       </ul>
     </div>
     """
@@ -110,10 +115,11 @@ defmodule BeamdashWeb.AppChart do
   attr :depth, :integer, required: true
   attr :selected, :any, default: nil
   attr :syntax, :atom, required: true
+  attr :metric, :atom, required: true
 
   defp outline_node(%{node: %{children: []}} = assigns) do
     ~H"""
-    <li><.outline_item node={@node} selected={@selected} syntax={@syntax} /></li>
+    <li><.outline_item node={@node} selected={@selected} syntax={@syntax} metric={@metric} /></li>
     """
   end
 
@@ -121,7 +127,9 @@ defmodule BeamdashWeb.AppChart do
     ~H"""
     <li>
       <details open={@depth < 2} phx-mounted={JS.ignore_attributes(["open"])}>
-        <summary><.outline_item node={@node} selected={@selected} syntax={@syntax} /></summary>
+        <summary>
+          <.outline_item node={@node} selected={@selected} syntax={@syntax} metric={@metric} />
+        </summary>
         <ul class="term-items">
           <.outline_node
             :for={child <- @node.children}
@@ -129,6 +137,7 @@ defmodule BeamdashWeb.AppChart do
             depth={@depth + 1}
             selected={@selected}
             syntax={@syntax}
+            metric={@metric}
           />
         </ul>
       </details>
@@ -139,12 +148,13 @@ defmodule BeamdashWeb.AppChart do
   attr :node, :map, required: true
   attr :selected, :any, default: nil
   attr :syntax, :atom, required: true
+  attr :metric, :atom, required: true
 
   defp outline_item(%{node: node} = assigns) do
     assigns = assign(assigns, static: static?(node))
 
     ~H"""
-    <span :if={@static} class="app-outline-item mono static">{text(@node, @syntax)}</span>
+    <span :if={@static} class="app-outline-item mono static">{label(@node, @syntax, @metric)}</span>
     <button
       :if={!@static}
       type="button"
@@ -152,7 +162,7 @@ defmodule BeamdashWeb.AppChart do
       phx-click="select"
       phx-value-pid={Format.pid(@node.pid, :erlang)}
     >
-      {text(@node, @syntax)}
+      {label(@node, @syntax, @metric)}
     </button>
     """
   end
@@ -165,6 +175,26 @@ defmodule BeamdashWeb.AppChart do
   defp text(%{pid: pid}, syntax) when is_pid(pid), do: Format.pid(pid, syntax)
   # a port, or a name on another node
   defp text(%{pid: other}, syntax), do: Format.term(other, syntax, 60)
+
+  defp label(node, syntax, :structure), do: text(node, syntax)
+
+  defp label(node, syntax, metric) do
+    case Map.get(node, metric) do
+      nil -> text(node, syntax)
+      value -> "#{text(node, syntax)} #{Format.number(value)}"
+    end
+  end
+
+  # each branch ordered by its total of the metric, heaviest first
+  defp by_load(root, :structure), do: root
+  defp by_load(root, metric), do: root |> load_order(metric) |> elem(0)
+
+  defp load_order(node, metric) do
+    kids = Enum.map(node.children, &load_order(&1, metric))
+    total = (Map.get(node, metric) || 0) + Enum.sum(for {_, t} <- kids, do: t)
+    sorted = kids |> Enum.sort_by(&elem(&1, 1), :desc) |> Enum.map(&elem(&1, 0))
+    {%{node | children: sorted}, total}
+  end
 
   @doc """
   `%{boxes: [%{pid, x, y, w, h, text, title}], lines: [points], xlinks:

@@ -143,15 +143,14 @@ defmodule Beamdash.Format do
     |> Time.to_string()
   end
 
-  def duration(%{call_us: c, return_us: r}) when is_integer(c) and is_integer(r) do
-    case r - c do
-      us when us < 1_000 -> "#{us} µs"
-      us when us < 1_000_000 -> "#{Float.round(us / 1_000, 1)} ms"
-      us -> "#{Float.round(us / 1_000_000, 2)} s"
-    end
-  end
+  def duration(%{call_us: c, return_us: r}) when is_integer(c) and is_integer(r),
+    do: micros(r - c)
 
   def duration(_), do: ""
+
+  def micros(us) when us < 1_000, do: "#{us} µs"
+  def micros(us) when us < 1_000_000, do: "#{Float.round(us / 1_000, 1)} ms"
+  def micros(us), do: "#{Float.round(us / 1_000_000, 2)} s"
 
   ## Numbers
 

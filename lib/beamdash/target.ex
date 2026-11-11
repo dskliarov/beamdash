@@ -55,6 +55,7 @@ defmodule Beamdash.Target do
             tunnel: nil,
             source: nil,
             params: nil,
+            cookie: nil,
             reconnect: nil,
             pending: nil,
             auto_reconnect: nil,
@@ -94,6 +95,20 @@ defmodule Beamdash.Target do
       @kubectl_connect_timeout
     )
   end
+
+  @doc """
+  Connects to the pod of a saved kubectl connection (an entry of
+  `Beamdash.LastConnection`), with the node and cookie saved for it, so no
+  pod listing or discovery runs. When the node refuses the saved cookie, the
+  node and cookie are read from the pod again. When the pod cannot be reached,
+  the answer is `{:error, {:saved_pod_unavailable, reason}}`.
+  """
+  def connect_saved_kubectl(entry, server \\ __MODULE__) do
+    GenServer.call(server, {:connect_saved_kubectl, entry}, 2 * @kubectl_connect_timeout)
+  end
+
+  @doc "The cookie the attached node was connected with, `nil` when not connected."
+  def cookie(server \\ __MODULE__), do: GenServer.call(server, :cookie)
 
   def disconnect(server \\ __MODULE__), do: GenServer.call(server, :disconnect)
 
@@ -256,7 +271,7 @@ defmodule Beamdash.Target do
     state = state |> cancel_reconnect() |> drop_current(:reconnect)
 
     with {:ok, node} <- parse_node(node_input),
-         {:ok, connection} <- establish({:direct, node, cookie}, self(), &no_progress/2) do
+         {:ok, connection} <- establish({:direct, node, cookie}, self(), &no_progress/2, nil) do
       {:reply, {:ok, connection.info}, connected(state, connection)}
     else
       {:error, _} = error -> {:reply, error, state}
@@ -275,20 +290,23 @@ defmodule Beamdash.Target do
   # calls (other pages' bars poll it) while kubectl runs; the reply goes out
   # when the task reports back.
   def handle_call({:connect_kubectl, kubeconfig, namespace, pod, container, binary}, from, state) do
-    state = state |> cancel_reconnect() |> drop_current(:reconnect)
-    params = {:kubectl, kubeconfig, namespace, pod, container, binary}
-    owner = self()
-    ref = make_ref()
-    progress = fn label, command -> send(owner, {:connect_progress, ref, label, command}) end
-
-    {:ok, pid} =
-      Task.start(fn ->
-        send(owner, {:connect_result, ref, establish(params, owner, progress)})
-      end)
-
-    pending = %{ref: ref, from: from, pid: pid, monitor: Process.monitor(pid), cancelled: false}
-    {:noreply, %{state | pending: pending}}
+    start_connect({:kubectl, kubeconfig, namespace, pod, container, binary}, nil, from, state)
   end
+
+  def handle_call({:connect_saved_kubectl, entry}, from, state) do
+    params =
+      {:kubectl, entry["kubeconfig"], entry["namespace"], entry["pod"], entry["container"],
+       entry["binary"]}
+
+    known =
+      if entry["cookie"] == "",
+        do: nil,
+        else: {String.to_atom(entry["node"]), String.to_atom(entry["cookie"])}
+
+    start_connect(params, known, from, state)
+  end
+
+  def handle_call(:cookie, _from, state), do: {:reply, state.cookie, state}
 
   def handle_call({:switch, _node}, _from, %{node: nil} = state),
     do: {:reply, {:error, :not_connected}, state}
@@ -369,7 +387,7 @@ defmodule Beamdash.Target do
     Kubectl.close(state.tunnel)
     state = maybe_reconnect(state)
     notify(state, {:disconnected, :nodedown})
-    {:noreply, %{state | node: nil, tunnel: nil, source: nil, params: nil}}
+    {:noreply, %{state | node: nil, tunnel: nil, source: nil, params: nil, cookie: nil}}
   end
 
   def handle_info({:nodedown, _other}, state), do: {:noreply, state}
@@ -436,7 +454,7 @@ defmodule Beamdash.Target do
 
       {:ok, _} =
         Task.start(fn ->
-          send(owner, {:reconnect_result, ref, establish(r.params, owner, &no_progress/2)})
+          send(owner, {:reconnect_result, ref, establish(r.params, owner, &no_progress/2, nil)})
         end)
 
       {:noreply, state}
@@ -503,53 +521,103 @@ defmodule Beamdash.Target do
   # `{:kubectl, kubeconfig, namespace, pod, container, binary}`. Run in a task
   # for kubectl: its port-forwards are then handed to `owner`, which watches
   # them. `progress` is called as `progress.(label, command)` at each step.
-  defp establish({:direct, node, cookie} = params, _owner, _progress) do
+  # `known` is the `{node, cookie}` saved for a kubectl connection, or nil.
+  defp establish({:direct, node, cookie} = params, _owner, _progress, _known) do
     with {:ok, info} <- attach(node, cookie),
-         do: {:ok, %{node: node, info: info, tunnel: nil, source: :direct, params: params}}
+         do:
+           {:ok,
+            %{
+              node: node,
+              info: info,
+              tunnel: nil,
+              cookie: cookie,
+              source: :direct,
+              params: params
+            }}
   end
 
   defp establish(
          {:kubectl, kubeconfig, namespace, pod, container, binary} = params,
          owner,
-         progress
+         progress,
+         known
        ) do
-    with {:ok, %{node: node, cookie: cookie, tunnel: tunnel}} <-
-           Kubectl.connect(kubeconfig, namespace, pod, container, binary, progress: progress) do
-      if owner != self() do
-        for port <- [tunnel.epmd_port, tunnel.dist_port] do
-          Port.connect(port, owner)
-          Process.unlink(port)
-        end
-      end
-
-      progress.("Connecting to #{node}", nil)
-
-      # the ports now belong to the GenServer, so a crash here must still close them
-      result =
-        try do
-          attach(node, cookie)
-        catch
-          kind, reason -> {:error, {kind, reason}}
+    case Kubectl.connect(kubeconfig, namespace, pod, container, binary,
+           progress: progress,
+           known: known
+         ) do
+      {:ok, %{node: node, cookie: cookie, tunnel: tunnel}} ->
+        if owner != self() do
+          for port <- [tunnel.epmd_port, tunnel.dist_port] do
+            Port.connect(port, owner)
+            Process.unlink(port)
+          end
         end
 
-      case result do
-        {:ok, info} ->
-          source =
-            {:kubectl,
+        progress.("Connecting to #{node}", nil)
+
+        case attach_safely(node, cookie) do
+          {:ok, info} ->
+            source =
+              {:kubectl,
+               %{
+                 kubeconfig: kubeconfig,
+                 namespace: namespace,
+                 pod: pod,
+                 container: if(container in [nil, ""], do: nil, else: container)
+               }}
+
+            {:ok,
              %{
-               kubeconfig: kubeconfig,
-               namespace: namespace,
-               pod: pod,
-               container: if(container in [nil, ""], do: nil, else: container)
+               node: node,
+               info: info,
+               tunnel: tunnel,
+               cookie: cookie,
+               source: source,
+               params: params
              }}
 
-          {:ok, %{node: node, info: info, tunnel: tunnel, source: source, params: params}}
+          {:error, _} when known != nil ->
+            # the saved cookie or node name was refused: read them from the pod again
+            Kubectl.close(tunnel)
+            establish(params, owner, progress, nil) |> saved_pod_unavailable()
 
-        {:error, _} = error ->
-          Kubectl.close(tunnel)
-          error
-      end
+          {:error, _} = error ->
+            Kubectl.close(tunnel)
+            error
+        end
+
+      {:error, reason} when known != nil ->
+        {:error, {:saved_pod_unavailable, reason}}
+
+      {:error, _} = error ->
+        error
     end
+  end
+
+  defp saved_pod_unavailable({:error, reason}), do: {:error, {:saved_pod_unavailable, reason}}
+  defp saved_pod_unavailable(ok), do: ok
+
+  # the ports now belong to the GenServer, so a crash here must still close them
+  defp attach_safely(node, cookie) do
+    attach(node, cookie)
+  catch
+    kind, reason -> {:error, {kind, reason}}
+  end
+
+  defp start_connect(params, known, from, state) do
+    state = state |> cancel_reconnect() |> drop_current(:reconnect)
+    owner = self()
+    ref = make_ref()
+    progress = fn label, command -> send(owner, {:connect_progress, ref, label, command}) end
+
+    {:ok, pid} =
+      Task.start(fn ->
+        send(owner, {:connect_result, ref, establish(params, owner, progress, known)})
+      end)
+
+    pending = %{ref: ref, from: from, pid: pid, monitor: Process.monitor(pid), cancelled: false}
+    {:noreply, %{state | pending: pending}}
   end
 
   defp no_progress(_label, _command), do: :ok
@@ -572,7 +640,8 @@ defmodule Beamdash.Target do
       | node: connection.node,
         tunnel: connection.tunnel,
         source: connection.source,
-        params: connection.params
+        params: connection.params,
+        cookie: connection.cookie
     }
   end
 
@@ -616,7 +685,7 @@ defmodule Beamdash.Target do
     Node.disconnect(node)
     Kubectl.close(state.tunnel)
     notify(state, {:disconnected, reason})
-    %{state | node: nil, tunnel: nil, source: nil, params: nil}
+    %{state | node: nil, tunnel: nil, source: nil, params: nil, cookie: nil}
   end
 
   defp notify(state, event) do

@@ -42,7 +42,9 @@ defmodule Beamdash.MixProject do
       # Insights (anomalies, groups, forecasts, message graph) and the local
       # suggestion model; the default binary backend, no compiler needed
       {:nx, "~> 1.0"},
-      {:scholar, "~> 0.5"}
+      {:scholar, "~> 0.5"},
+      # the event store: snapshots, anomalies, logs and AI analyses, with retention
+      {:exqlite, "~> 0.43"}
     ]
   end
 

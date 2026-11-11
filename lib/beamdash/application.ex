@@ -19,9 +19,12 @@ defmodule Beamdash.Application do
       Beamdash.Plugins,
       Beamdash.SysTracer,
       Beamdash.Profiler,
+      Beamdash.AnomalyMonitor,
       BeamdashWeb.Endpoint
     ]
 
-    Supervisor.start_link(children, strategy: :one_for_one, name: Beamdash.Supervisor)
+    store = if Beamdash.Store.path(), do: [Beamdash.Store, Beamdash.Sampler], else: []
+
+    Supervisor.start_link(children ++ store, strategy: :one_for_one, name: Beamdash.Supervisor)
   end
 end

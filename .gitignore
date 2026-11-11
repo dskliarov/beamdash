@@ -20,3 +20,7 @@ erl_crash.dump
 
 # Optional tooling for rebuilding the vendored CodeMirror editor
 /assets/codemirror/node_modules/
+
+# macOS Finder metadata and Python bytecode
+.DS_Store
+__pycache__/

@@ -1135,6 +1135,17 @@ defmodule BeamdashWeb.HomeLive do
             <div class="process-table-scroll" role="region" aria-label="Process table" tabindex="0">
               <table class="processes-table">
                 <caption class="process-table-caption">Processes on the connected node</caption>
+                <colgroup>
+                  <col class="col-pid" />
+                  <col class="col-name" />
+                  <col class="col-mfa" />
+                  <col class="col-status" />
+                  <col class="col-num col-mq" />
+                  <col class="col-num col-mem" />
+                  <col :if={@cpu_enabled} class="col-num col-cpu" />
+                  <col class="col-num col-reds" />
+                  <col class="col-num col-rate" />
+                </colgroup>
                 <thead>
                   <tr>
                     <th>Pid</th>
@@ -1230,7 +1241,7 @@ defmodule BeamdashWeb.HomeLive do
                         ⚑ {v.label}
                       </span>
                     </td>
-                    <td class="mono muted">{Format.mfa(p.current_function, @syntax)}</td>
+                    <td class="mono muted mfa-cell">{Format.mfa(p.current_function, @syntax)}</td>
                     <td>
                       <span class={["process-status", "process-status-#{p.status}"]}>{p.status}</span>
                     </td>

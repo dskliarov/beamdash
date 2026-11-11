@@ -134,9 +134,11 @@ defmodule Beamdash.Apps do
   def process_module(_details), do: nil
 
   @doc """
-  The process tree of `app`: `%{pid, name, label, children: [node], also:
-  [pid]}`, where `also` are its secondary links (shown dashed in Observer),
-  plus the number of processes. `{:ok, nil}` when the application is gone.
+  The process tree of `app`: `%{pid, name, label, mailbox, reductions,
+  children: [node], also: [pid]}`, where `also` are its secondary links
+  (shown dashed in Observer), `mailbox` is the queue length and `reductions`
+  the total so far, plus the number of processes. `{:ok, nil}` when the
+  application is gone.
   """
   def tree(node, app) do
     case Target.rpc(node, :beamdash_agent, :app_tree, [app]) do
@@ -184,6 +186,8 @@ defmodule Beamdash.Apps do
        pid: pid,
        name: present(p.name),
        label: present(p.label),
+       mailbox: Map.get(p, :mailbox),
+       reductions: Map.get(p, :reductions),
        children: Enum.reverse(children),
        also: also |> Map.get(pid, []) |> Enum.uniq()
      }, seen}

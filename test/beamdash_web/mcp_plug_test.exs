@@ -77,16 +77,21 @@ defmodule BeamdashWeb.McpPlugTest do
 
     assert Enum.sort(Enum.map(tools, & &1["name"])) ==
              Enum.sort([
+               "anomaly_history",
                "app_info",
                "app_list",
                "app_tree",
                "crashes",
+               "ets_rows",
                "ets_tables",
                "list_processes",
                "logs",
+               "memory_history",
                "module_summary",
                "node_info",
-               "process_details"
+               "process_details",
+               "snapshots",
+               "source_check"
              ])
   end
 

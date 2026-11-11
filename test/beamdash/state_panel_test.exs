@@ -29,20 +29,28 @@ defmodule BeamdashWeb.StatePanelTest do
 
   @big Enum.map(1..30, &{:k, &1, String.duplicate("v", 5)})
 
-  test "the state is shown as text by default" do
+  test "the state is shown pretty printed by default" do
     html = html(panel(@big))
 
-    assert html =~ "state-pre"
-    refute html =~ "state-tree"
+    assert html =~ "term-text"
+    refute html =~ "term-tree"
   end
 
   test "the Tree switch shows the state as nested blocks" do
     {:noreply, socket} = StatePanel.handle_event("set_view", %{"view" => "tree"}, panel(@big))
     html = html(socket)
 
-    assert html =~ "state-tree"
+    assert html =~ "term-tree"
     assert html =~ ~s(class="term-group")
-    refute html =~ "state-pre"
+    refute html =~ "term-text"
+  end
+
+  test "the Raw switch shows the state on one line" do
+    {:noreply, socket} = StatePanel.handle_event("set_view", %{"view" => "raw"}, panel(@big))
+
+    assert html(socket) =~ "term-text"
+    refute html(socket) =~ "term-tree"
+    refute html(socket) =~ "tok-"
   end
 
   test "Expand all and Collapse all appear only in the tree view" do
@@ -53,10 +61,11 @@ defmodule BeamdashWeb.StatePanelTest do
     refute html(panel(@big)) =~ "Expand all"
   end
 
-  test "the Text switch goes back to the text view" do
+  test "the Pretty switch goes back to the coloured text view" do
     {:noreply, tree} = StatePanel.handle_event("set_view", %{"view" => "tree"}, panel(@big))
-    {:noreply, socket} = StatePanel.handle_event("set_view", %{"view" => "text"}, tree)
+    {:noreply, socket} = StatePanel.handle_event("set_view", %{"view" => "pretty"}, tree)
 
-    assert html(socket) =~ "state-pre"
+    assert html(socket) =~ "term-text"
+    assert html(socket) =~ "tok-atom"
   end
 end

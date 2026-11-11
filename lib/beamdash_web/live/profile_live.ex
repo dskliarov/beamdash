@@ -12,7 +12,7 @@ defmodule BeamdashWeb.ProfileLive do
   use Phoenix.LiveView
 
   alias Beamdash.{Format, ModuleCache, Profiler, Target}
-  alias BeamdashWeb.SourceTabs
+  alias BeamdashWeb.{PickParams, SourceTabs}
 
   import BeamdashWeb.FunctionList,
     only: [
@@ -149,8 +149,31 @@ defmodule BeamdashWeb.ProfileLive do
 
   defp defer_link(socket, _params, _uri), do: socket
 
-  # ?mod=&fun=&arity= also picks that function (a link from a log line)
+  # the picker's filters, passed on by the Tracing tab (see BeamdashWeb.PickParams)
   @impl true
+  def handle_params(%{"ff" => _} = params, uri, socket) do
+    socket = defer_link(socket, params, uri)
+
+    if socket.assigns.modules == [] do
+      {:noreply, socket}
+    else
+      state = PickParams.decode(params, socket.assigns.modules)
+
+      socket =
+        assign(socket,
+          pick_mod: state.mod,
+          pick_q: state.q,
+          fq: state.fq,
+          ff: state.ff,
+          picked: state.picked,
+          form_error: nil
+        )
+
+      {:noreply, if(state.mod, do: SourceTabs.check(socket, state.mod), else: socket)}
+    end
+  end
+
+  # ?mod=&fun=&arity= also picks that function (a link from a log line)
   def handle_params(%{"mod" => mod, "fun" => fun, "arity" => arity} = params, uri, socket) do
     socket = defer_link(socket, params, uri) |> open_module(mod)
     pick_mod = socket.assigns.pick_mod
@@ -475,6 +498,23 @@ defmodule BeamdashWeb.ProfileLive do
         <p :if={match?({:error, _}, @available)} class="error">{elem(@available, 1)}</p>
 
         <section :if={@status == :connected and @available in [nil, true]} class="profile">
+          <p class="handoff">
+            <.link
+              id="to-trace"
+              navigate={
+                PickParams.path("/trace", %{
+                  mod: @pick_mod,
+                  q: @pick_q,
+                  fq: @fq,
+                  ff: @ff,
+                  picked: @picked
+                })
+              }
+              class="small-btn secondary"
+            >
+              Trace these
+            </.link>
+          </p>
           <%!-- the picker's search boxes belong to this form (form="pick-form"),
              so typing in them, or Enter, never submits the profile --%>
           <form

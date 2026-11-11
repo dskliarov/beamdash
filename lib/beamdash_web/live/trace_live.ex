@@ -8,8 +8,9 @@ defmodule BeamdashWeb.TraceLive do
   """
   use Phoenix.LiveView
 
-  alias Beamdash.{CallGraph, Format, ModuleCache, SeqTracer, Target, Tracer}
-  alias BeamdashWeb.SourceTabs
+  alias Beamdash.{CallGraph, Format, ModuleCache, SeqTracer, Settings, Target, Tracer}
+  alias Beamdash.Trace.Tree
+  alias BeamdashWeb.{PickParams, SourceTabs, TermView}
 
   import BeamdashWeb.FunctionList,
     only: [
@@ -22,8 +23,6 @@ defmodule BeamdashWeb.TraceLive do
       highlight: 1
     ]
 
-  # calls a new trace stops after, unless changed (empty: no limit)
-  @default_call_limit 30
   @max_log_rows 500
 
   @impl true
@@ -44,7 +43,8 @@ defmodule BeamdashWeb.TraceLive do
         picked: [],
         traces: [],
         limits: %{},
-        call_limit: Integer.to_string(@default_call_limit),
+        # calls a new trace stops after, unless changed (empty: no limit)
+        call_limit: Integer.to_string(Settings.trace_call_limit()),
         seq_traces: [],
         detail: nil,
         graph: nil,
@@ -52,7 +52,13 @@ defmodule BeamdashWeb.TraceLive do
         error: nil,
         notice: nil,
         in_flight: MapSet.new(),
-        link: nil
+        link: nil,
+        term_view: :pretty,
+        log_tab: :lines,
+        log_filter: nil,
+        trace_tree: Tree.build([]),
+        tree_open: MapSet.new(),
+        tree_dirty: false
       )
       |> SourceTabs.init()
       |> stream(:entries, [])
@@ -61,6 +67,7 @@ defmodule BeamdashWeb.TraceLive do
       :ok = Target.subscribe()
       :ok = Tracer.subscribe()
       :ok = SeqTracer.subscribe()
+      :timer.send_interval(1_000, :tree_tick)
       if status == :connected, do: send(self(), :load)
     end
 
@@ -72,7 +79,8 @@ defmodule BeamdashWeb.TraceLive do
       assign(socket,
         traces: Tracer.traces(),
         limits: Tracer.limits(),
-        seq_traces: SeqTracer.traces()
+        seq_traces: SeqTracer.traces(),
+        tree_dirty: true
       )
 
     socket = stream(socket, :entries, log_rows(socket), reset: true)
@@ -126,8 +134,31 @@ defmodule BeamdashWeb.TraceLive do
 
   defp defer_link(socket, _params, _uri), do: socket
 
-  # ?mod=&fun=&arity= also picks that function (a link from a log line)
+  # the picker's filters, passed on by the Profile tab (see BeamdashWeb.PickParams)
   @impl true
+  def handle_params(%{"ff" => _} = params, uri, socket) do
+    socket = defer_link(socket, params, uri)
+
+    if socket.assigns.modules == [] do
+      {:noreply, socket}
+    else
+      state = PickParams.decode(params, socket.assigns.modules)
+
+      socket =
+        assign(socket,
+          selected: state.mod,
+          module_filter: state.q,
+          fn_query: state.fq,
+          fn_filter: show_filter(state.ff),
+          picked: state.picked,
+          graph: nil
+        )
+
+      {:noreply, if(state.mod, do: SourceTabs.check(socket, state.mod), else: socket)}
+    end
+  end
+
+  # ?mod=&fun=&arity= also picks that function (a link from a log line)
   def handle_params(%{"mod" => mod, "fun" => fun, "arity" => arity} = params, uri, socket) do
     socket = defer_link(socket, params, uri)
     {:noreply, socket} = handle_params(%{"mod" => mod}, uri, socket)
@@ -162,6 +193,9 @@ defmodule BeamdashWeb.TraceLive do
   end
 
   def handle_params(_params, _uri, socket), do: {:noreply, socket}
+
+  defp show_filter(:picked), do: :traced
+  defp show_filter(filter), do: filter
 
   ## Events
 
@@ -326,8 +360,59 @@ defmodule BeamdashWeb.TraceLive do
 
   def handle_event("clear_log", _params, socket) do
     :ok = Tracer.clear()
-    {:noreply, socket |> stream(:entries, [], reset: true) |> assign(detail: nil)}
+
+    {:noreply,
+     socket
+     |> stream(:entries, [], reset: true)
+     |> assign(detail: nil, tree_dirty: true)}
   end
+
+  def handle_event("term_view", %{"view" => view}, socket) do
+    socket = assign(socket, term_view: TermView.parse_view(view))
+    detail = socket.assigns.detail
+
+    socket =
+      if detail && in_log?(detail.id, socket),
+        do: stream_insert(socket, :entries, mark(Tracer.entry(detail.id) || detail, socket)),
+        else: socket
+
+    {:noreply, socket}
+  end
+
+  def handle_event("log_tab", %{"tab" => "tree"}, socket),
+    do: {:noreply, socket |> assign(log_tab: :tree) |> rebuild_tree()}
+
+  def handle_event("log_tab", %{"tab" => "lines"}, socket),
+    do: {:noreply, assign(socket, log_tab: :lines)}
+
+  def handle_event("tree_toggle", %{"id" => id}, socket) do
+    open = socket.assigns.tree_open
+    open = if MapSet.member?(open, id), do: MapSet.delete(open, id), else: MapSet.put(open, id)
+    {:noreply, assign(socket, tree_open: open)}
+  end
+
+  # A branch's calls on the Lines tab, the way a Logs tree branch scopes its lines.
+  def handle_event("tree_show", %{"id" => id}, socket) do
+    case Tree.find(socket.assigns.trace_tree.nodes, id) do
+      nil ->
+        {:noreply, socket}
+
+      %{kind: :call, at: _} = node ->
+        {:call, call_id} = node.scope
+
+        {:noreply,
+         socket
+         |> assign(log_tab: :lines)
+         |> filter_log(node.scope)
+         |> open_call(call_id)}
+
+      node ->
+        {:noreply, socket |> assign(log_tab: :lines) |> filter_log(node.scope)}
+    end
+  end
+
+  def handle_event("clear_log_filter", _params, socket),
+    do: {:noreply, filter_log(socket, nil)}
 
   # A row's details open under it; clicking it again (or another row)
   # closes them. Only the rows that change are re-sent.
@@ -343,7 +428,7 @@ defmodule BeamdashWeb.TraceLive do
     socket = assign(socket, detail: detail)
 
     socket =
-      if previous && (detail == nil or previous.id != detail.id) && in_log?(previous.id),
+      if previous && (detail == nil or previous.id != detail.id) && in_log?(previous.id, socket),
         do: stream_insert(socket, :entries, mark(Tracer.entry(previous.id) || previous, socket)),
         else: socket
 
@@ -353,17 +438,65 @@ defmodule BeamdashWeb.TraceLive do
     {:noreply, socket}
   end
 
-  # the newest rows, as the log shows them
+  # the newest rows the log shows, under the tree branch it is filtered to
   defp log_rows(socket),
-    do: Tracer.entries() |> Enum.take(@max_log_rows) |> Enum.map(&mark(&1, socket))
+    do: socket.assigns |> visible_entries() |> Enum.map(&mark(&1, socket))
+
+  defp visible_entries(assigns),
+    do: Tracer.entries() |> Enum.filter(&visible?(&1, assigns)) |> Enum.take(@max_log_rows)
+
+  defp visible?(_entry, %{log_filter: nil}), do: true
+  defp visible?(entry, %{log_filter: scope}), do: Tree.in_scope?(scope, entry)
 
   # an entry with its details open or closed
   defp mark(entry, socket),
     do:
       Map.put(entry, :open, socket.assigns.detail != nil and socket.assigns.detail.id == entry.id)
 
-  defp in_log?(id),
-    do: Tracer.entries() |> Enum.take(@max_log_rows) |> Enum.any?(&(&1.id == id))
+  defp in_log?(id, socket),
+    do: socket.assigns |> visible_entries() |> Enum.any?(&(&1.id == id))
+
+  defp filter_log(socket, scope) do
+    socket = assign(socket, log_filter: scope, detail: nil)
+    stream(socket, :entries, log_rows(socket), reset: true)
+  end
+
+  defp rebuild_tree(socket),
+    do: assign(socket, trace_tree: Tree.build(Tracer.entries()), tree_dirty: false)
+
+  defp node_label(%{kind: :module, mod: mod}, syntax), do: Format.name(mod, syntax)
+
+  defp node_label(%{kind: :function, fun: fun, arity: arity}, syntax),
+    do: "#{Format.name(fun, syntax)}/#{arity}"
+
+  defp node_label(%{kind: :result, outcome: outcome}, _syntax), do: Atom.to_string(outcome)
+  defp node_label(%{kind: :call, at: at}, _syntax), do: Format.time(at)
+
+  defp outcome_class(%{outcome: :ok}), do: "trace-ok"
+  defp outcome_class(%{outcome: :error}), do: "trace-error"
+  defp outcome_class(%{outcome: :no_return}), do: "muted"
+  defp outcome_class(_node), do: nil
+
+  defp scope_label({:module, mod}, syntax), do: Format.name(mod, syntax)
+
+  defp scope_label({:function, mod, fun, arity}, syntax),
+    do: Format.mfa({mod, fun, arity}, syntax)
+
+  defp scope_label({:result, mod, fun, arity, outcome}, syntax),
+    do: "#{Format.mfa({mod, fun, arity}, syntax)}, #{outcome}"
+
+  defp scope_label({:call, _id}, _syntax), do: "one call"
+
+  defp open_call(socket, id) do
+    case Tracer.entry(id) do
+      nil ->
+        socket
+
+      entry ->
+        socket = assign(socket, detail: entry)
+        stream_insert(socket, :entries, mark(entry, socket))
+    end
+  end
 
   @doc false
   # Called by BeamdashWeb.Syntax: the log is a stream, so re-send its rows.
@@ -441,7 +574,13 @@ defmodule BeamdashWeb.TraceLive do
         do: assign(socket, detail: entry),
         else: socket
 
-    {:noreply, stream_insert(socket, :entries, mark(entry, socket), at: 0, limit: @max_log_rows)}
+    socket = assign(socket, tree_dirty: true)
+
+    if visible?(entry, socket.assigns),
+      do:
+        {:noreply,
+         stream_insert(socket, :entries, mark(entry, socket), at: 0, limit: @max_log_rows)},
+      else: {:noreply, socket}
   end
 
   def handle_info({:beamdash_trace, :traces_changed}, socket),
@@ -477,7 +616,13 @@ defmodule BeamdashWeb.TraceLive do
   end
 
   def handle_info({:beamdash_trace, :cleared}, socket),
-    do: {:noreply, stream(socket, :entries, [], reset: true)}
+    do: {:noreply, socket |> assign(tree_dirty: true) |> stream(:entries, [], reset: true)}
+
+  def handle_info(:tree_tick, socket) do
+    if socket.assigns.log_tab == :tree and socket.assigns.tree_dirty,
+      do: {:noreply, rebuild_tree(socket)},
+      else: {:noreply, socket}
+  end
 
   def handle_info({:beamdash_seq, :traces_changed}, socket),
     do: {:noreply, assign(socket, seq_traces: SeqTracer.traces())}
@@ -546,7 +691,8 @@ defmodule BeamdashWeb.TraceLive do
         to_trace: Enum.reject(assigns.picked, &covered?(&1, assigns.traces)),
         traced_picks: Enum.filter(assigns.picked, &(&1 in assigns.traces)),
         all_seq: all_seq?(assigns.picked, assigns.seq_traces),
-        picked_modules: assigns.picked |> Enum.map(&elem(&1, 0)) |> MapSet.new()
+        picked_modules: assigns.picked |> Enum.map(&elem(&1, 0)) |> MapSet.new(),
+        tree_rows: Tree.rows(assigns.trace_tree.nodes, assigns.tree_open)
       )
 
     ~H"""
@@ -632,6 +778,23 @@ defmodule BeamdashWeb.TraceLive do
           </aside>
 
           <section class="trace-main">
+            <p class="handoff">
+              <.link
+                id="to-profile"
+                navigate={
+                  PickParams.path("/profile", %{
+                    mod: @selected,
+                    q: @module_filter,
+                    fq: @fn_query,
+                    ff: @fn_filter,
+                    picked: @picked
+                  })
+                }
+                class="small-btn secondary"
+              >
+                Profile these
+              </.link>
+            </p>
             <div :if={@selected} class="functions">
               <div class="fn-head">
                 <h2>{Format.name(@selected, @syntax)}</h2>
@@ -686,11 +849,7 @@ defmodule BeamdashWeb.TraceLive do
                 </div>
               </form>
 
-              <div
-                id="fn-panel"
-                class="fn-panel"
-                style="height: var(--fn-h, auto); max-height: var(--fn-h, 300px)"
-              >
+              <div id="fn-panel" class="fn-panel trace-fns">
                 <p :if={@fn_groups == []} class="muted small fn-none">
                   No functions match{if @fn_query != "", do: " “#{String.trim(@fn_query)}”"}{if @fn_filter !=
                                                                                                   :all,
@@ -742,24 +901,6 @@ defmodule BeamdashWeb.TraceLive do
                   </ul>
                 </section>
               </div>
-              <div
-                id="fn-resizer"
-                class="resizer resizer-y fn-resizer"
-                phx-hook="Resizer"
-                phx-update="ignore"
-                data-var="--fn-h"
-                data-axis="y"
-                data-target="#fn-panel"
-                data-min="80"
-                data-max="2000"
-                role="separator"
-                aria-orientation="horizontal"
-                aria-label="Resize the function list"
-                tabindex="0"
-                title="Drag to resize · double-click to reset"
-              >
-              </div>
-
               <div :if={@picked != []} class="fn-actions fn-picked" id="trace-picked">
                 <div class="fn-picked-actions">
                   <form
@@ -941,7 +1082,30 @@ defmodule BeamdashWeb.TraceLive do
               <button class="secondary" phx-click="clear_log">Clear log</button>
             </div>
 
-            <div class="log" role="table" aria-label="Trace log">
+            <div class="trace-log-bar">
+              <div class="seg" role="tablist" aria-label="Trace log view">
+                <button
+                  :for={{value, label} <- [{"lines", "Lines"}, {"tree", "Tree"}]}
+                  type="button"
+                  role="tab"
+                  id={"trace-tab-#{value}"}
+                  class={["seg-btn", Atom.to_string(@log_tab) == value && "active"]}
+                  aria-selected={to_string(Atom.to_string(@log_tab) == value)}
+                  phx-click="log_tab"
+                  phx-value-tab={value}
+                >
+                  {label}
+                </button>
+              </div>
+              <span :if={@log_filter} class="chip">
+                Only {scope_label(@log_filter, @syntax)}
+                <button type="button" class="small-btn secondary" phx-click="clear_log_filter">
+                  Show all
+                </button>
+              </span>
+            </div>
+
+            <div class="log" role="table" aria-label="Trace log" hidden={@log_tab != :lines}>
               <div class="log-cols log-head" role="row">
                 <span role="columnheader">Time (UTC)</span>
                 <span role="columnheader">Process</span>
@@ -985,12 +1149,18 @@ defmodule BeamdashWeb.TraceLive do
                         in {e.pid}{if e.reg_name, do: " (#{e.reg_name})"}
                       </span>
                     </h3>
+                    <TermView.view_switch view={@term_view} />
                     <div :if={e.args}>
                       <h4>Arguments</h4>
-                      <pre :for={arg <- e.args}><%= Format.pretty(arg, @syntax) %></pre>
+                      <TermView.term
+                        :for={arg <- e.args}
+                        value={arg}
+                        syntax={@syntax}
+                        view={@term_view}
+                      />
                     </div>
                     <h4>{result_heading(e.result)}</h4>
-                    <pre><%= detail_result(e.result, @syntax) %></pre>
+                    <.result_body result={e.result} syntax={@syntax} view={@term_view} />
                     <div :if={e.stack != []}>
                       <h4>Call stack</h4>
                       <pre><%= Enum.map_join(e.stack, "\n", &Format.mfa(&1, @syntax)) %></pre>
@@ -998,6 +1168,89 @@ defmodule BeamdashWeb.TraceLive do
                   </div>
                 </div>
               </div>
+            </div>
+
+            <div :if={@log_tab == :tree} class="trace-tree">
+              <p :if={@trace_tree.nodes == []} class="muted">No calls traced yet.</p>
+              <table
+                :if={@trace_tree.nodes != []}
+                class="logs-tree-table"
+                aria-label="Trace call tree"
+              >
+                <thead>
+                  <tr>
+                    <th>Function</th>
+                    <th class="num">Calls</th>
+                    <th>State</th>
+                    <th class="num">Duration</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <%= for row <- @tree_rows do %>
+                    <tr
+                      id={"trace-tree-" <> row.node.id}
+                      class={["logs-tree-row", "logs-tree-#{row.node.kind}"]}
+                    >
+                      <td style={"padding-left: #{0.5 + row.depth * 1.25}rem"}>
+                        <button
+                          :if={row.node.children != []}
+                          type="button"
+                          class="tree-toggle"
+                          phx-click="tree_toggle"
+                          phx-value-id={row.node.id}
+                          aria-expanded={to_string(row.open?)}
+                        >
+                          <span aria-hidden="true">{if row.open?, do: "▾", else: "▸"}</span>
+                          <span class={["tree-label", "mono", outcome_class(row.node)]}>
+                            {node_label(row.node, @syntax)}
+                          </span>
+                        </button>
+                        <button
+                          :if={row.node.children == []}
+                          type="button"
+                          class="tree-toggle"
+                          phx-click="tree_show"
+                          phx-value-id={row.node.id}
+                          title="Show this call in the log"
+                        >
+                          <span class={["tree-label", "mono", outcome_class(row.node)]}>
+                            {node_label(row.node, @syntax)}
+                          </span>
+                        </button>
+                        <button
+                          :if={row.node.children != []}
+                          type="button"
+                          class="small-btn secondary trace-show"
+                          phx-click="tree_show"
+                          phx-value-id={row.node.id}
+                          title="Show only these calls in the log"
+                        >
+                          Show in log
+                        </button>
+                      </td>
+                      <td class="num">{Format.number(row.node.calls)}</td>
+                      <td>
+                        <span :if={row.node.ok > 0} class="trace-state trace-ok">
+                          ✓ {Format.number(row.node.ok)} ok
+                        </span>
+                        <span :if={row.node.errors > 0} class="trace-state trace-error">
+                          ✕ {Format.number(row.node.errors)} {if row.node.errors == 1,
+                            do: "error",
+                            else: "errors"}
+                        </span>
+                        <span :if={row.node.running > 0} class="trace-state muted">
+                          … {Format.number(row.node.running)} no_return
+                        </span>
+                      </td>
+                      <td class="num">
+                        {if row.node.duration_us > 0,
+                          do: Format.micros(row.node.duration_us),
+                          else: "—"}
+                      </td>
+                    </tr>
+                  <% end %>
+                </tbody>
+              </table>
             </div>
           </section>
         </div>
@@ -1042,11 +1295,32 @@ defmodule BeamdashWeb.TraceLive do
   defp result_heading({:exception, _}), do: "Exception"
   defp result_heading(_), do: "Result"
 
-  defp detail_result(:pending, _syntax), do: "(still running)"
-  defp detail_result({:return, value}, syntax), do: Format.pretty(value, syntax)
+  attr :result, :any, required: true
+  attr :syntax, :atom, required: true
+  attr :view, :atom, required: true
 
-  defp detail_result({:exception, {class, reason}}, syntax),
-    do: "#{class}: " <> Format.pretty(reason, syntax)
+  defp result_body(%{result: {:return, value}} = assigns) do
+    assigns = assign(assigns, :value, value)
+
+    ~H"""
+    <TermView.term value={@value} syntax={@syntax} view={@view} />
+    """
+  end
+
+  defp result_body(%{result: {:exception, {class, reason}}} = assigns) do
+    assigns = assign(assigns, class: class, reason: reason)
+
+    ~H"""
+    <p class="mono small">{@class}:</p>
+    <TermView.term value={@reason} syntax={@syntax} view={@view} />
+    """
+  end
+
+  defp result_body(assigns) do
+    ~H"""
+    <pre>(still running)</pre>
+    """
+  end
 
   # The selected module's functions after the search and the filter.
   defp shown_functions(assigns) do

@@ -85,6 +85,32 @@ defmodule Beamdash.SettingsTest do
     refute Map.has_key?(Settings.path() |> File.read!() |> Jason.decode!(), "auto_reconnect")
   end
 
+  test "snapshot collection is off until switched on, and saved" do
+    on_exit(fn -> :ok = Settings.put_snapshots_enabled(false) end)
+    :ok = Settings.put_snapshots_enabled(false)
+    view = BeamdashWeb.SettingsLive
+    {:ok, socket} = view.mount(%{}, %{}, %Phoenix.LiveView.Socket{})
+    refute socket.assigns.snapshots_enabled
+
+    {:noreply, socket} = view.handle_event("toggle_snapshots", %{}, socket)
+    assert socket.assigns.snapshots_enabled
+    assert %{"snapshots_enabled" => true} = Settings.path() |> File.read!() |> Jason.decode!()
+    :ok = Settings.reload()
+    assert Settings.snapshots_enabled?()
+
+    html =
+      socket.assigns
+      |> Map.put(:syntax, :erlang)
+      |> view.render()
+      |> Phoenix.LiveViewTest.rendered_to_string()
+
+    assert html =~ ~r/id="snapshots-enabled"[^>]*role="switch"[^>]*aria-checked="true"/s
+
+    {:noreply, socket} = view.handle_event("toggle_snapshots", %{}, socket)
+    refute socket.assigns.snapshots_enabled
+    refute Map.has_key?(Settings.path() |> File.read!() |> Jason.decode!(), "snapshots_enabled")
+  end
+
   test "until switched, Jev is on only when an API key is configured" do
     :persistent_term.erase({Settings, :jev_enabled})
     assert Settings.jev_enabled?() == Beamdash.Jev.configured?()
@@ -413,6 +439,28 @@ defmodule Beamdash.SettingsTest do
 
     :ok = Settings.put_trace_timeout(30_000)
     refute Map.has_key?(Settings.path() |> File.read!() |> Jason.decode!(), "trace_timeout")
+  end
+
+  test "trace stop-after defaults to 5 calls, is saved, and resets to the default" do
+    on_exit(fn -> Settings.put_trace_call_limit(5) end)
+    assert Settings.trace_call_limit() == 5
+    refute Map.has_key?(Settings.path() |> File.read!() |> Jason.decode!(), "trace_call_limit")
+
+    assert :ok = Settings.put_trace_call_limit(50)
+    Settings.reload()
+    assert Settings.trace_call_limit() == 50
+    assert %{"trace_call_limit" => 50} = Settings.path() |> File.read!() |> Jason.decode!()
+
+    {:ok, socket} = BeamdashWeb.SettingsLive.mount(%{}, %{}, %Phoenix.LiveView.Socket{})
+
+    {:noreply, socket} =
+      BeamdashWeb.SettingsLive.handle_event("set_trace_call_limit", %{"calls" => "0"}, socket)
+
+    assert socket.assigns.trace_call_limit_error =~ "1 to 1,000,000"
+    assert Settings.trace_call_limit() == 50
+
+    :ok = Settings.put_trace_call_limit(5)
+    refute Map.has_key?(Settings.path() |> File.read!() |> Jason.decode!(), "trace_call_limit")
   end
 
   test "GC page disables analysis and clears old advice when Jev is switched off" do
