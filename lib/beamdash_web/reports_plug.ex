@@ -12,8 +12,6 @@ defmodule BeamdashWeb.ReportsPlug do
   alias Beamdash.{Reports, Target}
   alias BeamdashWeb.Loopback
 
-  @max_bytes 256 * 1024
-
   @impl true
   def init(opts), do: opts
 
@@ -27,9 +25,6 @@ defmodule BeamdashWeb.ReportsPlug do
 
       conn.method != "POST" ->
         conn |> put_resp_header("allow", "POST") |> send_resp(405, "Method Not Allowed") |> halt()
-
-      too_large?(conn) ->
-        reply(conn, 413, %{error: "a report is at most 256 KB"})
 
       true ->
         authenticate(conn, server)
@@ -74,15 +69,6 @@ defmodule BeamdashWeb.ReportsPlug do
     case get_req_header(conn, "authorization") do
       ["Bearer " <> token] -> token
       _ -> nil
-    end
-  end
-
-  defp too_large?(conn) do
-    with [length] <- get_req_header(conn, "content-length"),
-         {bytes, ""} <- Integer.parse(length) do
-      bytes > @max_bytes
-    else
-      _ -> false
     end
   end
 

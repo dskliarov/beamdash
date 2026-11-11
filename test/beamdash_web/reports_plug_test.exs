@@ -71,14 +71,15 @@ defmodule BeamdashWeb.ReportsPlugTest do
     assert get_resp_header(conn, "allow") == ["POST"]
   end
 
-  test "a body over 256 KB is refused before it is read" do
-    conn =
-      %{conn(:post, "/reports", "") | host: "localhost"}
-      |> put_req_header("content-length", Integer.to_string(300 * 1024))
-      |> put_req_header("authorization", bearer(token!()))
-      |> ReportsPlug.call(target: Target)
+  test "a body over 256 KB is refused by the endpoint before it is parsed" do
+    body = Jason.encode!(report(%{"summary" => String.duplicate("x", 300 * 1024)}))
 
-    assert conn.status == 413
+    assert_raise Plug.Parsers.RequestTooLargeError, fn ->
+      conn(:post, "/reports", body)
+      |> put_req_header("content-type", "application/json")
+      |> put_req_header("authorization", bearer(token!()))
+      |> BeamdashWeb.Endpoint.call([])
+    end
   end
 
   test "a request without a valid token is unauthorized" do

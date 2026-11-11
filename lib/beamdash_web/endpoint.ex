@@ -20,10 +20,12 @@ defmodule BeamdashWeb.Endpoint do
 
   plug Plug.RequestId
 
+  # also the POST /reports limit; parsing runs before the router
   plug Plug.Parsers,
     parsers: [:urlencoded, :multipart, :json],
     pass: ["*/*"],
-    json_decoder: Phoenix.json_library()
+    json_decoder: Phoenix.json_library(),
+    length: 256 * 1024
 
   plug Plug.MethodOverride
   plug Plug.Head
