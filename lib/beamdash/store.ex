@@ -9,6 +9,11 @@ defmodule Beamdash.Store do
   independent: purging snapshots never touches analyses.
 
   `data` is stored as JSON, so it must hold only JSON-encodable values.
+
+  Plugins keep their own events in `plugin_events` (`record_plugin/4`,
+  `query_plugin/4`), apart from each other by plugin and kind. Their
+  `max_rows` applies to each plugin separately, so a busy plugin never
+  pushes out another's rows.
   """
   use GenServer
 
@@ -27,7 +32,8 @@ defmodule Beamdash.Store do
     anomalies: %{max_age_days: 30, max_rows: 100_000},
     logs: %{max_age_days: 3, max_rows: 300_000},
     memory: %{max_age_days: 7, max_rows: 25_000},
-    ai_analyses: %{max_age_days: 90, max_rows: 10_000}
+    ai_analyses: %{max_age_days: 90, max_rows: 10_000},
+    plugin_events: %{max_age_days: 30, max_rows: 100_000}
   }
 
   @batch 5_000
@@ -87,6 +93,22 @@ defmodule Beamdash.Store do
   def times(kind, opts \\ [], server \\ __MODULE__),
     do: GenServer.call(server, {:times, kind, opts})
 
+  @doc """
+  Stores plugin `plugin`'s `rows` of `kind` (both strings). Each row is a map
+  with `:at` (unix ms), `:node`, `:data` and an optional `:key` to filter on.
+  """
+  def record_plugin(plugin, kind, rows, server \\ __MODULE__)
+      when is_binary(plugin) and is_binary(kind) and is_list(rows),
+      do: GenServer.call(server, {:record_plugin, plugin, kind, rows})
+
+  @doc """
+  Plugin `plugin`'s rows of `kind`, newest first, as `%{id, at, node, key,
+  data}`. Options: `:from`, `:to`, `:limit` (default 100), `:key` and `:node`.
+  """
+  def query_plugin(plugin, kind, opts \\ [], server \\ __MODULE__)
+      when is_binary(plugin) and is_binary(kind),
+      do: GenServer.call(server, {:query_plugin, plugin, kind, opts})
+
   @doc "Applies the policy now, as of `now` (unix ms). Returns the deleted row count per kind."
   def purge(now \\ System.system_time(:millisecond), server \\ __MODULE__),
     do: GenServer.call(server, {:purge, now}, :infinity)
@@ -122,6 +144,25 @@ defmodule Beamdash.Store do
       end)
 
     {:reply, reply, state}
+  end
+
+  def handle_call({:record_plugin, plugin, kind, rows}, _from, state) do
+    transaction(state.db, fn -> Enum.each(rows, &insert_plugin(state.db, plugin, kind, &1)) end)
+    {:reply, :ok, state}
+  end
+
+  def handle_call({:query_plugin, plugin, kind, opts}, _from, state) do
+    {where, args} = conditions([:key], opts)
+
+    sql =
+      "SELECT id, at, node, key, data FROM plugin_events " <>
+        "WHERE plugin = ? AND kind = ? AND #{where} ORDER BY at DESC, id DESC LIMIT ?"
+
+    rows =
+      for row <- run(state.db, sql, [plugin, kind] ++ args ++ [Keyword.get(opts, :limit, 100)]),
+          do: decode_row([:key], row)
+
+    {:reply, rows, state}
   end
 
   def handle_call({:query, kind, opts}, _from, state) do
@@ -195,13 +236,42 @@ defmodule Beamdash.Store do
 
       run(db, "PRAGMA user_version = 2")
     end
+
+    # version 3 added the plugins' events
+    if version < 3 do
+      run(
+        db,
+        "CREATE TABLE IF NOT EXISTS plugin_events (id INTEGER PRIMARY KEY, at INTEGER NOT NULL, " <>
+          "node TEXT NOT NULL, plugin TEXT NOT NULL, kind TEXT NOT NULL, key TEXT, " <>
+          "data TEXT NOT NULL)"
+      )
+
+      run(db, "CREATE INDEX IF NOT EXISTS plugin_events_at ON plugin_events (at)")
+
+      run(
+        db,
+        "CREATE INDEX IF NOT EXISTS plugin_events_kind ON plugin_events (plugin, kind, at)"
+      )
+
+      run(
+        db,
+        "CREATE INDEX IF NOT EXISTS plugin_events_key ON plugin_events (plugin, kind, key, at)"
+      )
+
+      run(db, "PRAGMA user_version = 3")
+    end
   end
 
   defp purge_all(db, policy, now) do
     deleted =
       for {kind, %{max_age_days: days, max_rows: max_rows}} <- policy, into: %{} do
         by_age = delete_older_than(db, kind, now - days * @day_ms)
-        by_count = delete_over(db, kind, max_rows)
+
+        by_count =
+          if kind == :plugin_events,
+            do: delete_over_per_plugin(db, max_rows),
+            else: delete_over(db, kind, max_rows)
+
         {kind, by_age + by_count}
       end
 
@@ -216,23 +286,34 @@ defmodule Beamdash.Store do
 
   defp delete_over(db, kind, max_rows) do
     [[count]] = run(db, "SELECT count(*) FROM #{kind}")
-    delete_excess(db, kind, count - max_rows, 0)
+    delete_excess(db, kind, {"1", []}, count - max_rows, 0)
   end
 
-  defp delete_excess(_db, _kind, excess, deleted) when excess <= 0, do: deleted
+  defp delete_over_per_plugin(db, max_rows) do
+    counts = run(db, "SELECT plugin, count(*) FROM plugin_events GROUP BY plugin")
 
-  defp delete_excess(db, kind, excess, deleted) do
+    counts
+    |> Enum.map(fn [plugin, count] ->
+      delete_excess(db, :plugin_events, {"plugin = ?", [plugin]}, count - max_rows, 0)
+    end)
+    |> Enum.sum()
+  end
+
+  # `filter` is `{where, args}`: the rows that count
+  defp delete_excess(_db, _kind, _filter, excess, deleted) when excess <= 0, do: deleted
+
+  defp delete_excess(db, kind, {where, args} = filter, excess, deleted) do
     limit = min(excess, @batch)
 
     sql =
       "DELETE FROM #{kind} WHERE id IN " <>
-        "(SELECT id FROM #{kind} ORDER BY at ASC, id ASC LIMIT ?)"
+        "(SELECT id FROM #{kind} WHERE #{where} ORDER BY at ASC, id ASC LIMIT ?)"
 
-    n = delete_batch(db, sql, [limit])
+    n = delete_batch(db, sql, args ++ [limit])
 
     if n < limit,
       do: deleted + n,
-      else: delete_excess(db, kind, excess - n, deleted + n)
+      else: delete_excess(db, kind, filter, excess - n, deleted + n)
   end
 
   defp drain(db, sql, args, limit, deleted) do
@@ -285,6 +366,23 @@ defmodule Beamdash.Store do
     key_values = Enum.map(keys, &key_value(Map.get(row, &1)))
     data = row |> Map.get(:data, %{}) |> jsonable() |> Jason.encode!()
     run(db, sql, [Map.fetch!(row, :at), Map.fetch!(row, :node) | key_values] ++ [data])
+  end
+
+  defp insert_plugin(db, plugin, kind, row) do
+    data = row |> Map.get(:data) |> jsonable() |> Jason.encode!()
+
+    run(
+      db,
+      "INSERT INTO plugin_events (at, node, plugin, kind, key, data) VALUES (?, ?, ?, ?, ?, ?)",
+      [
+        Map.fetch!(row, :at),
+        key_value(Map.fetch!(row, :node)),
+        plugin,
+        kind,
+        key_value(Map.get(row, :key)),
+        data
+      ]
+    )
   end
 
   defp duplicate?(db, kind, same, from) do

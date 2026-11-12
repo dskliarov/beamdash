@@ -1177,6 +1177,7 @@ defmodule Beamdash.Plugins.Build do
          {:ok, plugin} <- declaration(beams, prefix),
          :ok <- page_shapes(plugin, prefix),
          :ok <- valid_tools(plugin, prefix, beams),
+         :ok <- valid_collectors(plugin, prefix, beams),
          :ok <- valid_pages(plugin, beams),
          :ok <- imports_exist(beams) do
       {:ok, plugin}
@@ -1428,6 +1429,48 @@ defmodule Beamdash.Plugins.Build do
 
     if bad, do: {:error, bad}, else: :ok
   end
+
+  # As for the MCP tools: `use Beamdash.Plugin` checks the collectors at
+  # compile time, a hand-written __beamdash_plugin__/0 doesn't.
+  defp valid_collectors(plugin, prefix, beams) do
+    collectors = Map.get(plugin, :collectors, [])
+
+    cond do
+      Enum.find(collectors, &(not collector_shape?(&1, prefix))) ->
+        {:error,
+         "the plugin declaration of #{inspect(prefix)} has an invalid collector. A collector " <>
+           "is %{name: slug, interval: ms (at least #{Plugin.__min_collector_ms__()}), " <>
+           "call: {module, fun}}, and its module is #{inspect(prefix)} or nested under it"}
+
+      length(Enum.uniq_by(collectors, & &1.name)) != length(collectors) ->
+        {:error, "the plugin declaration of #{inspect(prefix)} has two collectors with one name"}
+
+      true ->
+        bad =
+          Enum.find_value(collectors, fn %{call: {mod, fun}} ->
+            cond do
+              not Map.has_key?(beams, mod) ->
+                "collector module #{inspect(mod)} is not defined by the plugin"
+
+              {fun, 1} not in beams[mod].exports ->
+                "collector #{inspect(mod)}.#{fun}/1 is not exported"
+
+              true ->
+                nil
+            end
+          end)
+
+        if bad, do: {:error, bad}, else: :ok
+    end
+  end
+
+  defp collector_shape?(%{name: name, interval: interval, call: {m, f}}, prefix),
+    do:
+      Plugin.__valid_slug__?(name) and is_integer(interval) and
+        interval >= Plugin.__min_collector_ms__() and is_atom(m) and
+        m not in [nil, true, false] and is_atom(f) and named_under?(m, prefix)
+
+  defp collector_shape?(_, _), do: false
 
   defp imports_exist(beams) do
     missing =
