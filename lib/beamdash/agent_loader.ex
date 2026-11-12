@@ -2,12 +2,13 @@ defmodule Beamdash.AgentLoader do
   @moduledoc """
   Loads helper modules (`:beamdash_agent`, `:erlyberly`) into a target node.
 
-  The agent is compiled on this machine. If the target runs an older
-  Erlang/OTP that refuses the compiled BEAM, we recompile the module's
-  abstract code here for the target's release (the compiler's `r25`..`r27`
-  options), so the target needs no `compiler` application, which releases
-  often leave out. Only when that fails too (a release those options do not
-  cover) do we send the abstract code and let the target compile it.
+  The agent is compiled on this machine. When the target runs an older
+  Erlang/OTP, the module's abstract code is recompiled here for the target's
+  release (the compiler's `r25`..`r27` options) before anything is sent, so
+  the target never gets a BEAM it would refuse (and log as "corrupt atom
+  table"), and needs no `compiler` application, which releases often leave
+  out. A target that still refuses the BEAM it gets (a release those
+  options do not cover) is sent the abstract code to compile itself.
   """
 
   @doc "Makes sure the current version of `module` is loaded on `node`."
@@ -44,19 +45,24 @@ defmodule Beamdash.AgentLoader do
   end
 
   defp load(node, mod, bin, file, rpc) do
-    case rpc.(node, :code, :load_binary, [mod, file, bin]) do
-      {:ok, {:module, ^mod}} -> :ok
-      {:ok, {:error, _reason}} -> load_for_release(node, mod, bin, file, rpc)
-      {:error, reason} -> {:error, {:agent_load_failed, reason}}
+    case release_option(node, rpc) do
+      {:ok, option} ->
+        load_for_release(node, mod, bin, file, rpc, option)
+
+      :error ->
+        case rpc.(node, :code, :load_binary, [mod, file, bin]) do
+          {:ok, {:module, ^mod}} -> :ok
+          {:ok, {:error, _reason}} -> compile_on_target(node, mod, bin, file, rpc)
+          {:error, reason} -> {:error, {:agent_load_failed, reason}}
+        end
     end
   end
 
   # The md5 check keeps a reconnect from reloading the same recompiled
   # module, which would fail with not_purged while agent processes still
   # run the code it would make old.
-  defp load_for_release(node, mod, bin, file, rpc) do
+  defp load_for_release(node, mod, bin, file, rpc, option) do
     with {:ok, forms} <- abstract_forms(bin),
-         {:ok, option} <- release_option(node, rpc),
          {:ok, ^mod, release_bin} <- :compile.forms(forms, [:binary, :return_errors, option]),
          :ok <- load_unless_loaded(node, mod, file, release_bin, rpc) do
       :ok
