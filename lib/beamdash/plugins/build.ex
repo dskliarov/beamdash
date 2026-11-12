@@ -162,6 +162,26 @@ defmodule Beamdash.Plugins.Build do
 
   ## Loading
 
+  @doc """
+  Makes each loaded module of `modules` old code, without purging it: the
+  processes running it carry on, but a compile in this VM no longer finds
+  it. A rebuild does this to the plugin's running modules first; otherwise
+  the compiler checks a module that imports or calls another of them
+  against the running version, and refuses a function the same rebuild
+  adds. Until the new code is loaded (or the old put back) the plugin's
+  modules can't be called.
+  """
+  @spec set_aside([module()]) :: :ok
+  def set_aside(modules) do
+    for module <- modules, :code.is_loaded(module) != false do
+      # only one old version is kept: drop an older one nobody runs
+      :code.soft_purge(module)
+      :code.delete(module)
+    end
+
+    :ok
+  end
+
   @doc "Purges and deletes each module, twice, so old code goes too."
   @spec unload([module()]) :: :ok
   def unload(modules) do

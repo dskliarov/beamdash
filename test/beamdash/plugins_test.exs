@@ -478,6 +478,41 @@ defmodule Beamdash.PluginsTest do
       assert HelloPlugin.Extra.x() == 1
     end
 
+    test "a page may import a function the same rebuild adds to another module",
+         %{base: base, dir: dir} do
+      src = copy_fixture(base)
+      server = start_plugins(dir)
+      install!(server, ~s|{:hello_plugin, path: "#{src}"}|)
+
+      # the running HelloPlugin.Tools has no greeting/0: the compile must
+      # wait for the new one instead of checking the import against it
+      tools = Path.join(src, "lib/hello_plugin/tools.ex")
+
+      File.write!(
+        tools,
+        String.replace(
+          File.read!(tools),
+          ~r/\nend\s*\z/,
+          "\n\n  def greeting, do: \"Greetings\"\nend\n"
+        )
+      )
+
+      live = Path.join(src, "lib/hello_plugin/hello_live.ex")
+
+      File.write!(
+        live,
+        File.read!(live)
+        |> String.replace(
+          "  use Beamdash.Plugin.Page\n",
+          "  use Beamdash.Plugin.Page\n  import HelloPlugin.Tools, only: [greeting: 0]\n"
+        )
+        |> String.replace("Hello from {@node", "{greeting()} from {@node")
+      )
+
+      assert :ok = Plugins.rebuild(server, :hello_plugin)
+      assert render_hello() =~ "Greetings from nowhere"
+    end
+
     test "a failed rebuild frees the slot", %{base: base, dir: dir} do
       src = copy_fixture(base)
       server = start_plugins(dir)
