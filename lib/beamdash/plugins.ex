@@ -547,7 +547,8 @@ defmodule Beamdash.Plugins do
 
   ## Rebuild
 
-  # In the caller: build into ebin.new; the old code stays loaded.
+  # In the caller: build into ebin.new. The old code is set aside while it
+  # compiles (Build.set_aside/1) and put back if the build fails.
   defp build_new(entry, install_dir) do
     src = entry.resolved
     ebin_new = Path.join(install_dir, "ebin.new")
@@ -555,6 +556,7 @@ defmodule Beamdash.Plugins do
 
     with :ok <- Build.safe_rm_rf(ebin_new),
          {:ok, project} <- read_project(src, entry.app),
+         :ok <- Build.set_aside(entry.modules),
          {:ok, built} <- build(src, ebin_new, entry.modules) do
       {:ok, Map.merge(built, %{ebin_new: ebin_new, supports: project.supports})}
     else
