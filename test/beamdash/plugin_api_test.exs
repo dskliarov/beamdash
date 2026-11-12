@@ -137,7 +137,7 @@ defmodule Beamdash.PluginApiTest do
           {"a missing :name", ~s|pages: [{"ok", "OK", Some.Page}]|, ~r/missing :name/},
           {"missing :pages", ~s|name: "x"|, ~r/missing :pages/},
           {"an unknown key", ~s|name: "x", #{@pages}, colour: :red|,
-           ~r/unknown option :colour\. The supported options are :name, :pages, :main and :mcp_tools$/},
+           ~r/unknown option :colour\. The supported options are :name, :pages, :main, :mcp_tools and :collectors$/},
           {"a main page that isn't one of the pages", ~s|name: "x", #{@pages}, main: "nope"|,
            ~r/:main must be the slug of one of the pages \("ok"\), got: "nope"/},
           {":apps", ~s|name: "x", #{@pages}, apps: [riak_core: "~> 1.0"]|,
@@ -171,7 +171,22 @@ defmodule Beamdash.PluginApiTest do
            ~r/nested under it/},
           {"two MCP tools with one name",
            ~s|name: "x", #{@pages}, mcp_tools: [{"t", "T", %{}, {__MODULE__.Tools, :a}}, {"t", "U", %{}, {__MODULE__.Tools, :b}}]|,
-           ~r/duplicate MCP tool "t"/}
+           ~r/duplicate MCP tool "t"/},
+          {"a collector name that isn't a slug",
+           ~s|name: "x", #{@pages}, collectors: [{"Bad", 5_000, {__MODULE__.C, :run}}]|,
+           ~r/invalid collector name "Bad"/},
+          {"a collector interval under a second",
+           ~s|name: "x", #{@pages}, collectors: [{"c", 999, {__MODULE__.C, :run}}]|,
+           ~r/interval of collector "c" must be an integer of at least 1000 ms/},
+          {"a collector in another module",
+           ~s|name: "x", #{@pages}, collectors: [{"c", 5_000, {Other.C, :run}}]|,
+           ~r/nested under it/},
+          {"two collectors with one name",
+           ~s|name: "x", #{@pages}, collectors: [{"c", 5_000, {__MODULE__.C, :a}}, {"c", 6_000, {__MODULE__.C, :b}}]|,
+           ~r/duplicate collector "c"/},
+          {"a collector that isn't a 3-tuple",
+           ~s|name: "x", #{@pages}, collectors: [{"c", {__MODULE__.C, :run}}]|,
+           ~r/:collectors must be a list of \{name, interval_ms, \{module, fun\}\} tuples/}
         ] do
       # Source and options, not the regex: compiled regexes can't be escaped
       # on OTP 28 with Elixir < 1.19.
@@ -214,7 +229,8 @@ defmodule Beamdash.PluginApiTest do
                  ],
                  # the first page, as none is named
                  main: "one",
-                 mcp_tools: []
+                 mcp_tools: [],
+                 collectors: []
                }
       after
         :code.purge(mod)
@@ -253,6 +269,122 @@ defmodule Beamdash.PluginApiTest do
       :code.purge(mod)
       :code.delete(mod)
       :code.purge(mod)
+    end
+  end
+
+  test "collectors are kept as declared, with their interval, module and function" do
+    mod = unique(CollectorPlugin)
+
+    source = """
+    defmodule #{inspect(mod)} do
+      use Beamdash.Plugin,
+        name: "Collectors",
+        pages: [{"one", "One", __MODULE__.One}],
+        collectors: [{"handoffs", 5_000, {__MODULE__.Collect, :handoffs}}]
+    end
+    """
+
+    try do
+      Code.compile_string(source)
+
+      assert [%{name: "handoffs", interval: 5_000, call: {collect, :handoffs}}] =
+               mod.__beamdash_plugin__().collectors
+
+      assert collect == Module.concat(mod, Collect)
+    after
+      :code.purge(mod)
+      :code.delete(mod)
+      :code.purge(mod)
+    end
+  end
+
+  describe "record and query" do
+    setup do
+      dir =
+        Path.join(
+          System.tmp_dir!(),
+          "beamdash_plugin_store_#{System.unique_integer([:positive])}"
+        )
+
+      store = :"plugin_store_#{System.unique_integer([:positive])}"
+
+      start_supervised!(
+        {Beamdash.Store,
+         name: store, path: Path.join(dir, "e.sqlite3"), purge_interval: :infinity}
+      )
+
+      on_exit(fn -> File.rm_rf(dir) end)
+      %{store: store}
+    end
+
+    test "rows come back newest first, kept apart by plugin and kind", %{store: store} do
+      assert Plugin.history?(store: store)
+
+      :ok =
+        Plugin.record(
+          :my_plugin,
+          "handoffs",
+          [
+            %{at: 1_000, key: "c1", node: :a@h, data: %{module: :kv_vnode, partition: 0}},
+            %{at: 2_000, key: "c2", data: %{pid: self()}}
+          ],
+          store: store
+        )
+
+      :ok = Plugin.record(:other_plugin, "handoffs", [%{data: 1}], store: store)
+
+      assert {:ok, [second, first]} = Plugin.query(:my_plugin, "handoffs", store: store)
+
+      assert first == %{
+               id: first.id,
+               at: 1_000,
+               node: "a@h",
+               key: "c1",
+               data: %{"module" => "kv_vnode", "partition" => 0}
+             }
+
+      # no node attached: ""; a pid is stored as its text
+      assert %{at: 2_000, node: "", key: "c2", data: %{"pid" => "#PID<" <> _}} = second
+
+      assert {:ok, [%{key: "c1"}]} = Plugin.query(:my_plugin, "handoffs", key: "c1", store: store)
+
+      assert {:ok, [%{at: 2_000}]} =
+               Plugin.query(:my_plugin, "handoffs", from: 1_500, store: store)
+
+      assert {:ok, [_]} = Plugin.query(:my_plugin, "handoffs", limit: 1, store: store)
+      assert {:ok, [%{data: 1}]} = Plugin.query(:other_plugin, "handoffs", store: store)
+    end
+
+    test "at defaults to now", %{store: store} do
+      before = System.system_time(:millisecond)
+      :ok = Plugin.record(:my_plugin, "k", [%{data: %{}}], store: store)
+      assert {:ok, [%{at: at}]} = Plugin.query(:my_plugin, "k", store: store)
+      assert at >= before
+    end
+
+    test "a bad kind or row stores nothing", %{store: store} do
+      big = String.duplicate("x", 70_000)
+
+      for {kind, rows, message} <- [
+            {"Bad Kind", [%{data: 1}], ~r/invalid kind "Bad Kind"/},
+            {"k", [%{data: 1}, %{no: :data}], ~r/must be a map with :data/},
+            {"k", [%{data: 1, at: "now"}], ~r/:at must be unix ms/},
+            {"k", [%{data: 1, key: :c1}], ~r/:key must be a string/},
+            {"k", [%{data: 1, node: 7}], ~r/:node must be a node or a string/},
+            {"k", [%{data: big}], ~r/over 64 KB/}
+          ] do
+        assert {:error, msg} = Plugin.record(:my_plugin, kind, rows, store: store)
+        assert msg =~ message
+      end
+
+      assert {:ok, []} = Plugin.query(:my_plugin, "k", store: store)
+      assert {:error, "invalid kind" <> _} = Plugin.query(:my_plugin, "Nope", store: store)
+    end
+
+    test "with the event store off: disabled" do
+      refute Plugin.history?(store: :no_such_store)
+      assert Plugin.record(:p, "k", [%{data: 1}], store: :no_such_store) == {:error, :disabled}
+      assert Plugin.query(:p, "k", store: :no_such_store) == {:error, :disabled}
     end
   end
 

@@ -706,7 +706,17 @@ defmodule Beamdash.PluginsBuildTest do
         {~S|%{name: "C", pages: [], mcp_tools: [%{name: "t", description: "d", input_schema: %{}, call: {__MODULE__.T, :f}}]}|,
          ~r/MCP tool module .* is not defined by the plugin/},
         {~S|%{name: "C", pages: [], mcp_tools: [%{name: "t", description: "d", input_schema: %{}, call: {__MODULE__.T, :f}}, %{name: "t", description: "e", input_schema: %{}, call: {__MODULE__.T, :g}}]}|,
-         ~r/two MCP tools with one name/}
+         ~r/two MCP tools with one name/},
+        {~S|%{name: "C", pages: [], collectors: [%{name: "c", interval: 10, call: {__MODULE__.T, :f}}]}|,
+         ~r/invalid collector/},
+        {~S|%{name: "C", pages: [], collectors: [%{name: "c", interval: 5000, call: {X.T, :f}}]}|,
+         ~r/invalid collector/},
+        {~S|%{name: "C", pages: [], collectors: [%{name: "c", interval: 5000, call: {__MODULE__.T, :f}}]}|,
+         ~r/collector module .* is not defined by the plugin/},
+        {~S|%{name: "C", pages: [], collectors: [%{name: "c", interval: 5000, call: {__MODULE__, :nope}}]}|,
+         ~r/collector .*\.nope\/1 is not exported/},
+        {~S|%{name: "C", pages: [], collectors: [%{name: "c", interval: 5000, call: {__MODULE__.T, :f}}, %{name: "c", interval: 6000, call: {__MODULE__.T, :g}}]}|,
+         ~r/two collectors with one name/}
       ]
 
       for {{decl, expected}, i} <- Enum.with_index(cases) do

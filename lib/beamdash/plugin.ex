@@ -63,11 +63,47 @@ defmodule Beamdash.Plugin do
       doesn't exist, and the install refuses it.
     * CSS goes in `priv/static/plugin.css`. It is loaded on the plugin's
       pages only. Prefix the class names with the plugin's app name.
+
+  ## Keeping history
+
+  `get_setting/3` and `put_setting/3` keep a few preferences. For history
+  (events, samples, an audit log), a plugin stores rows in beamdash's event
+  store with `record/4` and reads them back with `query/3`. Each plugin's
+  rows are kept apart by its app name and a `kind` of its choosing, for 30
+  days and at most 100,000 rows per plugin (`config :beamdash, :retention,
+  plugin_events: %{max_age_days: ..., max_rows: ...}`).
+
+  A page records only while it is open. To record whatever page is open,
+  declare collectors (the `:collectors` option): beamdash calls each one
+  on its interval while the plugin is active, with the state its previous
+  call returned, so it can store what changed since then.
+
+      use Beamdash.Plugin,
+        name: "My app",
+        pages: [{"overview", "Overview", MyPlugin.OverviewLive}],
+        collectors: [{"workers", 10_000, {MyPlugin.Collect, :workers}}]
+
+      def workers(previous) do
+        with {:ok, now} <- Beamdash.Plugin.rpc(:my_app_server, :workers, []) do
+          for w <- now -- (previous || []), do: ...
+          Beamdash.Plugin.record(:my_plugin, "workers", rows)
+          {:ok, now}
+        end
+      end
+
+  The event store can be switched off (`config :beamdash, :store_file,
+  false`). Then `record/4` and `query/3` return `{:error, :disabled}` and
+  collectors don't run. Older beamdash builds have neither: check
+  `function_exported?(Beamdash.Plugin, :record, 4)`.
   """
 
-  alias Beamdash.{Apps, Target}
+  alias Beamdash.{Apps, Store, Target}
 
-  @options [:name, :pages, :main, :mcp_tools]
+  @options [:name, :pages, :main, :mcp_tools, :collectors]
+  @options_text ":name, :pages, :main, :mcp_tools and :collectors"
+  @min_collector_ms 1_000
+  @max_event_bytes 65_536
+  @max_query_rows 10_000
   @required [:name, :pages]
 
   @doc """
@@ -83,10 +119,20 @@ defmodule Beamdash.Plugin do
       `{name, description, input_schema, {module, fun}}`. `fun/1` takes the
       call's arguments (a map) and returns `{:ok, data}` or `{:error, message}`.
       The tool is offered as `<app>.<name>` while the plugin is active.
+    * `:collectors`: functions beamdash calls on an interval while the
+      plugin is active and the event store is on, as
+      `{name, interval_ms, {module, fun}}` (at least #{@min_collector_ms} ms).
+      `fun/1` takes the state its previous call returned (`nil` at first,
+      and again after the attached node changes) and returns `{:ok, state}`;
+      anything else, a raise or a call that takes longer than the interval
+      (at most 60 s) keeps the previous state. A collector stores what it
+      finds with `record/4`. One call of a collector runs at a time, and the
+      next starts `interval_ms` after the previous one ended.
 
   Defines `__beamdash_plugin__/0`, which returns
   `%{name: name, pages: [%{slug: slug, label: label, module: module}],
-  main: slug}`.
+  main: slug, mcp_tools: [...], collectors: [%{name: name, interval: ms,
+  call: {module, fun}}]}`.
 
   The options are checked at compile time. They must be literals, apart from
   aliases for the page modules. The page modules don't need to be compiled
@@ -203,6 +249,114 @@ defmodule Beamdash.Plugin do
   def put_setting(plugin, key, value) when is_atom(plugin) and is_binary(key),
     do: Beamdash.Settings.put_plugin_setting(plugin, key, value)
 
+  @doc """
+  Stores `rows` of `kind` for plugin `plugin` (its app name) in beamdash's
+  event store. `kind` is a slug of the plugin's choosing (like a page
+  slug). Each row is a map with:
+
+    * `:data` (required): JSON data, at most #{div(@max_event_bytes, 1024)} KB encoded. Atoms,
+      pids and tuples are stored as text.
+    * `:key`: a string to filter on in `query/3` (a cluster, a node, a pid).
+    * `:at`: unix ms; now by default.
+    * `:node`: the node it is about; the attached node by default (`""`
+      when none is).
+
+  Returns `:ok`, `{:error, :disabled}` when the event store is off, or
+  `{:error, message}` for a bad kind or row (then nothing is stored).
+  `opts` takes `store:`, the `Beamdash.Store` server, for tests.
+  """
+  @spec record(atom(), String.t(), [map()], keyword()) ::
+          :ok | {:error, :disabled | String.t()}
+  def record(plugin, kind, rows, opts \\ [])
+      when is_atom(plugin) and is_binary(kind) and is_list(rows) and is_list(opts) do
+    with :ok <- valid_kind(kind),
+         {:ok, rows} <- event_rows(rows) do
+      store_call(opts, &Store.record_plugin(Atom.to_string(plugin), kind, rows, &1))
+    end
+  end
+
+  @doc """
+  Plugin `plugin`'s rows of `kind`, newest first, as `{:ok, [%{id, at, node,
+  key, data}]}`; `data` comes back as JSON decodes it (string keys). Options:
+  `:from` and `:to` (unix ms), `:key`, `:node`, `:limit` (default 100, at
+  most #{@max_query_rows}) and `store:`. Returns `{:error, :disabled}` when the event
+  store is off.
+  """
+  @spec query(atom(), String.t(), keyword()) ::
+          {:ok, [map()]} | {:error, :disabled | String.t()}
+  def query(plugin, kind, opts \\ [])
+      when is_atom(plugin) and is_binary(kind) and is_list(opts) do
+    with :ok <- valid_kind(kind) do
+      filters =
+        opts
+        |> Keyword.take([:from, :to, :key, :node])
+        |> Keyword.put(:limit, opts |> Keyword.get(:limit, 100) |> min(@max_query_rows))
+
+      store_call(opts, fn store ->
+        {:ok, Store.query_plugin(Atom.to_string(plugin), kind, filters, store)}
+      end)
+    end
+  end
+
+  defp valid_kind(kind) do
+    if __valid_slug__?(kind),
+      do: :ok,
+      else: {:error, "invalid kind #{inspect(kind)}: a kind is a slug, like \"handoffs\""}
+  end
+
+  defp event_rows(rows) do
+    now = System.system_time(:millisecond)
+    attached = Atom.to_string(__current_node__(Target) || :"")
+
+    Enum.reduce_while(rows, {:ok, []}, fn row, {:ok, acc} ->
+      case event_row(row, now, attached) do
+        {:ok, row} -> {:cont, {:ok, [row | acc]}}
+        error -> {:halt, error}
+      end
+    end)
+    |> case do
+      {:ok, rows} -> {:ok, Enum.reverse(rows)}
+      error -> error
+    end
+  end
+
+  defp event_row(%{data: data} = row, now, attached) do
+    at = Map.get(row, :at, now)
+    key = Map.get(row, :key)
+    node = Map.get(row, :node) || attached
+
+    cond do
+      not is_integer(at) ->
+        {:error, "a row's :at must be unix ms (an integer), got: #{inspect(at)}"}
+
+      not (is_nil(key) or is_binary(key)) ->
+        {:error, "a row's :key must be a string, got: #{inspect(key)}"}
+
+      not (is_atom(node) or is_binary(node)) ->
+        {:error, "a row's :node must be a node or a string, got: #{inspect(node)}"}
+
+      byte_size(Jason.encode!(Store.jsonable(data))) > @max_event_bytes ->
+        {:error, "a row's :data is over #{div(@max_event_bytes, 1024)} KB as JSON"}
+
+      true ->
+        {:ok, %{at: at, key: key, node: node, data: data}}
+    end
+  end
+
+  defp event_row(row, _now, _attached),
+    do: {:error, "a row must be a map with :data, got: #{inspect(row, limit: 5)}"}
+
+  defp store_call(opts, fun) do
+    store = Keyword.get(opts, :store, Store)
+    if GenServer.whereis(store), do: fun.(store), else: {:error, :disabled}
+  catch
+    :exit, {:noproc, _} -> {:error, :disabled}
+  end
+
+  @doc "Whether beamdash's event store is on, so `record/4` and `query/3` work."
+  @spec history?(keyword()) :: boolean()
+  def history?(opts \\ []), do: GenServer.whereis(Keyword.get(opts, :store, Store)) != nil
+
   @doc "beamdash's own version, such as `\"0.1.0\"`."
   @spec version() :: String.t()
   def version, do: to_string(Application.spec(:beamdash, :vsn))
@@ -236,15 +390,13 @@ defmodule Beamdash.Plugin do
 
       [key | _] when key in [:apps, :beamdash, :versions] ->
         fail.(
-          "unknown option #{inspect(key)}. The supported options are :name, :pages, :main and :mcp_tools. " <>
+          "unknown option #{inspect(key)}. The supported options are #{@options_text}. " <>
             "Supported applications, and the beamdash version, go in mix.exs as " <>
             "`runtime: false` deps, for example {:riak_core, \"~> 0.10\", runtime: false}"
         )
 
       [key | _] ->
-        fail.(
-          "unknown option #{inspect(key)}. The supported options are :name, :pages, :main and :mcp_tools"
-        )
+        fail.("unknown option #{inspect(key)}. The supported options are #{@options_text}")
     end
 
     case keys -- Enum.uniq(keys) do
@@ -266,7 +418,8 @@ defmodule Beamdash.Plugin do
       name: name,
       pages: pages,
       main: main!(Keyword.get(opts, :main), pages, fail),
-      mcp_tools: mcp_tools!(Keyword.get(opts, :mcp_tools, []), env, fail)
+      mcp_tools: mcp_tools!(Keyword.get(opts, :mcp_tools, []), env, fail),
+      collectors: collectors!(Keyword.get(opts, :collectors, []), env, fail)
     }
   end
 
@@ -402,6 +555,67 @@ defmodule Beamdash.Plugin do
         "got: #{Macro.to_string(other)}"
     )
   end
+
+  defp collectors!(collectors, env, fail) do
+    unless is_list(collectors) do
+      fail.(
+        ":collectors must be a list of {name, interval_ms, {module, fun}}, " <>
+          "got: #{Macro.to_string(collectors)}"
+      )
+    end
+
+    collectors = Enum.map(collectors, &collector!(&1, env, fail))
+
+    collectors
+    |> Enum.map(& &1.name)
+    |> Enum.reduce(MapSet.new(), fn name, seen ->
+      if MapSet.member?(seen, name),
+        do: fail.("duplicate collector #{inspect(name)} in :collectors")
+
+      MapSet.put(seen, name)
+    end)
+
+    collectors
+  end
+
+  defp collector!({:{}, _, [name, interval, {module_ast, fun}]} = collector, env, fail) do
+    module = Macro.expand(module_ast, env)
+
+    unless __valid_slug__?(name) do
+      fail.(
+        "invalid collector name #{Macro.to_string(name)} in :collectors. " <>
+          "A name is a slug, like \"handoffs\""
+      )
+    end
+
+    unless is_integer(interval) and interval >= @min_collector_ms do
+      fail.(
+        "the interval of collector #{inspect(name)} must be an integer of at least " <>
+          "#{@min_collector_ms} ms, got: #{Macro.to_string(interval)}"
+      )
+    end
+
+    unless is_atom(module) and module not in [nil, true, false] and is_atom(fun) and
+             nested_under?(module, env.module) do
+      fail.(
+        "the call of collector #{inspect(name)} must be {module, fun}, with a module that is " <>
+          "#{inspect(env.module)} or nested under it, got: #{Macro.to_string(collector)}"
+      )
+    end
+
+    %{name: name, interval: interval, call: {module, fun}}
+  end
+
+  defp collector!(other, _env, fail) do
+    fail.(
+      ":collectors must be a list of {name, interval_ms, {module, fun}} tuples, " <>
+        "got: #{Macro.to_string(other)}"
+    )
+  end
+
+  @doc false
+  # The shortest collector interval, also checked by the install.
+  def __min_collector_ms__, do: @min_collector_ms
 
   defp nested_under?(module, entry) do
     name = Atom.to_string(module)

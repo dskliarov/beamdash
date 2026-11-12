@@ -23,7 +23,10 @@ defmodule Beamdash.Application do
       BeamdashWeb.Endpoint
     ]
 
-    store = if Beamdash.Store.path(), do: [Beamdash.Store, Beamdash.Sampler], else: []
+    store =
+      if Beamdash.Store.path(),
+        do: [Beamdash.Store, Beamdash.Sampler, Beamdash.Plugins.Collectors],
+        else: []
 
     Supervisor.start_link(children ++ store, strategy: :one_for_one, name: Beamdash.Supervisor)
   end

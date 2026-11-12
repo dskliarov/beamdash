@@ -228,6 +228,69 @@ defmodule Beamdash.StoreTest do
     assert [_, _] = Store.query(:ai_analyses, [], ctx.name)
   end
 
+  describe "plugin events" do
+    defp event(at, key \\ nil, data \\ %{}), do: %{at: at, node: "app@host", key: key, data: data}
+
+    test "are kept apart by plugin and kind, newest first", ctx do
+      :ok = Store.record_plugin("a", "handoffs", [event(@now - 1_000), event(@now)], ctx.name)
+      :ok = Store.record_plugin("a", "members", [event(@now)], ctx.name)
+      :ok = Store.record_plugin("b", "handoffs", [event(@now)], ctx.name)
+
+      assert [%{at: @now}, %{at: at}] = Store.query_plugin("a", "handoffs", [], ctx.name)
+      assert at == @now - 1_000
+      assert [_] = Store.query_plugin("a", "members", [], ctx.name)
+      assert [_] = Store.query_plugin("b", "handoffs", [], ctx.name)
+      assert [] = Store.query_plugin("c", "handoffs", [], ctx.name)
+    end
+
+    test "filter by key, node and time; data comes back decoded", ctx do
+      :ok =
+        Store.record_plugin(
+          "a",
+          "k",
+          [
+            event(@now - 2_000, "c1", %{n: 1, node: :x@h}),
+            event(@now - 1_000, "c2"),
+            %{event(@now, "c1") | node: :other@host}
+          ],
+          ctx.name
+        )
+
+      assert [%{key: "c1", node: "other@host"}, %{key: "c1", data: data}] =
+               Store.query_plugin("a", "k", [key: "c1"], ctx.name)
+
+      assert data == %{"n" => 1, "node" => "x@h"}
+      assert [_] = Store.query_plugin("a", "k", [node: "other@host"], ctx.name)
+      assert [_] = Store.query_plugin("a", "k", [from: @now - 1_500, to: @now - 500], ctx.name)
+      assert [_] = Store.query_plugin("a", "k", [limit: 1], ctx.name)
+    end
+
+    test "purge applies max_age_days, and max_rows to each plugin on its own", ctx do
+      Application.put_env(:beamdash, :retention, %{
+        plugin_events: %{max_age_days: 1, max_rows: 2}
+      })
+
+      :ok = Store.record_plugin("busy", "k", for(i <- 0..4, do: event(@now - i)), ctx.name)
+      :ok = Store.record_plugin("quiet", "k", [event(@now), event(@now - 2 * @day)], ctx.name)
+
+      assert %{plugin_events: 4} = Store.purge(@now, ctx.name)
+      assert [@now, @now - 1] == Enum.map(Store.query_plugin("busy", "k", [], ctx.name), & &1.at)
+      assert [%{at: @now}] = Store.query_plugin("quiet", "k", [], ctx.name)
+    end
+
+    test "a file from before plugin events gets their table", ctx do
+      stop_supervised!(Store)
+      File.rm!(ctx.path)
+      {:ok, db} = Exqlite.Sqlite3.open(ctx.path)
+      :ok = Exqlite.Sqlite3.execute(db, "PRAGMA user_version = 2")
+      :ok = Exqlite.Sqlite3.close(db)
+
+      ctx.start.()
+      :ok = Store.record_plugin("a", "k", [event(@now)], ctx.name)
+      assert [_] = Store.query_plugin("a", "k", [], ctx.name)
+    end
+  end
+
   test "policy merges overrides onto the defaults" do
     Application.put_env(:beamdash, :retention, %{logs: %{max_age_days: 1}})
 

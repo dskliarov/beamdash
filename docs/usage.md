@@ -280,6 +280,8 @@ To write a plugin, start from the riak_core plugin ([beamdash-riak-core-plugin](
 - No other runtime deps: a plugin can use only what beamdash ships (Elixir, Phoenix, LiveView, Jason…).
 - Code on the attached node is called only through `Beamdash.Plugin.rpc/5`.
 - `mcp_tools:` is optional. Each tool is a `{name, description, schema, {module, fun}}` tuple, with the module under the plugin's prefix. Its function takes the arguments map and returns `{:ok, data}` or `{:error, message}`. The MCP server offers it as `<app>.<name>` while the application runs (see [MCP tools](mcp.md#tools)).
+- `collectors:` is optional. Each collector is a `{name, interval_ms, {module, fun}}` tuple (at least 1000 ms), with the module under the plugin's prefix. While the plugin is active and the event store is on, beamdash calls `fun/1` on that interval, whichever page is open. The function gets the state its previous call returned (`nil` at first, and again after you attach another node) and returns `{:ok, state}`.
+- To keep history, a plugin stores rows in the event store with `Beamdash.Plugin.record/4` and reads them with `Beamdash.Plugin.query/3`. Each plugin's rows are kept apart from other plugins' rows. They are kept for 30 days, at most 100,000 per plugin; `config :beamdash, :retention, plugin_events: %{max_age_days: ..., max_rows: ...}` changes that. For a few preferences, use `get_setting/3` and `put_setting/3` instead.
 - Every module sits under one top-level prefix, which no module beamdash, OTP or another plugin has loaded may already use.
 - Protocol implementations have no effect: beamdash's protocols are consolidated.
 
