@@ -743,8 +743,7 @@ defmodule Beamdash.Plugins do
     ebin = Path.join(install_dir, "ebin")
     tidy(install_dir)
 
-    src =
-      if saved.source == :path, do: saved.resolved, else: Path.join(install_dir, "src")
+    src = startup_src(saved, install_dir)
 
     entry =
       Map.merge(saved, %{modules: [], plugin: nil, failed: nil, building: false, build_error: nil})
@@ -755,6 +754,15 @@ defmodule Beamdash.Plugins do
     else
       {:loaded,
        loaded(%{entry | building: false}, guarded(fn -> load_ebin(ebin, saved.prefix) end))}
+    end
+  end
+
+  defp startup_src(%{source: :path, resolved: path}, _install_dir), do: path
+
+  defp startup_src(saved, install_dir) do
+    case Spec.parse(saved.spec_text) do
+      {:ok, spec} -> Fetch.src_root(install_dir, spec.sparse)
+      {:error, _} -> Fetch.src_root(install_dir, nil)
     end
   end
 

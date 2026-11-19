@@ -6,6 +6,7 @@ defmodule Beamdash.Plugins.Spec do
       {:riak_core_plugin, "~> 0.1"}
       {:riak_core_plugin, git: "https://github.com/o/r", tag: "0.0.1"}
       {:riak_core_plugin, github: "o/r", branch: "main"}
+      {:bandit_plugin, git: "https://github.com/o/plugins", sparse: "bandit_plugin"}
       {:riak_core_plugin, path: "~/projects/riak_core_plugin"}
       {:riak_core_plugin, "~> 0.1", hex: :other_package}
 
@@ -35,7 +36,8 @@ defmodule Beamdash.Plugins.Spec do
           url: String.t() | nil,
           github: String.t() | nil,
           ref: ref() | nil,
-          path: String.t() | nil
+          path: String.t() | nil,
+          sparse: String.t() | nil
         }
 
   @max_bytes 4_000
@@ -50,7 +52,7 @@ defmodule Beamdash.Plugins.Spec do
   @ref_kinds %{"tag" => :tag, "branch" => :branch, "ref" => :ref}
   @version_hint_re ~r/\{\s*:([a-z][a-z0-9_]*)\s*,\s*(\d+\.\d+(?:\.\d+)?)\s*\}/
   @url_hint_re ~r{git:\s*(https?://|git@|ssh://)}
-  @allowed ~w(git github path hex tag branch ref)
+  @allowed ~w(git github path hex tag branch ref sparse)
   @sources ~w(git github path hex)
 
   @syntax_hint ~S|use mix.exs dependency syntax, e.g. {:my_plugin, "~> 0.1"}|
@@ -96,7 +98,9 @@ defmodule Beamdash.Plugins.Spec do
         {kind, value} -> ", #{kind}: #{inspect(value)}"
       end
 
-    "{#{inspect(spec.app)}, #{source}#{ref}}"
+    sparse = if spec.sparse, do: ", sparse: #{inspect(spec.sparse)}", else: ""
+
+    "{#{inspect(spec.app)}, #{source}#{ref}#{sparse}}"
   end
 
   def to_string(%{source: :path} = spec),
@@ -276,7 +280,7 @@ defmodule Beamdash.Plugins.Spec do
   end
 
   defp build_source("hex", kv, req) do
-    with :ok <- no_refs(kv, "hex"),
+    with :ok <- no_git_options(kv, "hex"),
          {:ok, package} <- hex_package(kv) do
       if req == nil,
         do: {:error, "hex: needs a version requirement, e.g. {:p, \"~> 0.1\", hex: :name}"},
@@ -285,7 +289,7 @@ defmodule Beamdash.Plugins.Spec do
   end
 
   defp build_source("path", kv, _req) do
-    with :ok <- no_refs(kv, "path"),
+    with :ok <- no_git_options(kv, "path"),
          {:ok, path} <- string(kv, "path"),
          :ok <- not_empty(path, "path:") do
       {:ok, base(:path, %{path: Path.expand(path)})}
@@ -295,8 +299,9 @@ defmodule Beamdash.Plugins.Spec do
   defp build_source(key, kv, _req) when key in ["git", "github"] do
     with {:ok, value} <- string(kv, key),
          {:ok, url, github} <- git_url(key, value),
-         {:ok, ref} <- git_ref(kv) do
-      {:ok, base(:git, %{url: url, github: github, ref: ref})}
+         {:ok, ref} <- git_ref(kv),
+         {:ok, sparse} <- sparse_path(kv) do
+      {:ok, base(:git, %{url: url, github: github, ref: ref, sparse: sparse})}
     end
   end
 
@@ -309,7 +314,8 @@ defmodule Beamdash.Plugins.Spec do
         url: nil,
         github: nil,
         ref: nil,
-        path: nil
+        path: nil,
+        sparse: nil
       },
       extra
     )
@@ -363,8 +369,28 @@ defmodule Beamdash.Plugins.Spec do
     end
   end
 
-  defp no_refs(kv, source) do
-    case Enum.find(kv, fn {key, _} -> Map.has_key?(@ref_kinds, key) end) do
+  defp sparse_path(kv) do
+    case List.keyfind(kv, "sparse", 0) do
+      nil -> {:ok, nil}
+      _ -> with {:ok, path} <- string(kv, "sparse"), :ok <- sparse_ok(path), do: {:ok, path}
+    end
+  end
+
+  defp sparse_ok(path) do
+    segments = String.split(path, "/")
+
+    cond do
+      path == "" or byte_size(path) > @max_value or String.starts_with?(path, ["/", "-"]) or
+        String.contains?(path, "\\") or Enum.any?(segments, &(&1 in ["", ".", ".."])) ->
+        {:error, ~S|sparse: must be a folder inside the repo, like "plugins/my_plugin"|}
+
+      true ->
+        :ok
+    end
+  end
+
+  defp no_git_options(kv, source) do
+    case Enum.find(kv, fn {key, _} -> Map.has_key?(@ref_kinds, key) or key == "sparse" end) do
       nil -> :ok
       {key, _} -> {:error, "#{key}: only works with git: or github:, not #{source}:"}
     end

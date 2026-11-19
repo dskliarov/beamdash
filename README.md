@@ -481,6 +481,7 @@ menu, shown while that application runs on the attached node. Add one in
 ```elixir
 {:riak_core_plugin, "~> 0.1"}                                 # Hex (needs `mix local.hex`)
 {:riak_core_plugin, git: "https://github.com/…", tag: "0.0.1"} # Git: tag:, branch: or ref:
+{:bandit_plugin, git: "https://github.com/…/plugins", sparse: "bandit_plugin"} # one plugin in a multi-plugin repo
 {:riak_core_plugin, path: "~/src/beamdash-riak-core-plugin"}  # a local folder
 ```
 

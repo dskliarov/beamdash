@@ -51,6 +51,19 @@ defmodule Beamdash.Plugins.SpecTest do
       assert ok!(~S|{:p, git: "https://a/b.git"}|).ref == nil
     end
 
+    test "git with sparse: a plugin folder inside the repo" do
+      spec = ok!(~S|{:bandit_plugin, github: "o/plugins", sparse: "plugins/bandit"}|)
+      assert spec.source == :git
+      assert spec.sparse == "plugins/bandit"
+      assert ok!(~S|{:p, git: "https://a/b.git"}|).sparse == nil
+    end
+
+    test "sparse: round-trips through to_string" do
+      spec = ok!(~S|{:bandit_plugin, git: "https://a/b.git", tag: "0.1.0", sparse: "bandit"}|)
+      assert Spec.to_string(spec) =~ ~S|sparse: "bandit"|
+      assert {:ok, ^spec} = Spec.parse(Spec.to_string(spec))
+    end
+
     test "path is expanded" do
       spec = ok!(~S|{:p, path: "~/projects/x"}|)
       assert spec.source == :path
@@ -166,7 +179,7 @@ defmodule Beamdash.Plugins.SpecTest do
     end
 
     test "unsupported keys name the key" do
-      for key <- ~w(override only runtime compile manager app sparse submodules
+      for key <- ~w(override only runtime compile manager app submodules
                     organization repo env targets whatever) do
         assert err!(~s|{:p, #{key}: true, path: "x"}|) =~ key, key
       end
@@ -178,6 +191,19 @@ defmodule Beamdash.Plugins.SpecTest do
 
     test "hex: needs a requirement" do
       assert err!("{:p, hex: :other}") =~ "requirement"
+    end
+
+    test "sparse: must be a relative folder inside the repo" do
+      for bad <- ["", "/abs", "../up", "a/../b", "a//b", "a/./b", "-x", "a\\\\b"] do
+        assert err!(~s|{:p, git: "https://a/b.git", sparse: "#{bad}"}|) =~ "sparse:", bad
+      end
+
+      assert err!(~S|{:p, git: "https://a/b.git", sparse: 1}|) =~ "literal"
+    end
+
+    test "sparse: only works with git: or github:" do
+      assert err!(~S|{:p, path: "x", sparse: "a"}|) =~ "sparse:"
+      assert err!(~S|{:p, "1.0.0", sparse: "a"}|) =~ "sparse:"
     end
 
     test "a requirement does not combine with git or path" do
