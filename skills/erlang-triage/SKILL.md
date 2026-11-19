@@ -23,6 +23,8 @@ If the user does not name an application for an app analysis, call `app_list` an
 
 ## Before you start
 
+**MCP server.** If no beamdash tools are available in this session, ask: "The beamdash MCP server is not added to Claude Code. Add it at http://127.0.0.1:4000/mcp? (yes/no)" and stop. Wait for their reply. On yes, run `claude mcp add --transport http beamdash http://127.0.0.1:4000/mcp`, then tell the user to start a new session so the tools load, and stop. On no, say the analysis cannot run without the tools and stop.
+
 **Source path.** Find it before asking. If the user already gave a path in this conversation, reuse it. Otherwise take a module of the application (the `initial_call` module of one of its processes, or any module from `app_tree`) and call `module_summary`. When beamdash has a local copy of the module, the summary's `local_file` is its path on this computer. Walk up from `local_file` to the nearest folder that contains `mix.exs` or `rebar.config`; for an umbrella, that is the folder above `apps/`. That folder is the source path. `source` is where the node compiled the module, which may not exist on this computer, so use it only as a hint.
 If no module of the application has a `local_file`, search the project folder. Use the project folder the user gave in this conversation if there is one. If not, ask the user for it once, as an absolute path such as `~/projects`. If `source_check` returns a `folder` for the application, offer it as the default in that question. Search the project folder recursively for the application's project, and include its `deps` folder, because a dependency's source is there. Skip only `_build` and `node_modules`:
 

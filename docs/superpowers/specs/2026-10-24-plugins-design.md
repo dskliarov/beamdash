@@ -45,8 +45,11 @@ code. Accepted shapes (as in Mix):
     (with a requirement).
 - `app`: an atom matching `^[a-z][a-z0-9_]{0,63}$`. It is the plugin's id
   (URLs, folders), unique among installed plugins.
+- Git may also take `sparse: "folder"`: the plugin's folder inside the repo
+  (a relative path, no `..`, must be a real folder with a `mix.exs`; symlinks
+  are refused). Other sources reject it.
 - Any other option (`override`, `only`, `runtime`, `compile`, `manager`,
-  `app`, `sparse`, …) is refused with a message naming it.
+  `app`, …) is refused with a message naming it.
 - Common mistakes get a specific hint instead of a raw parse error, e.g.
   `{:riak_core_plugin, 0.0.1}` → "write the version as a string, as in mix.exs:
   `{:riak_core_plugin, "0.0.1"}`", and an unquoted URL → "put the URL in quotes".
