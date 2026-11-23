@@ -256,8 +256,8 @@ defmodule Beamdash.CompareLiveTest do
       |> finish_read(ctx.second)
 
     base = hd(socket.assigns.columns[ctx.first].procs)
-    owner = %{base | ets: 1_000, binary: 0}
-    idle = %{base | pid: self(), ets: 0, binary: 0}
+    owner = Map.merge(base, %{ets: 1_000, binary: 0})
+    idle = Map.merge(base, %{pid: self(), ets: 0, binary: 0})
 
     columns =
       Map.put(
@@ -309,6 +309,32 @@ defmodule Beamdash.CompareLiveTest do
   defp with_raw(socket, server, raw) do
     columns = Map.update!(socket.assigns.columns, server, &Map.put(&1, :raw_memory, raw))
     Phoenix.Component.assign(socket, :columns, columns)
+  end
+
+  test "a long process list shows its top rows in the sort order", ctx do
+    socket =
+      mount([entry(ctx.first, ctx.node), entry(ctx.second, ctx.other)])
+      |> tick()
+      |> finish_read(ctx.first)
+      |> finish_read(ctx.second)
+      |> event("metric", %{"metric" => "reductions"})
+      |> event("sort", %{"node" => Atom.to_string(ctx.node), "col" => "metric"})
+
+    base = hd(socket.assigns.columns[ctx.first].procs)
+    procs = for i <- 1..150, do: %{base | reductions: 1_000_000 + i}
+
+    socket =
+      Phoenix.Component.assign(
+        socket,
+        :columns,
+        Map.update!(socket.assigns.columns, ctx.first, &Map.put(&1, :procs, procs))
+      )
+
+    html = render(socket)
+    assert html =~ "Showing 100 of 150 matching processes"
+    assert html =~ Format.number(1_000_150)
+    assert html =~ Format.number(1_000_051)
+    refute html =~ Format.number(1_000_050)
   end
 
   test "a metric name the page does not offer is ignored", ctx do

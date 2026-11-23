@@ -165,10 +165,12 @@ defmodule BeamdashWeb.CompareLive do
     if MapSet.member?(socket.assigns.in_flight, server) do
       socket
     else
+      bytes? = socket.assigns.metric in [:ets, :binary]
+
       socket
       |> assign(in_flight: MapSet.put(socket.assigns.in_flight, server))
       |> start_async({:compare, server}, fn ->
-        {Target.process_list(server), Memory.snapshot(node)}
+        {Target.process_list(server, bytes?), Memory.snapshot(node)}
       end)
     end
   end
@@ -315,11 +317,36 @@ defmodule BeamdashWeb.CompareLive do
       sort: column.sort,
       matched: length(matched),
       all: matched,
-      rows:
-        matched
-        |> Enum.sort_by(sort_key(by, assigns.metric), dir)
-        |> Enum.take(@row_limit)
+      rows: top(matched, sort_key(by, assigns.metric), dir, @row_limit)
     }
+  end
+
+  # The first `n` of `procs` in the order Enum.sort_by/3 gives, without
+  # sorting the rest: a process is compared only with the last one kept.
+  defp top(procs, key, dir, n) do
+    ahead? = if dir == :desc, do: &>/2, else: &</2
+
+    {_size, _worst, kept} =
+      Enum.reduce(procs, {0, nil, []}, fn proc, {size, worst, kept} ->
+        value = key.(proc)
+
+        if size == n and not ahead?.(value, worst) do
+          {size, worst, kept}
+        else
+          kept = Enum.take(insert_ahead(kept, {value, proc}, ahead?), n)
+          {min(size + 1, n), elem(List.last(kept), 0), kept}
+        end
+      end)
+
+    Enum.map(kept, &elem(&1, 1))
+  end
+
+  defp insert_ahead([], item, _ahead?), do: [item]
+
+  defp insert_ahead([{value, _} = head | rest] = list, {new, _} = item, ahead?) do
+    if ahead?.(new, value),
+      do: [item | list],
+      else: [head | insert_ahead(rest, item, ahead?)]
   end
 
   defp holds?(proc, metric) when metric in [:ets, :binary], do: metric_value(proc, metric) > 0

@@ -6,7 +6,7 @@
 %%% RPC per process from the GUI node.
 -module(beamdash_agent).
 
--export([version/0, node_info/0, system_info/0, processes/0, process_list/0]).
+-export([version/0, node_info/0, system_info/0, processes/0, processes/1, process_list/1]).
 -export([load_sampler_start/2, load_sample/0]).
 -export([applications/0, app_tree/1, app_info/1, module_summary/1, module_source/1,
          source_available/1]).
@@ -23,8 +23,7 @@
 -export([gc_snapshot/0, gc_trace_start/3]).
 
 -define(SUMMARY_KEYS, [registered_name, initial_call, current_function,
-                       memory, heap_size, reductions, message_queue_len, status,
-                       binary]).
+                       memory, heap_size, reductions, message_queue_len, status]).
 
 %% Where proc_lib keeps a process's real entry point. OTP 26+ can read one
 %% dictionary key in the same process_info call as everything else.
@@ -422,7 +421,9 @@ app_label(P) ->
     end.
 
 %% The processes page's refresh in one call: the list and the node's info.
-process_list() -> {?MODULE:processes(), node_info()}.
+process_list(Bytes) -> {processes(Bytes), node_info()}.
+
+processes() -> processes(false).
 
 %% One map per live process. Processes that exit while we walk the list
 %% are skipped. Module behaviours are looked up once per module per call.
@@ -430,23 +431,35 @@ process_list() -> {?MODULE:processes(), node_info()}.
 %% Since OTP 21, process_info/2 on another process is a signal that the
 %% process itself handles, so each call costs the inspected process a
 %% little work. Everything is asked for in a single call per process.
-processes() ->
-    Keys = case dict_key_supported() of
-               true -> ?SUMMARY_KEYS ++ [?INITIAL_CALL_KEY];
-               false -> ?SUMMARY_KEYS
+%%
+%% With Bytes true each map also has `binary` (the bytes of the refc
+%% binaries the process holds) and `ets` (the bytes of the ETS tables it
+%% owns). Both need a walk over every binary or every table, so callers
+%% ask only when they show them.
+processes(Bytes) ->
+    Keys0 = case dict_key_supported() of
+                true -> ?SUMMARY_KEYS ++ [?INITIAL_CALL_KEY];
+                false -> ?SUMMARY_KEYS
+            end,
+    Keys = case Bytes of
+               true -> [binary | Keys0];
+               false -> Keys0
            end,
-    Owned = ets_bytes_by_owner(),
+    Owned = case Bytes of
+                true -> ets_bytes_by_owner();
+                false -> #{}
+            end,
     {Procs, _Cache} =
         lists:foldl(
           fun(Pid, {Acc, Cache}) ->
-                  case summary(Pid, Keys, Owned, Cache) of
+                  case summary(Pid, Keys, Bytes, Owned, Cache) of
                       false -> {Acc, Cache};
                       {Summary, Cache1} -> {[Summary | Acc], Cache1}
                   end
           end, {[], #{}}, erlang:processes()),
     lists:reverse(Procs).
 
-summary(Pid, Keys, Owned, Cache) ->
+summary(Pid, Keys, Bytes, Owned, Cache) ->
     case erlang:process_info(Pid, Keys) of
         undefined ->
             false;
@@ -455,19 +468,24 @@ summary(Pid, Keys, Owned, Cache) ->
             InitialCall = initial_call(Pid, Get(initial_call), Props),
             CurrentFunction = Get(current_function),
             {Kind, Cache1} = kind(InitialCall, CurrentFunction, Cache),
-            {#{pid => Pid,
-               registered_name => registered_name(Get(registered_name)),
-               initial_call => InitialCall,
-               current_function => CurrentFunction,
-               kind => Kind,
-               memory => Get(memory),
-               heap_size => Get(heap_size) * erlang:system_info(wordsize),
-               reductions => Get(reductions),
-               message_queue_len => Get(message_queue_len),
-               status => Get(status),
-               binary => lists:sum([Size || {_, Size, _} <- Get(binary)]),
-               ets => maps:get(Pid, Owned, 0)}, Cache1}
+            Summary = #{pid => Pid,
+                        registered_name => registered_name(Get(registered_name)),
+                        initial_call => InitialCall,
+                        current_function => CurrentFunction,
+                        kind => Kind,
+                        memory => Get(memory),
+                        heap_size => Get(heap_size) * erlang:system_info(wordsize),
+                        reductions => Get(reductions),
+                        message_queue_len => Get(message_queue_len),
+                        status => Get(status)},
+            {with_bytes(Summary, Bytes, Pid, Get, Owned), Cache1}
     end.
+
+with_bytes(Summary, true, Pid, Get, Owned) ->
+    Summary#{binary => lists:sum([Size || {_, Size, _} <- Get(binary)]),
+             ets => maps:get(Pid, Owned, 0)};
+with_bytes(Summary, false, _Pid, _Get, _Owned) ->
+    Summary.
 
 %% Bytes of the ETS tables each process owns, keyed by pid.
 ets_bytes_by_owner() ->

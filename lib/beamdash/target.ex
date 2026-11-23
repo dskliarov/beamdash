@@ -197,8 +197,13 @@ defmodule Beamdash.Target do
 
   def processes(server \\ __MODULE__), do: call_agent(server, :processes, [])
 
-  @doc "The process list and the node's info in one call: `{:ok, {procs, info}}`."
-  def process_list(server \\ __MODULE__), do: call_agent(server, :process_list, [])
+  @doc """
+  The process list and the node's info in one call: `{:ok, {procs, info}}`.
+  With `bytes?`, each process also has its `ets` and `binary` bytes (see
+  `beamdash_agent:processes/1`), which cost more to read.
+  """
+  def process_list(server \\ __MODULE__, bytes? \\ false),
+    do: call_agent(server, :process_list, [bytes?])
 
   def node_info(server \\ __MODULE__), do: call_agent(server, :node_info, [])
 

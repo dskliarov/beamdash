@@ -251,7 +251,7 @@ defmodule Beamdash.Mcp do
   defp run("node_info", _args, _node, server), do: answer(Target.node_info(server))
 
   defp run("list_processes", args, _node, server) do
-    case Target.process_list(server) do
+    case Target.process_list(server, true) do
       {:ok, {procs, _info}} ->
         {:ok, procs |> sort_by_memory() |> Enum.take(limit(args)) |> json()}
 

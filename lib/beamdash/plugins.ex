@@ -231,7 +231,7 @@ defmodule Beamdash.Plugins do
   def handle_call({:css_path, app}, _from, state) do
     reply =
       with %{} = entry <- find(state, app),
-           src = source_dir(state, entry),
+           src = source_dir(entry, install_dir(state, entry.app)),
            true <- no_links?(src, ["priv", "static", "plugin.css"]) do
         {:ok, Path.join(src, "priv/static/plugin.css")}
       else
@@ -743,7 +743,7 @@ defmodule Beamdash.Plugins do
     ebin = Path.join(install_dir, "ebin")
     tidy(install_dir)
 
-    src = startup_src(saved, install_dir)
+    src = source_dir(saved, install_dir)
 
     entry =
       Map.merge(saved, %{modules: [], plugin: nil, failed: nil, building: false, build_error: nil})
@@ -757,9 +757,9 @@ defmodule Beamdash.Plugins do
     end
   end
 
-  defp startup_src(%{source: :path, resolved: path}, _install_dir), do: path
+  defp source_dir(%{source: :path, resolved: path}, _install_dir), do: path
 
-  defp startup_src(saved, install_dir) do
+  defp source_dir(saved, install_dir) do
     case Spec.parse(saved.spec_text) do
       {:ok, spec} -> Fetch.src_root(install_dir, spec.sparse)
       {:error, _} -> Fetch.src_root(install_dir, nil)
@@ -1075,9 +1075,6 @@ defmodule Beamdash.Plugins do
     path = Path.join(dir, part)
     match?({:ok, %{type: :directory}}, File.lstat(path)) and no_links?(path, rest)
   end
-
-  defp source_dir(_state, %{source: :path, resolved: path}), do: path
-  defp source_dir(state, entry), do: Path.join(install_dir(state, entry.app), "src")
 
   # Why `app` can't be rebuilt or removed now, or nil.
   defp busy(state, app) do

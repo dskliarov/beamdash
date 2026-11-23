@@ -196,26 +196,30 @@ defmodule BeamdashWeb.Connection do
   # picking a different cluster invalidates everything listed under the old
   # one, same reset `"select_kube_pod"` does for a different pod.
   def handle_event("select_kube_cluster", %{"cluster" => cluster}, socket) do
-    Settings.put_kube_selection(%{"cluster" => cluster})
+    if Enum.any?(Map.get(socket.assigns.conn, :kube_clusters, []), &(&1.path == cluster)) do
+      Settings.put_kube_selection(%{"cluster" => cluster})
 
-    {:halt,
-     socket
-     |> update(
-       kube_cluster: cluster,
-       kube_progress: nil,
-       kube_namespace: "",
-       kube_namespaces: [],
-       kube_pods: nil,
-       kube_pods_listing: false,
-       kube_restore_ref: nil,
-       kube_pod: "",
-       kube_containers: nil,
-       kube_container: nil,
-       kube_binaries: nil,
-       kube_binary: nil,
-       error: nil
-     )
-     |> list_namespaces()}
+      {:halt,
+       socket
+       |> update(
+         kube_cluster: cluster,
+         kube_progress: nil,
+         kube_namespace: "",
+         kube_namespaces: [],
+         kube_pods: nil,
+         kube_pods_listing: false,
+         kube_restore_ref: nil,
+         kube_pod: "",
+         kube_containers: nil,
+         kube_container: nil,
+         kube_binaries: nil,
+         kube_binary: nil,
+         error: nil
+       )
+       |> list_namespaces()}
+    else
+      {:halt, socket}
+    end
   end
 
   def handle_event(
@@ -294,27 +298,36 @@ defmodule BeamdashWeb.Connection do
         %{"namespace" => namespace, "pod" => pod, "container" => container},
         socket
       ) do
-    namespace = String.trim(namespace)
-    pod = String.trim(pod)
+    if container in (Map.get(socket.assigns.conn, :kube_containers) || []) do
+      namespace = String.trim(namespace)
+      pod = String.trim(pod)
 
-    Settings.put_kube_selection(%{
-      "cluster" => socket.assigns.conn.kube_cluster,
-      "namespace" => namespace,
-      "pod" => pod,
-      "container" => container
-    })
+      Settings.put_kube_selection(%{
+        "cluster" => socket.assigns.conn.kube_cluster,
+        "namespace" => namespace,
+        "pod" => pod,
+        "container" => container
+      })
 
-    socket =
-      update(socket, kube_container: container, kube_binaries: nil, kube_binary: nil, error: nil)
+      socket =
+        update(socket,
+          kube_container: container,
+          kube_binaries: nil,
+          kube_binary: nil,
+          error: nil
+        )
 
-    {:halt,
-     start_kube_listing(
-       socket,
-       socket.assigns.conn.kube_cluster,
-       namespace,
-       {:container, pod, socket.assigns.conn.kube_containers, container},
-       Settings.kube_selection()
-     )}
+      {:halt,
+       start_kube_listing(
+         socket,
+         socket.assigns.conn.kube_cluster,
+         namespace,
+         {:container, pod, socket.assigns.conn.kube_containers, container},
+         Settings.kube_selection()
+       )}
+    else
+      {:halt, socket}
+    end
   end
 
   def handle_event("select_kube_binary", %{"binary" => binary}, socket) do

@@ -101,9 +101,16 @@ defmodule Beamdash.Connections do
   @doc "Records the application `identity` runs on the connected `server`."
   def record_application(server, identity) do
     connections = list()
-    %{node: node} = Enum.find(connections, &(&1.server == server))
     live = Enum.map(connections, & &1.server)
-    :persistent_term.put(@apps, apps() |> Map.take(live) |> Map.put(server, {identity, node}))
+    apps = Map.take(apps(), live)
+
+    apps =
+      case Enum.find(connections, &(&1.server == server)) do
+        %{node: node} -> Map.put(apps, server, {identity, node})
+        nil -> apps
+      end
+
+    :persistent_term.put(@apps, apps)
   end
 
   defp apps, do: :persistent_term.get(@apps, %{})
@@ -188,11 +195,11 @@ defmodule Beamdash.Connections do
 
   @doc "Disconnects `server` and, for an extra connection, stops its supervisor and instances."
   def remove(server) do
-    :ok = Target.disconnect(server)
+    if live?(server), do: Target.disconnect(server)
 
     case connection_sup(server) do
       nil -> :ok
-      sup -> :ok = DynamicSupervisor.terminate_child(@supervisor, sup)
+      sup -> DynamicSupervisor.terminate_child(@supervisor, sup)
     end
 
     broadcast()

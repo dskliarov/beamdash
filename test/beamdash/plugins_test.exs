@@ -297,6 +297,32 @@ defmodule Beamdash.PluginsTest do
                "has no folder missing"
     end
 
+    test "sparse: the plugin's stylesheet is read from its folder", %{base: base, dir: dir} do
+      Application.put_env(:beamdash, :plugins_allow_local_git, true)
+      repo = make_monorepo(base)
+      server = start_plugins(dir)
+
+      install!(
+        server,
+        ~s|{:hello_plugin, git: "#{repo}", tag: "0.1.0", sparse: "plugins/hello_plugin"}|
+      )
+
+      css =
+        Path.join([
+          dir,
+          "hello_plugin",
+          "src",
+          "plugins",
+          "hello_plugin",
+          "priv/static/plugin.css"
+        ])
+
+      File.mkdir_p!(Path.dirname(css))
+      File.write!(css, "a {}")
+
+      assert Beamdash.Plugins.css_path(server, :hello_plugin) == {:ok, css}
+    end
+
     test "a sparse git plugin without its ebin is rebuilt from its folder", %{
       base: base,
       dir: dir

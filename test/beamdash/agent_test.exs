@@ -255,6 +255,45 @@ defmodule Beamdash.AgentTest do
       assert kind.(:init) == nil
     end
 
+    test "ETS and binary bytes are counted only when asked for", ctx do
+      :ok =
+        Fixture.load_module(ctx.node, :beamdash_bytes_owner, """
+        -module(beamdash_bytes_owner).
+        -export([start/0]).
+        start() ->
+            Parent = self(),
+            spawn(fun() ->
+                      register(beamdash_bytes_owner, self()),
+                      ets:new(beamdash_bytes_table, [named_table, public]),
+                      lists:foreach(fun(N) -> ets:insert(beamdash_bytes_table, {N, lists:duplicate(50, N)}) end,
+                                    lists:seq(1, 200)),
+                      Held = binary:copy(<<0>>, 100000),
+                      Parent ! ready,
+                      receive stop -> Held end
+                  end),
+            receive ready -> ok end.
+        """)
+
+      :ok = :erpc.call(ctx.node, :beamdash_bytes_owner, :start, [])
+      pid = :erpc.call(ctx.node, :erlang, :whereis, [:beamdash_bytes_owner])
+      word = :erpc.call(ctx.node, :erlang, :system_info, [:wordsize])
+      table_bytes = :erpc.call(ctx.node, :ets, :info, [:beamdash_bytes_table, :memory]) * word
+
+      owner =
+        :erpc.call(ctx.node, :beamdash_agent, :processes, [true])
+        |> Enum.find(&(&1.pid == pid))
+
+      assert owner.ets == table_bytes
+      assert owner.binary >= 100_000
+
+      plain =
+        :erpc.call(ctx.node, :beamdash_agent, :processes, [false])
+        |> Enum.find(&(&1.pid == pid))
+
+      refute Map.has_key?(plain, :ets)
+      refute Map.has_key?(plain, :binary)
+    end
+
     test "looking at a process costs it as little as possible", ctx do
       # process_info on another process is a signal that process handles
       # itself, about one reduction each; an idle gen_server must not be

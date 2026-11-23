@@ -175,6 +175,19 @@ defmodule Beamdash.ConnectionsTest do
     assert Target.status().status == :connected
   end
 
+  test "removing an extra connection twice is not an error" do
+    {_peer, node} = Fixture.start_peer()
+    extra = connect_extra(node)
+
+    assert :ok = Connections.remove(extra)
+    assert :ok = Connections.remove(extra)
+  end
+
+  test "recording an application for a connection that is already gone changes nothing" do
+    assert :ok = Connections.record_application(make_ref(), {:direct, "app"})
+    assert Connections.app() == nil
+  end
+
   test "list shows the first connection, then the extra ones, with their nodes" do
     {_peer1, node1} = Fixture.start_peer()
     {_peer2, node2} = Fixture.start_peer()

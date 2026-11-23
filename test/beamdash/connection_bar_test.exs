@@ -111,6 +111,34 @@ defmodule Beamdash.ConnectionBarTest do
     assert socket.assigns.conn.panel == false
   end
 
+  test "a kubeconfig or container the page did not list is ignored" do
+    conn =
+      Map.merge(socket().assigns.conn, %{
+        kube_clusters: [%{path: "/kube/prod", name: "prod"}],
+        kube_cluster: "/kube/prod",
+        kube_containers: ["app", "sidecar"],
+        kube_container: "app"
+      })
+
+    socket = Phoenix.Component.assign(socket(), :conn, conn)
+
+    assert {:halt, unchanged} =
+             Connection.handle_event("select_kube_cluster", %{"cluster" => "/etc/passwd"}, socket)
+
+    assert unchanged.assigns.conn.kube_cluster == "/kube/prod"
+
+    container = "x\")||(@.name!=\""
+
+    assert {:halt, unchanged} =
+             Connection.handle_event(
+               "select_kube_container",
+               %{"namespace" => "shop", "pod" => "app-1", "container" => container},
+               socket
+             )
+
+    assert unchanged.assigns.conn.kube_container == "app"
+  end
+
   test "the filter hides the connections that are not selected, and Show all lifts it" do
     connections = [
       %{server: Target, node: :api@a, status: :connected, identity: nil},
@@ -1026,7 +1054,8 @@ defmodule Beamdash.ConnectionBarTest do
     fake_kubectl()
     old = empty_kubeconfig()
     new = empty_kubeconfig()
-    s = on_cluster(old, %{method: :kubectl, kube_namespaces: ["default"]})
+    listed = [%{name: "old", path: old}, %{name: "new", path: new}]
+    s = on_cluster(old, %{method: :kubectl, kube_namespaces: ["default"], kube_clusters: listed})
 
     {:halt, s} = Connection.handle_event("select_kube_cluster", %{"cluster" => new}, s)
     assert s.assigns.conn.kube_cluster == new
@@ -1042,8 +1071,15 @@ defmodule Beamdash.ConnectionBarTest do
 
     progress = %{label: "Listing pods…", command: "kubectl get pods", since: 0, elapsed: 1}
 
+    listed = [%{name: "old", path: old}, %{name: "new", path: new}]
+
     s =
-      on_cluster(old, %{method: :kubectl, kube_progress: progress, kube_restore_ref: make_ref()})
+      on_cluster(old, %{
+        method: :kubectl,
+        kube_progress: progress,
+        kube_restore_ref: make_ref(),
+        kube_clusters: listed
+      })
 
     {:halt, s} = Connection.handle_event("select_kube_cluster", %{"cluster" => new}, s)
     assert s.assigns.conn.kube_progress == nil
