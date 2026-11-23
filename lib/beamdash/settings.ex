@@ -35,6 +35,7 @@ defmodule Beamdash.Settings do
   @kube_selection_key {__MODULE__, :kube_selection}
   @connection_method_key {__MODULE__, :connection_method}
   @reconnect_key {__MODULE__, :auto_reconnect}
+  @multi_key {__MODULE__, :multiple_connections}
   @snapshots_key {__MODULE__, :snapshots_enabled}
   @source_dirs_key {__MODULE__, :source_dirs}
   @ai_key {__MODULE__, :ai_provider}
@@ -412,6 +413,29 @@ defmodule Beamdash.Settings do
   end
 
   @doc """
+  Whether several connections to one application may be open at once (see
+  `Beamdash.Connections`). Off until switched on in Settings; saved for the
+  next start.
+  """
+  def multiple_connections? do
+    case :persistent_term.get(@multi_key, nil) do
+      nil ->
+        enabled = read()["multiple_connections"] == true
+        :persistent_term.put(@multi_key, enabled)
+        enabled
+
+      enabled ->
+        enabled
+    end
+  end
+
+  def put_multiple_connections(enabled) when is_boolean(enabled) do
+    :persistent_term.put(@multi_key, enabled)
+    save("multiple_connections", if(enabled, do: true))
+    :ok
+  end
+
+  @doc """
   Whether snapshot collection is on: `Beamdash.Sampler` stores process
   snapshots and anomaly history, and the Snapshots tab and the History tab
   are shown. Off until switched on in Settings; saved for the next start.
@@ -542,6 +566,7 @@ defmodule Beamdash.Settings do
     :persistent_term.erase(@kube_selection_key)
     :persistent_term.erase(@connection_method_key)
     :persistent_term.erase(@reconnect_key)
+    :persistent_term.erase(@multi_key)
     :persistent_term.erase(@snapshots_key)
     :persistent_term.erase(@source_dirs_key)
     :persistent_term.erase(@ai_key)

@@ -128,9 +128,10 @@ defmodule Beamdash.AppsTest do
       {:ok, apps} = Apps.list(node)
       {:ok, tree} = Apps.tree(node, :kernel)
 
-      socket = %Phoenix.LiveView.Socket{
-        private: %{lifecycle: %Phoenix.LiveView.Lifecycle{}, live_temp: %{}}
-      }
+      socket =
+        Beamdash.Test.Fixture.with_conn(%Phoenix.LiveView.Socket{
+          private: %{lifecycle: %Phoenix.LiveView.Lifecycle{}, live_temp: %{}}
+        })
 
       {:ok, socket} = AppsLive.mount(%{}, %{}, socket)
       kernel_sup = flatten(tree.root) |> Enum.find(&(&1.name == :kernel_sup))
@@ -213,9 +214,10 @@ defmodule Beamdash.AppsTest do
       {:ok, tree} = Apps.tree(node, :kernel)
       code_server = find(tree, :code_server)
 
-      socket = %Phoenix.LiveView.Socket{
-        private: %{lifecycle: %Phoenix.LiveView.Lifecycle{}, live_temp: %{}}
-      }
+      socket =
+        Beamdash.Test.Fixture.with_conn(%Phoenix.LiveView.Socket{
+          private: %{lifecycle: %Phoenix.LiveView.Lifecycle{}, live_temp: %{}}
+        })
 
       {:ok, socket} = AppsLive.mount(%{}, %{}, socket)
 
@@ -290,9 +292,10 @@ defmodule Beamdash.AppsTest do
       code_server = find(tree, :code_server)
       {:ok, proc} = Apps.process(node, code_server.pid)
 
-      socket = %Phoenix.LiveView.Socket{
-        private: %{lifecycle: %Phoenix.LiveView.Lifecycle{}, live_temp: %{}}
-      }
+      socket =
+        Beamdash.Test.Fixture.with_conn(%Phoenix.LiveView.Socket{
+          private: %{lifecycle: %Phoenix.LiveView.Lifecycle{}, live_temp: %{}}
+        })
 
       {:ok, socket} = AppsLive.mount(%{}, %{}, socket)
 
@@ -328,9 +331,10 @@ defmodule Beamdash.AppsTest do
       {:ok, apps} = Apps.list(node)
       {:ok, tree} = Apps.tree(node, :kernel)
 
-      socket = %Phoenix.LiveView.Socket{
-        private: %{lifecycle: %Phoenix.LiveView.Lifecycle{}, live_temp: %{}}
-      }
+      socket =
+        Beamdash.Test.Fixture.with_conn(%Phoenix.LiveView.Socket{
+          private: %{lifecycle: %Phoenix.LiveView.Lifecycle{}, live_temp: %{}}
+        })
 
       {:ok, socket} = AppsLive.mount(%{}, %{}, socket)
 
@@ -377,9 +381,10 @@ defmodule Beamdash.AppsTest do
     end
 
     test "the tab is picked by its button, and only tree or details" do
-      socket = %Phoenix.LiveView.Socket{
-        private: %{lifecycle: %Phoenix.LiveView.Lifecycle{}, live_temp: %{}}
-      }
+      socket =
+        Beamdash.Test.Fixture.with_conn(%Phoenix.LiveView.Socket{
+          private: %{lifecycle: %Phoenix.LiveView.Lifecycle{}, live_temp: %{}}
+        })
 
       {:ok, socket} = AppsLive.mount(%{}, %{}, socket)
       assert socket.assigns.view == :tree
@@ -402,9 +407,10 @@ defmodule Beamdash.AppsTest do
         supports: [:kernel]
       }
 
-      socket = %Phoenix.LiveView.Socket{
-        private: %{lifecycle: %Phoenix.LiveView.Lifecycle{}, live_temp: %{}}
-      }
+      socket =
+        Beamdash.Test.Fixture.with_conn(%Phoenix.LiveView.Socket{
+          private: %{lifecycle: %Phoenix.LiveView.Lifecycle{}, live_temp: %{}}
+        })
 
       # the bar's @conn, as the Connection hook sets it, with the plugin active
       {:cont, socket} = BeamdashWeb.Connection.on_mount(:default, %{}, %{}, socket)
@@ -461,9 +467,10 @@ defmodule Beamdash.AppsTest do
       {:ok, tree} = Apps.tree(node, :kernel)
       {:ok, info} = Apps.info(node, :kernel)
 
-      socket = %Phoenix.LiveView.Socket{
-        private: %{lifecycle: %Phoenix.LiveView.Lifecycle{}, live_temp: %{}}
-      }
+      socket =
+        Beamdash.Test.Fixture.with_conn(%Phoenix.LiveView.Socket{
+          private: %{lifecycle: %Phoenix.LiveView.Lifecycle{}, live_temp: %{}}
+        })
 
       {:ok, socket} = AppsLive.mount(%{}, %{}, socket)
 

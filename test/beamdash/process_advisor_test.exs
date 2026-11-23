@@ -88,7 +88,10 @@ defmodule Beamdash.ProcessAdvisorTest do
     pid: pid
   } do
     view = BeamdashWeb.HomeLive
-    {:ok, socket} = view.mount(%{}, %{}, %Phoenix.LiveView.Socket{})
+
+    {:ok, socket} =
+      view.mount(%{}, %{}, Beamdash.Test.Fixture.with_conn(%Phoenix.LiveView.Socket{}))
+
     socket = Phoenix.Component.assign(socket, syntax: :erlang)
 
     {:noreply, socket} =
@@ -134,7 +137,10 @@ defmodule Beamdash.ProcessAdvisorTest do
 
   test "old asynchronous results and results received after disabling are ignored" do
     view = BeamdashWeb.HomeLive
-    {:ok, socket} = view.mount(%{}, %{}, %Phoenix.LiveView.Socket{})
+
+    {:ok, socket} =
+      view.mount(%{}, %{}, Beamdash.Test.Fixture.with_conn(%Phoenix.LiveView.Socket{}))
+
     request = {:process_advisor, make_ref()}
     socket = Phoenix.Component.assign(socket, process_advice_request: request)
 

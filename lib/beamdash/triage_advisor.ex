@@ -76,7 +76,7 @@ defmodule Beamdash.TriageAdvisor do
   # collector) are not the user's processes
   defp own?(%{registered_name: name}) when is_atom(name) and name != nil do
     n = Atom.to_string(name)
-    String.starts_with?(n, "erlyberly") or String.starts_with?(n, "beamdash")
+    String.starts_with?(n, "beamdash")
   end
 
   defp own?(_), do: false

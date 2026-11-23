@@ -3,7 +3,7 @@ defmodule Beamdash.NodesLiveTest do
   # the Logs tests, the page's callbacks are called directly on a socket.
   use ExUnit.Case, async: false
 
-  alias Beamdash.Target
+  alias Beamdash.{Connections, Settings, Target}
   alias Beamdash.Test.Fixture
   alias BeamdashWeb.NodesLive
   alias Phoenix.LiveView.{Lifecycle, Socket}
@@ -27,10 +27,11 @@ defmodule Beamdash.NodesLiveTest do
   end
 
   defp bare_mount(ctx) do
-    socket = %Socket{
-      transport_pid: self(),
-      private: %{lifecycle: %Lifecycle{}, live_temp: %{}}
-    }
+    socket =
+      Beamdash.Test.Fixture.with_conn(%Socket{
+        transport_pid: self(),
+        private: %{lifecycle: %Lifecycle{}, live_temp: %{}}
+      })
 
     {:ok, socket} = NodesLive.mount(%{}, %{"target" => ctx.target}, socket)
     socket
@@ -143,5 +144,98 @@ defmodule Beamdash.NodesLiveTest do
     assert socket.assigns.switching == nil
     assert %{node: node} = Target.status(ctx.target)
     assert node == ctx.node
+  end
+
+  describe "with multiple connections on" do
+    setup do
+      :ok = Settings.put_multiple_connections(true)
+
+      on_exit(fn ->
+        for %{server: server} <- Connections.list(),
+            server != Target,
+            do: Connections.remove(server)
+
+        Target.disconnect()
+        Settings.put_multiple_connections(false)
+      end)
+
+      :ok
+    end
+
+    defp multiple(socket, connections) do
+      conn = socket.assigns.conn |> Map.put(:multiple, true) |> Map.put(:connections, connections)
+      Phoenix.Component.assign(socket, :conn, conn)
+    end
+
+    test "each other node has a Connect button, a connected one a Connected label", ctx do
+      socket =
+        ctx
+        |> mount()
+        |> multiple([
+          %{
+            server: ctx.target,
+            node: ctx.node,
+            status: :connected,
+            reconnecting: nil,
+            identity: nil
+          },
+          %{
+            server: :other_conn,
+            node: ctx.other,
+            status: :connected,
+            reconnecting: nil,
+            identity: nil
+          }
+        ])
+
+      html = render(socket)
+      refute html =~ ~s(phx-click="connect_node")
+      assert html =~ ~s(<span class="node-connected">)
+    end
+
+    test "a node that is not connected gets a Connect button", ctx do
+      html = ctx |> mount() |> multiple([]) |> render()
+      assert html =~ ~s(phx-click="connect_node")
+      assert html =~ ~s(phx-value-node="#{ctx.other}")
+      assert length(Regex.scan(~r/class="node-connected"/, html)) == 1
+    end
+
+    test "without multiple connections there is no Connect button", ctx do
+      html = ctx |> mount() |> render()
+      refute html =~ ~s(phx-click="connect_node")
+    end
+
+    test "Connect adds a second connection to the node", ctx do
+      socket =
+        ctx
+        |> mount()
+        |> multiple([])
+        |> event("connect_node", %{"node" => Atom.to_string(ctx.other)})
+
+      assert socket.assigns.switching == ctx.other
+
+      socket = async_result(socket, :connect_node)
+      assert socket.assigns.note == "Connected to #{ctx.other}."
+      assert socket.assigns.switching == nil
+      assert Enum.any?(Connections.list(), &(&1.node == ctx.other and &1.status == :connected))
+    end
+
+    test "Connect is ignored for a node that is already connected", ctx do
+      socket =
+        ctx
+        |> mount()
+        |> multiple([
+          %{
+            server: :other_conn,
+            node: ctx.other,
+            status: :connected,
+            reconnecting: nil,
+            identity: nil
+          }
+        ])
+        |> event("connect_node", %{"node" => Atom.to_string(ctx.other)})
+
+      assert socket.assigns.switching == nil
+    end
   end
 end

@@ -5,15 +5,15 @@ defmodule Beamdash.AgentTest do
   started here have no Elixir code path, so every call below would fail
   with `undef` if they did.
 
-  The expected values match what the original `erlyberly.erl` returned
-  (checked side by side when it was ported to Elixir).
+  The expected values are the results the trace agent gave when it was still
+  Erlang code (checked side by side when it was ported to Elixir).
   """
   use ExUnit.Case, async: false
 
   alias Beamdash.Target
   alias Beamdash.Test.Fixture
 
-  for agent <- [:erlyberly, :beamdash_agent] do
+  for agent <- [:beamdash_trace_agent, :beamdash_agent] do
     test "#{agent} calls no Elixir modules" do
       {_, bin, _} = :code.get_object_code(unquote(agent))
       {:ok, {_, [imports: imports]}} = :beam_lib.chunks(bin, [:imports])
@@ -86,7 +86,7 @@ defmodule Beamdash.AgentTest do
       %{node: node}
     end
 
-    defp call(ctx, fun, args), do: :erpc.call(ctx.node, :erlyberly, fun, args, 60_000)
+    defp call(ctx, fun, args), do: :erpc.call(ctx.node, :beamdash_trace_agent, fun, args, 60_000)
 
     test "records and process state", ctx do
       assert {:ok, [{:st, [:count, :name]}]} =
@@ -99,8 +99,11 @@ defmodule Beamdash.AgentTest do
       pid_string = :erpc.call(ctx.node, :erlang, :pid_to_list, [pid])
 
       assert {:ok,
-              {:erlyberly_record, :st,
-               [{:erlyberly_record_field, :count, 0}, {:erlyberly_record_field, :name, :fixture}]}} =
+              {:beamdash_trace_agent_record, :st,
+               [
+                 {:beamdash_trace_agent_record_field, :count, 0},
+                 {:beamdash_trace_agent_record_field, :name, :fixture}
+               ]}} =
                call(ctx, :get_process_state, [pid_string])
     end
 

@@ -1,19 +1,20 @@
 defmodule Beamdash.Record do
   @moduledoc """
-  An Erlang record recovered by erlyberly.
+  An Erlang record recovered by the trace agent.
 
-  erlyberly's agent rewrites gen_server state it can match to a record
-  definition as `{erlyberly_record, Name, [{erlyberly_record_field, K, V}]}`.
+  the trace agent rewrites gen_server state it can match to a record
+  definition as `{beamdash_trace_agent_record, Name, [{beamdash_trace_agent_record_field, K, V}]}`.
   `decode/1` turns those into this struct so they print as `#name{k: v}`.
   """
 
   defstruct [:name, fields: []]
 
-  @doc "Recursively replaces erlyberly record tuples with `%Beamdash.Record{}`."
-  def decode({:erlyberly_record, name, fields}) when is_atom(name) and is_list(fields) do
+  @doc "Recursively replaces the trace agent record tuples with `%Beamdash.Record{}`."
+  def decode({:beamdash_trace_agent_record, name, fields})
+      when is_atom(name) and is_list(fields) do
     %__MODULE__{
       name: name,
-      fields: for({:erlyberly_record_field, k, v} <- fields, do: {k, decode(v)})
+      fields: for({:beamdash_trace_agent_record_field, k, v} <- fields, do: {k, decode(v)})
     }
   end
 
@@ -30,7 +31,7 @@ defmodule Beamdash.Record do
 
   @doc """
   Names records in a plain term: every tuple whose first element is the
-  name of one of `defs` (`[{name, [field]}]`, as erlyberly's
+  name of one of `defs` (`[{name, [field]}]`, as the trace agent's
   `load_module_records/1` returns them) and whose size fits becomes a
   `%Beamdash.Record{}`, recursively.
   """

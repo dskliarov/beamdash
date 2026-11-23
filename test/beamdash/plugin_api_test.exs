@@ -81,10 +81,11 @@ defmodule Beamdash.PluginApiTest do
   end
 
   defp mount(page, session) do
-    socket = %Socket{
-      transport_pid: self(),
-      private: %{lifecycle: %Lifecycle{}, live_temp: %{}}
-    }
+    socket =
+      Beamdash.Test.Fixture.with_conn(%Socket{
+        transport_pid: self(),
+        private: %{lifecycle: %Lifecycle{}, live_temp: %{}}
+      })
 
     {:ok, socket} = page.mount(%{}, session, socket)
     socket

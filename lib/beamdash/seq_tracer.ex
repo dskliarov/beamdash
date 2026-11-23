@@ -1,10 +1,10 @@
 defmodule Beamdash.SeqTracer do
   @moduledoc """
-  Sequential tracing (seq_trace) through erlyberly.
+  Sequential tracing (seq_trace) through the trace agent.
 
   `start/4` makes every call of a function start a seq_trace token, so the
   messages it causes, and the messages *those* cause, are recorded across
-  processes. erlyberly's seq_trace collector on the target holds them until
+  processes. the trace agent's seq_trace collector on the target holds them until
   we fetch them, so this process polls once a second while a seq trace is
   active.
 
@@ -36,7 +36,7 @@ defmodule Beamdash.SeqTracer do
 
   @doc """
   Seq trace calls of `mod:fun/arity`. Always uses a local trace pattern:
-  a global one (what erlyberly picks for exported functions) misses calls
+  a global one (what the trace agent picks for exported functions) misses calls
   made from inside the module, like `checkout(Item)` from a loop.
   """
   def start(mod, fun, arity, server \\ __MODULE__),
@@ -76,12 +76,12 @@ defmodule Beamdash.SeqTracer do
     do: {:reply, {:error, :not_connected}, state}
 
   def handle_call({:start, mod, fun, arity, exported?}, _from, state) do
-    # erlyberly also makes sure its main trace collector runs, reporting to
+    # The trace agent also makes sure its main trace collector runs, reporting to
     # the Tracer; it needs that collector's tracer process.
     ui_pid = GenServer.whereis(state.tracer) || self()
     args = [{node(), ui_pid}, mod, fun, arity, exported?]
 
-    case Target.rpc(state.node, :erlyberly, :seq_trace, args) do
+    case Target.rpc(state.node, :beamdash_trace_agent, :seq_trace, args) do
       {:ok, :ok} ->
         state = %{state | traces: MapSet.put(state.traces, {mod, fun, arity, exported?})}
         notify(state, :traces_changed)
@@ -102,7 +102,13 @@ defmodule Beamdash.SeqTracer do
 
       {_, _, _, exported?} = t ->
         if state.node,
-          do: Target.rpc(state.node, :erlyberly, :stop_seq_trace, [mod, fun, arity, exported?])
+          do:
+            Target.rpc(state.node, :beamdash_trace_agent, :stop_seq_trace, [
+              mod,
+              fun,
+              arity,
+              exported?
+            ])
 
         state = fetch(%{state | traces: MapSet.delete(state.traces, t)})
         notify(state, :traces_changed)
@@ -116,7 +122,13 @@ defmodule Beamdash.SeqTracer do
     else
       if state.node do
         for {mod, fun, arity, exported?} <- state.traces,
-            do: Target.rpc(state.node, :erlyberly, :stop_seq_trace, [mod, fun, arity, exported?])
+            do:
+              Target.rpc(state.node, :beamdash_trace_agent, :stop_seq_trace, [
+                mod,
+                fun,
+                arity,
+                exported?
+              ])
       end
 
       state = fetch(%{state | traces: MapSet.new()})
@@ -172,7 +184,7 @@ defmodule Beamdash.SeqTracer do
   defp fetch(%{node: nil} = state), do: state
 
   defp fetch(state) do
-    result = Target.rpc(state.node, :erlyberly, :collect_seq_trace_logs, [])
+    result = Target.rpc(state.node, :beamdash_trace_agent, :collect_seq_trace_logs, [])
     drop_seq_token()
 
     case result do
@@ -212,7 +224,7 @@ defmodule Beamdash.SeqTracer do
   end
 
   # Since OTP 24 gen_server (and gen_statem) replies are sent to a process
-  # alias, which erlyberly reports as "alias #Ref<...>". The alias comes
+  # alias, which the trace agent reports as "alias #Ref<...>". The alias comes
   # from the caller's {'$gen_call', {Pid, [alias | Ref]}, _} message, so
   # remember Ref -> caller and show replies as going back to the caller.
   defp resolve_aliases(events, state) do

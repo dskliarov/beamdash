@@ -18,7 +18,7 @@ defmodule BeamdashWeb.GCLive do
 
   @impl true
   def mount(_params, _session, socket) do
-    %{status: status, node: node} = Target.status()
+    %{status: status, node: node} = Target.status(socket.assigns.conn.server)
 
     socket =
       socket
@@ -49,7 +49,7 @@ defmodule BeamdashWeb.GCLive do
       |> reset_advisor()
 
     if connected?(socket) do
-      Target.subscribe()
+      Target.subscribe(socket.assigns.conn.server)
       Process.send_after(self(), :tick, @refresh_ms)
       if status == :connected, do: send(self(), :load)
     end

@@ -194,7 +194,9 @@ defmodule Beamdash.InsightsTest do
     }
 
     view = BeamdashWeb.MemoryLive
-    {:ok, socket} = view.mount(%{}, %{}, %Phoenix.LiveView.Socket{})
+
+    {:ok, socket} =
+      view.mount(%{}, %{}, Beamdash.Test.Fixture.with_conn(%Phoenix.LiveView.Socket{}))
 
     socket =
       Phoenix.Component.assign(socket,
@@ -256,7 +258,7 @@ defmodule Beamdash.InsightsTest do
     request = {:seq_advisor, make_ref()}
 
     socket =
-      Phoenix.Component.assign(%Phoenix.LiveView.Socket{},
+      Phoenix.Component.assign(Beamdash.Test.Fixture.with_conn(%Phoenix.LiveView.Socket{}),
         pattern: %{request: request, advice: nil, error: nil, evidence: nil}
       )
 
@@ -372,7 +374,10 @@ defmodule Beamdash.InsightsTest do
       assert Jev.available?() and Jev.backend() == :nx
 
       view = BeamdashWeb.SettingsLive
-      {:ok, socket} = view.mount(%{}, %{}, %Phoenix.LiveView.Socket{})
+
+      {:ok, socket} =
+        view.mount(%{}, %{}, Beamdash.Test.Fixture.with_conn(%Phoenix.LiveView.Socket{}))
+
       assert socket.assigns.nx_on
       html = render_settings(socket)
       assert html =~ ~s(id="nx-setting-label")
@@ -407,7 +412,10 @@ defmodule Beamdash.InsightsTest do
       assert Jev.nx_disabled_in_config?()
       refute Jev.configured?(:nx)
       refute Jev.available?()
-      {:ok, socket} = view.mount(%{}, %{}, %Phoenix.LiveView.Socket{})
+
+      {:ok, socket} =
+        view.mount(%{}, %{}, Beamdash.Test.Fixture.with_conn(%Phoenix.LiveView.Socket{}))
+
       html = render_settings(socket)
       refute html =~ ~s(id="nx-setting-label")
       assert html =~ "NX_MODEL=false"
@@ -438,9 +446,10 @@ defmodule Beamdash.InsightsTest do
   end
 
   test "the Insights page renders before connecting and lists findings" do
-    socket = %Phoenix.LiveView.Socket{
-      private: %{lifecycle: %Phoenix.LiveView.Lifecycle{}, live_temp: %{}}
-    }
+    socket =
+      Beamdash.Test.Fixture.with_conn(%Phoenix.LiveView.Socket{
+        private: %{lifecycle: %Phoenix.LiveView.Lifecycle{}, live_temp: %{}}
+      })
 
     {:ok, socket} = BeamdashWeb.InsightsLive.mount(%{}, %{}, socket)
 

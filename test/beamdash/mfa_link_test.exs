@@ -6,7 +6,7 @@ defmodule Beamdash.MfaLinkTest do
   @modules [{:link_probe, [{:run, 2}], []}]
 
   defp trace_socket do
-    %Phoenix.LiveView.Socket{}
+    Beamdash.Test.Fixture.with_conn(%Phoenix.LiveView.Socket{})
     |> Phoenix.Component.assign(
       modules: @modules,
       selected: nil,
@@ -19,7 +19,7 @@ defmodule Beamdash.MfaLinkTest do
   end
 
   defp profile_socket do
-    %Phoenix.LiveView.Socket{}
+    Beamdash.Test.Fixture.with_conn(%Phoenix.LiveView.Socket{})
     |> Phoenix.Component.assign(
       modules: @modules,
       pick_mod: nil,

@@ -104,8 +104,8 @@ defmodule Beamdash.Logs do
   connection, `{:error, {exit_status, output}}` when kubectl fails.
   """
   def previous(server \\ __MODULE__) do
-    with {:ok, {exe, args}} <- GenServer.call(server, :previous_cmd) do
-      run_previous(exe, args)
+    with {:ok, {exe, args, node}} <- GenServer.call(server, :previous_cmd) do
+      run_previous(exe, args, node)
     end
   end
 
@@ -186,7 +186,8 @@ defmodule Beamdash.Logs do
 
   def handle_call({:set_source, _}, _from, state), do: {:reply, {:error, :not_kubectl}, state}
 
-  def handle_call(:previous_cmd, _from, state), do: {:reply, previous_cmd(state), state}
+  def handle_call(:previous_cmd, _from, state),
+    do: {:reply, with_node(previous_cmd(state), state.node), state}
 
   @impl true
   def handle_info({:beamdash_target, {:connected, node}}, %{node: node, source: s} = state)
@@ -228,7 +229,7 @@ defmodule Beamdash.Logs do
       when is_list(list) do
     {entries, next_id} =
       Enum.map_reduce(list, state.next_id, fn m, id ->
-        {Map.put(from_agent(m), :id, id), id + 1}
+        {from_agent(m) |> Map.put(:id, id) |> Map.put(:node, state.node), id + 1}
       end)
 
     newest_first = Enum.reverse(entries)
@@ -424,12 +425,15 @@ defmodule Beamdash.Logs do
   defp previous_cmd(%{source: nil}), do: {:error, :not_connected}
   defp previous_cmd(_state), do: {:error, :not_kubectl}
 
-  defp run_previous(exe, args) do
+  defp with_node({:ok, {exe, args}}, node), do: {:ok, {exe, args, node}}
+  defp with_node(error, _node), do: error
+
+  defp run_previous(exe, args, node) do
     with {:ok, oldest_first} <- history(exe, args) do
       entries =
         oldest_first
         |> Enum.with_index(1)
-        |> Enum.map(fn {entry, id} -> Map.put(entry, :id, id) end)
+        |> Enum.map(fn {entry, id} -> Map.merge(entry, %{id: id, node: node}) end)
         |> Enum.reverse()
 
       {:ok, entries}
@@ -535,7 +539,7 @@ defmodule Beamdash.Logs do
   end
 
   defp add_entry(state, entry) do
-    entry = Map.put(entry, :id, state.next_id)
+    entry = entry |> Map.put(:id, state.next_id) |> Map.put(:node, state.node)
 
     arm(%{
       state

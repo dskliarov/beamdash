@@ -40,9 +40,10 @@ defmodule Beamdash.TraceTreeClickTest do
         Fixture.stop_peer(peer)
       end)
 
-      socket = %Phoenix.LiveView.Socket{
-        private: %{lifecycle: %Phoenix.LiveView.Lifecycle{}, live_temp: %{}}
-      }
+      socket =
+        Beamdash.Test.Fixture.with_conn(%Phoenix.LiveView.Socket{
+          private: %{lifecycle: %Phoenix.LiveView.Lifecycle{}, live_temp: %{}}
+        })
 
       {:ok, socket} = TraceLive.mount(%{}, %{}, socket)
       {:ok, modules} = Tracer.module_functions()

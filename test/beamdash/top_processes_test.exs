@@ -4,9 +4,10 @@ defmodule Beamdash.TopProcessesTest do
   alias BeamdashWeb.HomeLive
 
   test "CPU ranking is unavailable when sampling stops or fails" do
-    socket = %Phoenix.LiveView.Socket{
-      private: %{lifecycle: %Phoenix.LiveView.Lifecycle{}, live_temp: %{}}
-    }
+    socket =
+      Beamdash.Test.Fixture.with_conn(%Phoenix.LiveView.Socket{
+        private: %{lifecycle: %Phoenix.LiveView.Lifecycle{}, live_temp: %{}}
+      })
 
     {:ok, socket} = HomeLive.mount(%{}, %{}, socket)
     {:noreply, socket} = HomeLive.handle_event("top_metric", %{"metric" => "cpu"}, socket)
@@ -29,9 +30,10 @@ defmodule Beamdash.TopProcessesTest do
   end
 
   test "filters by status before ranking and combines with text search" do
-    socket = %Phoenix.LiveView.Socket{
-      private: %{lifecycle: %Phoenix.LiveView.Lifecycle{}, live_temp: %{}}
-    }
+    socket =
+      Beamdash.Test.Fixture.with_conn(%Phoenix.LiveView.Socket{
+        private: %{lifecycle: %Phoenix.LiveView.Lifecycle{}, live_temp: %{}}
+      })
 
     {:ok, socket} = HomeLive.mount(%{}, %{}, socket)
 
@@ -83,9 +85,10 @@ defmodule Beamdash.TopProcessesTest do
   end
 
   test "the CPU table column is visible only while sampling is enabled" do
-    socket = %Phoenix.LiveView.Socket{
-      private: %{lifecycle: %Phoenix.LiveView.Lifecycle{}, live_temp: %{}}
-    }
+    socket =
+      Beamdash.Test.Fixture.with_conn(%Phoenix.LiveView.Socket{
+        private: %{lifecycle: %Phoenix.LiveView.Lifecycle{}, live_temp: %{}}
+      })
 
     {:ok, socket} = HomeLive.mount(%{}, %{}, socket)
     socket = Phoenix.Component.assign(socket, syntax: :erlang, status: :connected, procs: [])
@@ -125,9 +128,10 @@ defmodule Beamdash.TopProcessesTest do
   end
 
   test "the process table exposes keyboard-accessible sort controls and an empty state" do
-    socket = %Phoenix.LiveView.Socket{
-      private: %{lifecycle: %Phoenix.LiveView.Lifecycle{}, live_temp: %{}}
-    }
+    socket =
+      Beamdash.Test.Fixture.with_conn(%Phoenix.LiveView.Socket{
+        private: %{lifecycle: %Phoenix.LiveView.Lifecycle{}, live_temp: %{}}
+      })
 
     {:ok, socket} = HomeLive.mount(%{}, %{}, socket)
     socket = Phoenix.Component.assign(socket, syntax: :erlang, status: :connected, procs: [])
@@ -147,9 +151,10 @@ defmodule Beamdash.TopProcessesTest do
   end
 
   test "CPU sampling repeats until stopped and clears the displayed sample" do
-    socket = %Phoenix.LiveView.Socket{
-      private: %{lifecycle: %Phoenix.LiveView.Lifecycle{}, live_temp: %{}}
-    }
+    socket =
+      Beamdash.Test.Fixture.with_conn(%Phoenix.LiveView.Socket{
+        private: %{lifecycle: %Phoenix.LiveView.Lifecycle{}, live_temp: %{}}
+      })
 
     {:ok, socket} = HomeLive.mount(%{}, %{}, socket)
     request = {:cpu_sample, make_ref()}
@@ -175,9 +180,10 @@ defmodule Beamdash.TopProcessesTest do
   end
 
   test "ignores CPU results after the target changes" do
-    socket = %Phoenix.LiveView.Socket{
-      private: %{lifecycle: %Phoenix.LiveView.Lifecycle{}, live_temp: %{}}
-    }
+    socket =
+      Beamdash.Test.Fixture.with_conn(%Phoenix.LiveView.Socket{
+        private: %{lifecycle: %Phoenix.LiveView.Lifecycle{}, live_temp: %{}}
+      })
 
     {:ok, socket} = HomeLive.mount(%{}, %{}, socket)
     request = {:cpu_sample, make_ref()}
@@ -194,9 +200,10 @@ defmodule Beamdash.TopProcessesTest do
   end
 
   test "sorts measured CPU percentages and leaves missing samples last" do
-    socket = %Phoenix.LiveView.Socket{
-      private: %{lifecycle: %Phoenix.LiveView.Lifecycle{}, live_temp: %{}}
-    }
+    socket =
+      Beamdash.Test.Fixture.with_conn(%Phoenix.LiveView.Socket{
+        private: %{lifecycle: %Phoenix.LiveView.Lifecycle{}, live_temp: %{}}
+      })
 
     {:ok, socket} = HomeLive.mount(%{}, %{}, socket)
     pids = for n <- 20..22, do: :c.pid(0, n, 0)
@@ -241,9 +248,10 @@ defmodule Beamdash.TopProcessesTest do
   end
 
   test "ranks processes by the chosen metric and limits the results" do
-    socket = %Phoenix.LiveView.Socket{
-      private: %{lifecycle: %Phoenix.LiveView.Lifecycle{}, live_temp: %{}}
-    }
+    socket =
+      Beamdash.Test.Fixture.with_conn(%Phoenix.LiveView.Socket{
+        private: %{lifecycle: %Phoenix.LiveView.Lifecycle{}, live_temp: %{}}
+      })
 
     {:ok, socket} = HomeLive.mount(%{}, %{}, socket)
 

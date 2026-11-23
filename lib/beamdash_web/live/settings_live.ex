@@ -1,6 +1,6 @@
 defmodule BeamdashWeb.SettingsLive do
   use Phoenix.LiveView
-  alias Beamdash.{Format, Jev, Kubectl, LastConnection, Reports, Settings, Target}
+  alias Beamdash.{Connections, Format, Jev, Kubectl, LastConnection, Reports, Settings, Target}
   alias BeamdashWeb.PluginsSettings
 
   @impl true
@@ -21,6 +21,7 @@ defmodule BeamdashWeb.SettingsLive do
        ai_models: [],
        ai_loading: nil,
        auto_reconnect: Settings.auto_reconnect?(),
+       multiple_connections: Settings.multiple_connections?(),
        snapshots_enabled: Settings.snapshots_enabled?(),
        saved_connections: saved(),
        browser: nil,
@@ -31,7 +32,7 @@ defmodule BeamdashWeb.SettingsLive do
        report_clients: Reports.clients(),
        report_client_error: nil,
        new_report_token: nil,
-       node_apps: node_apps()
+       node_apps: node_apps(socket.assigns.conn.server)
      )
      |> assign_kubeconfig_dir(Settings.kubeconfig_dir())
      |> PluginsSettings.mount(session)}
@@ -70,8 +71,8 @@ defmodule BeamdashWeb.SettingsLive do
   end
 
   # the attached node's applications, suggested for a source folder
-  defp node_apps do
-    with %{status: :connected, node: node} <- Target.status(),
+  defp node_apps(server) do
+    with %{status: :connected, node: node} <- Target.status(server),
          {:ok, apps} when is_list(apps) <- Target.rpc(node, :application, :which_applications, []) do
       apps |> Enum.map(&Atom.to_string(elem(&1, 0))) |> Enum.sort()
     else
@@ -119,6 +120,35 @@ defmodule BeamdashWeb.SettingsLive do
   defp existing_dir(dir) do
     parent = Path.dirname(dir)
     if File.dir?(dir) or parent == dir, do: dir, else: existing_dir(parent)
+  end
+
+  defp disconnect_others(socket) do
+    keep = socket.assigns.conn.server
+
+    case for(
+           %{server: server, node: node} <- Connections.list(),
+           server != keep,
+           do: {server, node}
+         ) do
+      [] ->
+        socket
+
+      removed ->
+        for {server, _node} <- removed, do: Connections.remove(server)
+
+        names =
+          removed
+          |> Enum.map(fn {_server, node} -> node end)
+          |> Enum.reject(&is_nil/1)
+          |> Enum.join(", ")
+
+        notice =
+          if names == "",
+            do: "Multiple connections are off.",
+            else: "Multiple connections are off. Disconnected #{names}."
+
+        assign(socket, conn: Map.put(socket.assigns.conn, :notice, notice))
+    end
   end
 
   @impl true
@@ -278,10 +308,17 @@ defmodule BeamdashWeb.SettingsLive do
   end
 
   @impl true
+  def handle_event("toggle_multiple_connections", _, socket) do
+    enabled = not Settings.multiple_connections?()
+    :ok = Settings.put_multiple_connections(enabled)
+    socket = assign(socket, multiple_connections: enabled)
+    {:noreply, if(enabled, do: socket, else: disconnect_others(socket))}
+  end
+
   def handle_event("toggle_auto_reconnect", _, socket) do
     enabled = not Settings.auto_reconnect?()
     :ok = Settings.put_auto_reconnect(enabled)
-    unless enabled, do: Target.stop_reconnect()
+    unless enabled, do: Target.stop_reconnect(socket.assigns.conn.server)
     {:noreply, assign(socket, auto_reconnect: enabled)}
   end
 
@@ -471,6 +508,28 @@ defmodule BeamdashWeb.SettingsLive do
         <p :if={@saved_connections} class="muted small">
           Kept in <span class="mono">{LastConnection.path()}</span>, readable only by you.
         </p>
+        <div class="settings-toggle-row">
+          <div>
+            <strong id="multiple-setting-label">Allow multiple connections</strong>
+            <p id="multiple-setting-help" class="muted small">
+              Stay connected to several nodes of the same application, such as several pods
+              of one deployment, and switch between them in the connection bar. Off keeps one
+              connection: connecting replaces the current one. Turning it off disconnects every
+              node but the one you are looking at.
+            </p>
+          </div>
+          <button
+            type="button"
+            id="multiple-connections"
+            role="switch"
+            aria-checked={to_string(@multiple_connections)}
+            aria-labelledby="multiple-setting-label"
+            aria-describedby="multiple-setting-help"
+            phx-click="toggle_multiple_connections"
+            class={["settings-switch", @multiple_connections && "on"]}
+          ><span class="settings-switch-knob" aria-hidden="true"></span></button>
+          <span class="small" role="status">{if @multiple_connections, do: "On", else: "Off"}</span>
+        </div>
         <div class="settings-toggle-row">
           <div>
             <strong id="reconnect-setting-label">Reconnect automatically</strong>

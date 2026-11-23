@@ -4,9 +4,10 @@ defmodule Beamdash.MemoryPanelTest do
   alias BeamdashWeb.MemoryLive
 
   test "inspection appears in a resizable side panel and can be closed" do
-    socket = %Phoenix.LiveView.Socket{
-      private: %{lifecycle: %Phoenix.LiveView.Lifecycle{}, live_temp: %{}}
-    }
+    socket =
+      Beamdash.Test.Fixture.with_conn(%Phoenix.LiveView.Socket{
+        private: %{lifecycle: %Phoenix.LiveView.Lifecycle{}, live_temp: %{}}
+      })
 
     {:ok, socket} = MemoryLive.mount(%{}, %{}, socket)
 
@@ -196,9 +197,10 @@ defmodule Beamdash.MemoryPanelTest do
   end
 
   test "forecast and the leak search each have their own page" do
-    socket = %Phoenix.LiveView.Socket{
-      private: %{lifecycle: %Phoenix.LiveView.Lifecycle{}, live_temp: %{}}
-    }
+    socket =
+      Beamdash.Test.Fixture.with_conn(%Phoenix.LiveView.Socket{
+        private: %{lifecycle: %Phoenix.LiveView.Lifecycle{}, live_temp: %{}}
+      })
 
     {:ok, socket} = MemoryLive.mount(%{}, %{}, socket)
 
@@ -258,9 +260,10 @@ defmodule Beamdash.MemoryPanelTest do
   end
 
   test "a table's browse opens in the side column, and a tab change closes it" do
-    socket = %Phoenix.LiveView.Socket{
-      private: %{lifecycle: %Phoenix.LiveView.Lifecycle{}, live_temp: %{}}
-    }
+    socket =
+      Beamdash.Test.Fixture.with_conn(%Phoenix.LiveView.Socket{
+        private: %{lifecycle: %Phoenix.LiveView.Lifecycle{}, live_temp: %{}}
+      })
 
     {:ok, socket} = MemoryLive.mount(%{}, %{}, socket)
 
@@ -350,6 +353,18 @@ defmodule Beamdash.MemoryPanelTest do
     html = with_table.assigns |> MemoryLive.render() |> Phoenix.LiveViewTest.rendered_to_string()
     assert html =~ "set, public"
     assert html =~ "7 rows"
+    assert html =~ ~s(phx-value-id=":tab")
+    refute html =~ ~s(<span class="ets-private">private</span>)
+
+    secret = Map.merge(table, %{id: :secret, name: :secret, protection: :private})
+
+    secret_socket = Phoenix.Component.assign(socket, ets: [secret])
+
+    html =
+      secret_socket.assigns |> MemoryLive.render() |> Phoenix.LiveViewTest.rendered_to_string()
+
+    assert html =~ ~s(<span class="ets-private">private</span>)
+    refute html =~ ~s(phx-value-id=":secret")
 
     long_row = {:long_key, Enum.map(1..60, &{:"key_#{&1}", &1})}
     result = {:ok, %{rows: [long_row], stop: :complete, keypos: 1}}

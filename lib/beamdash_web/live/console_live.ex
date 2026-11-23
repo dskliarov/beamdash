@@ -4,8 +4,8 @@ defmodule BeamdashWeb.ConsoleLive do
 
   @impl true
   def mount(_, _, socket) do
-    %{status: status, node: node} = Target.status()
-    if connected?(socket), do: Target.subscribe()
+    %{status: status, node: node} = Target.status(socket.assigns.conn.server)
+    if connected?(socket), do: Target.subscribe(socket.assigns.conn.server)
 
     {:ok,
      assign(socket,
@@ -35,7 +35,7 @@ defmodule BeamdashWeb.ConsoleLive do
         %{assigns: %{status: :connected, node: node, pending: nil}} = socket
       ) do
     items =
-      case Target.status() do
+      case Target.status(socket.assigns.conn.server) do
         %{status: :connected, node: ^node} ->
           Console.complete(node, socket.assigns.language, token)
 
@@ -74,7 +74,7 @@ defmodule BeamdashWeb.ConsoleLive do
       byte_size(code) > 32768 ->
         {:noreply, assign(socket, error: "Commands must be at most 32 KiB.")}
 
-      Target.status() != %{status: :connected, node: node} ->
+      Target.status(socket.assigns.conn.server) != %{status: :connected, node: node} ->
         {:noreply, assign(socket, error: "The node connection has changed.")}
 
       true ->
@@ -398,7 +398,10 @@ defmodule BeamdashWeb.ConsoleLive do
       </section>
       <div hidden={@view != :notebook}>
         <%= if connected?(@socket) do %>
-          {live_render(@socket, BeamdashWeb.NotebookLive, id: "console-notebooks", session: %{})}
+          {live_render(@socket, BeamdashWeb.NotebookLive,
+            id: "console-notebooks",
+            session: %{"server" => @conn.server}
+          )}
         <% else %>
           <p class="muted">Loading notebooks…</p>
         <% end %>

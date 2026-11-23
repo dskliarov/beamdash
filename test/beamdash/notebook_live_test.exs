@@ -22,11 +22,12 @@ defmodule Beamdash.NotebookLiveTest do
       Settings.reload()
     end)
 
-    socket = %Phoenix.LiveView.Socket{
-      private: %{lifecycle: %Phoenix.LiveView.Lifecycle{}, live_temp: %{}}
-    }
+    socket =
+      Beamdash.Test.Fixture.with_conn(%Phoenix.LiveView.Socket{
+        private: %{lifecycle: %Phoenix.LiveView.Lifecycle{}, live_temp: %{}}
+      })
 
-    {:ok, socket} = NotebookLive.mount(%{}, %{}, socket)
+    {:ok, socket} = NotebookLive.mount(%{}, %{"server" => Beamdash.Target}, socket)
     %{socket: socket, dir: dir}
   end
 

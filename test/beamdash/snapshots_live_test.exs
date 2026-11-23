@@ -3,12 +3,17 @@ defmodule Beamdash.SnapshotsLiveTest do
   # page's callbacks are called directly on a socket, as in the other LiveView tests.
   use ExUnit.Case, async: false
 
-  alias Beamdash.{Settings, Store}
+  alias Beamdash.{Connections, Sampler, Settings, Store, Target}
+  alias Beamdash.Test.Fixture
   alias BeamdashWeb.SnapshotsLive
   alias Phoenix.LiveView.{Lifecycle, Socket}
 
   defp socket do
-    socket = %Socket{private: %{lifecycle: %Lifecycle{}, live_temp: %{}}}
+    socket =
+      Beamdash.Test.Fixture.with_conn(%Socket{
+        private: %{lifecycle: %Lifecycle{}, live_temp: %{}}
+      })
+
     {:ok, socket} = SnapshotsLive.mount(%{}, %{}, socket)
     socket
   end
@@ -71,7 +76,13 @@ defmodule Beamdash.SnapshotsLiveTest do
     :ok = Settings.put_snapshots_enabled(false)
 
     {:ok, socket} =
-      SnapshotsLive.mount(%{}, %{}, %Socket{private: %{lifecycle: %Lifecycle{}, live_temp: %{}}})
+      SnapshotsLive.mount(
+        %{},
+        %{},
+        Beamdash.Test.Fixture.with_conn(%Socket{
+          private: %{lifecycle: %Lifecycle{}, live_temp: %{}}
+        })
+      )
 
     assert {:redirect, %{to: "/"}} = socket.redirected
   end
@@ -246,5 +257,116 @@ defmodule Beamdash.SnapshotsLiveTest do
     stop_supervised!(Store)
 
     assert html(socket()) =~ "Snapshots are off"
+  end
+
+  describe "on an extra connection" do
+    setup do
+      Target.disconnect()
+      previous_method = Settings.connection_method()
+      previous_store_file = Application.get_env(:beamdash, :store_file)
+
+      Application.put_env(
+        :beamdash,
+        :store_file,
+        Path.join(
+          System.tmp_dir!(),
+          "beamdash_sampler_#{System.unique_integer([:positive])}.sqlite3"
+        )
+      )
+
+      :ok = Settings.put_connection_method(:direct)
+      :ok = Settings.put_multiple_connections(true)
+
+      on_exit(fn ->
+        for %{server: server} <- Connections.list(),
+            server != Target,
+            do: Connections.remove(server)
+
+        Target.disconnect()
+        Settings.put_multiple_connections(false)
+        Settings.put_connection_method(previous_method)
+        Application.put_env(:beamdash, :store_file, previous_store_file)
+      end)
+
+      :ok
+    end
+
+    test "the page shows its session's node, and stops and starts that node's sampler" do
+      {_peer1, node1} = Fixture.start_peer()
+      {_peer2, node2} = Fixture.start_peer()
+      {:ok, _} = Target.connect(Atom.to_string(node1), Fixture.cookie())
+      extra = Connections.target_for_connect()
+      {:ok, _} = Target.connect(Atom.to_string(node2), Fixture.cookie(), extra)
+
+      at = System.system_time(:millisecond)
+      row = %{snapshot(at, "#PID<0.7.0>", "memory", 1_000) | node: Atom.to_string(node2)}
+      :ok = Store.record(:snapshots, [row])
+
+      socket = Fixture.with_conn(%Socket{private: %{lifecycle: %Lifecycle{}, live_temp: %{}}})
+      socket = Phoenix.Component.assign(socket, :conn, %{socket.assigns.conn | server: extra})
+      {:ok, socket} = SnapshotsLive.mount(%{}, %{}, socket)
+
+      assert socket.assigns.node == node2
+      assert run(socket, node2).sampler == Connections.service(extra, Sampler)
+      html = html(socket)
+      assert html =~ "0.7.0"
+      refute html =~ "0.1.0"
+      refute html =~ "0.3.0"
+      assert html =~ "Stop on #{node2}"
+
+      {:noreply, socket} =
+        SnapshotsLive.handle_event("stop_run", %{"node" => Atom.to_string(node2)}, socket)
+
+      assert run(socket, node2).sampler == nil
+      assert Connections.service(extra, Sampler) == nil
+      assert html(socket) =~ "Start on #{node2}"
+
+      {:noreply, socket} =
+        SnapshotsLive.handle_event("start_run", %{"node" => Atom.to_string(node2)}, socket)
+
+      assert is_pid(run(socket, node2).sampler)
+      assert run(socket, node2).sampler == Connections.service(extra, Sampler)
+    end
+
+    test "the node filter adds other connected nodes' snapshots, each row tagged with its node" do
+      {_peer1, node1} = Fixture.start_peer()
+      {_peer2, node2} = Fixture.start_peer()
+      {:ok, _} = Target.connect(Atom.to_string(node1), Fixture.cookie())
+      extra = Connections.target_for_connect()
+      {:ok, _} = Target.connect(Atom.to_string(node2), Fixture.cookie(), extra)
+
+      at = System.system_time(:millisecond)
+
+      :ok =
+        Store.record(:snapshots, [
+          %{snapshot(at, "#PID<0.7.0>", "memory", 1_000) | node: Atom.to_string(node2)}
+        ])
+
+      :ok =
+        Store.record(:snapshots, [
+          %{snapshot(at, "#PID<0.8.0>", "memory", 1_000) | node: Atom.to_string(node1)}
+        ])
+
+      socket = Fixture.with_conn(%Socket{private: %{lifecycle: %Lifecycle{}, live_temp: %{}}})
+      socket = Phoenix.Component.assign(socket, :conn, %{socket.assigns.conn | server: extra})
+      {:ok, socket} = SnapshotsLive.mount(%{}, %{}, socket)
+
+      html = html(socket)
+      assert html =~ "0.7.0"
+      refute html =~ "0.8.0"
+
+      {:noreply, socket} =
+        SnapshotsLive.handle_event("node_toggle", %{"node" => Atom.to_string(node1)}, socket)
+
+      assert Enum.sort(socket.assigns.nodes) ==
+               Enum.sort([Atom.to_string(node1), Atom.to_string(node2)])
+
+      html = html(socket)
+      assert html =~ "0.7.0"
+      assert html =~ "0.8.0"
+      assert html =~ ~s(class="badge mono">#{node1})
+    end
+
+    defp run(socket, node), do: Enum.find(socket.assigns.runs, &(&1.node == Atom.to_string(node)))
   end
 end

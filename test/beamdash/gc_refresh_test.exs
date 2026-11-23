@@ -4,7 +4,9 @@ defmodule Beamdash.GCRefreshTest do
   alias BeamdashWeb.GCLive
 
   defp connected_socket do
-    {:ok, socket} = GCLive.mount(%{}, %{}, %Phoenix.LiveView.Socket{})
+    {:ok, socket} =
+      GCLive.mount(%{}, %{}, Beamdash.Test.Fixture.with_conn(%Phoenix.LiveView.Socket{}))
+
     Phoenix.Component.assign(socket, status: :connected, node: :fake@host)
   end
 

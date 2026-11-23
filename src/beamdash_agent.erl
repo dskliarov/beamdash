@@ -23,7 +23,8 @@
 -export([gc_snapshot/0, gc_trace_start/3]).
 
 -define(SUMMARY_KEYS, [registered_name, initial_call, current_function,
-                       memory, reductions, message_queue_len, status]).
+                       memory, heap_size, reductions, message_queue_len, status,
+                       binary]).
 
 %% Where proc_lib keeps a process's real entry point. OTP 26+ can read one
 %% dictionary key in the same process_info call as everything else.
@@ -434,17 +435,18 @@ processes() ->
                true -> ?SUMMARY_KEYS ++ [?INITIAL_CALL_KEY];
                false -> ?SUMMARY_KEYS
            end,
+    Owned = ets_bytes_by_owner(),
     {Procs, _Cache} =
         lists:foldl(
           fun(Pid, {Acc, Cache}) ->
-                  case summary(Pid, Keys, Cache) of
+                  case summary(Pid, Keys, Owned, Cache) of
                       false -> {Acc, Cache};
                       {Summary, Cache1} -> {[Summary | Acc], Cache1}
                   end
           end, {[], #{}}, erlang:processes()),
     lists:reverse(Procs).
 
-summary(Pid, Keys, Cache) ->
+summary(Pid, Keys, Owned, Cache) ->
     case erlang:process_info(Pid, Keys) of
         undefined ->
             false;
@@ -459,10 +461,27 @@ summary(Pid, Keys, Cache) ->
                current_function => CurrentFunction,
                kind => Kind,
                memory => Get(memory),
+               heap_size => Get(heap_size) * erlang:system_info(wordsize),
                reductions => Get(reductions),
                message_queue_len => Get(message_queue_len),
-               status => Get(status)}, Cache1}
+               status => Get(status),
+               binary => lists:sum([Size || {_, Size, _} <- Get(binary)]),
+               ets => maps:get(Pid, Owned, 0)}, Cache1}
     end.
+
+%% Bytes of the ETS tables each process owns, keyed by pid.
+ets_bytes_by_owner() ->
+    Word = erlang:system_info(wordsize),
+    lists:foldl(
+      fun(Tab, Acc) ->
+              case {ets:info(Tab, owner), ets:info(Tab, memory)} of
+                  {Owner, Words} when is_pid(Owner), is_integer(Words) ->
+                      maps:update_with(Owner, fun(B) -> B + Words * Word end,
+                                       Words * Word, Acc);
+                  _ ->
+                      Acc
+              end
+      end, #{}, ets:all()).
 
 %% What OTP behaviour a process runs: gen_server, gen_statem, gen_event,
 %% supervisor, or nil. Decided without messaging the process:
@@ -1674,7 +1693,7 @@ callback_module(Pid) ->
 
 module_records(undefined) -> [];
 module_records(Mod) ->
-    try erlyberly:load_module_records(Mod) of
+    try beamdash_trace_agent:load_module_records(Mod) of
         {ok, Recs} -> Recs;
         _ -> []
     catch

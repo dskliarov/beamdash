@@ -8,7 +8,7 @@ defmodule BeamdashWeb.SnapshotsLive do
   """
   use Phoenix.LiveView
 
-  alias Beamdash.{Format, Settings, Store}
+  alias Beamdash.{Connections, Format, Sampler, Settings, Store, Target}
   alias Beamdash.Insights.Suspects
 
   @windows [
@@ -35,8 +35,13 @@ defmodule BeamdashWeb.SnapshotsLive do
   def mount(_params, _session, socket) do
     if Settings.snapshots_enabled?() do
       socket =
-        assign(socket,
+        socket
+        |> assign(server: socket.assigns.conn.server)
+        |> refresh_node()
+        |> assign(
           window: 3_600,
+          nodes: nil,
+          node_choices: [],
           reason: "all",
           pid: "",
           limit: @page,
@@ -82,6 +87,25 @@ defmodule BeamdashWeb.SnapshotsLive do
       {:noreply,
        socket |> assign(selected: String.to_integer(at), expanded: MapSet.new()) |> load()}
 
+  def handle_event("node_toggle", %{"node" => name}, socket) do
+    shown = shown_nodes(socket.assigns)
+    shown = if name in shown, do: List.delete(shown, name), else: shown ++ [name]
+    {:noreply, socket |> assign(nodes: shown) |> load()}
+  end
+
+  def handle_event("stop_run", %{"node" => name}, socket),
+    do: {:noreply, socket |> run_action(name, &Connections.stop_service(&1, Sampler)) |> load()}
+
+  def handle_event("start_run", %{"node" => name}, socket),
+    do: {:noreply, socket |> run_action(name, &Connections.start_service(&1, Sampler)) |> load()}
+
+  def handle_event("start_run_all", _, socket) do
+    for %{server: server, sampler: nil} <- socket.assigns.runs,
+        do: Connections.start_service(server, Sampler)
+
+    {:noreply, socket |> assign(runs: runs()) |> load()}
+  end
+
   def handle_event("toggle_details", %{"pid" => pid}, socket) do
     expanded = socket.assigns.expanded
 
@@ -93,11 +117,22 @@ defmodule BeamdashWeb.SnapshotsLive do
     {:noreply, assign(socket, expanded: expanded)}
   end
 
+  defp run_action(socket, name, fun) do
+    case Enum.find(socket.assigns.runs, &(&1.node == name)) do
+      %{server: server} ->
+        fun.(server)
+        assign(socket, runs: runs())
+
+      nil ->
+        socket
+    end
+  end
+
   @impl true
   def handle_info(:tick, socket) do
     if Settings.snapshots_enabled?() do
       Process.send_after(self(), :tick, @refresh_ms)
-      {:noreply, load(socket)}
+      {:noreply, socket |> refresh_node() |> load()}
     else
       {:noreply, redirect(socket, to: "/")}
     end
@@ -113,7 +148,8 @@ defmodule BeamdashWeb.SnapshotsLive do
         reasons: @reasons,
         max_limit: @max_limit,
         days: Store.policy().snapshots.max_age_days,
-        node_memory: memory_view(assigns.memory)
+        node_memory: memory_view(assigns.memory),
+        shown: shown_nodes(assigns)
       )
 
     ~H"""
@@ -142,6 +178,55 @@ defmodule BeamdashWeb.SnapshotsLive do
         <p :if={!@enabled} class="error" role="alert">
           Snapshots are off: the event store is not running.
         </p>
+
+        <div :if={@runs != []} id="sampler-run" class="active-traces">
+          <ul class="snap-runs">
+            <li :for={run <- @runs}>
+              <span>
+                Sampling <strong class="mono">{run.node}</strong>: {if run.sampler,
+                  do: "recording",
+                  else: "stopped"}
+              </span>
+              <button
+                :if={run.sampler}
+                type="button"
+                phx-click="stop_run"
+                phx-value-node={run.node}
+                class="secondary"
+              >
+                Stop on {run.node}
+              </button>
+              <button
+                :if={!run.sampler and @enabled}
+                type="button"
+                phx-click="start_run"
+                phx-value-node={run.node}
+              >
+                Start on {run.node}
+              </button>
+            </li>
+          </ul>
+          <button
+            :if={@enabled and Enum.any?(@runs, &is_nil(&1.sampler))}
+            type="button"
+            phx-click="start_run_all"
+          >
+            Start on all connected nodes
+          </button>
+        </div>
+
+        <fieldset :if={length(@node_choices) > 1} class="snap-nodes">
+          <legend class="small muted">Nodes shown</legend>
+          <label :for={node <- @node_choices} class="snap-node">
+            <input
+              type="checkbox"
+              checked={node in @shown}
+              phx-click="node_toggle"
+              phx-value-node={node}
+            />
+            <span class="mono">{node}</span>
+          </label>
+        </fieldset>
 
         <form phx-change="filter" class="inline-form">
           <label for="snap-window" class="small muted">Window</label>
@@ -237,6 +322,7 @@ defmodule BeamdashWeb.SnapshotsLive do
                 <tbody :for={row <- rows}>
                   <tr>
                     <td>
+                      <span :if={length(@shown) > 1} class="badge mono">{row.node}</span>
                       {process_name(row)}
                       <span :if={suspect?(@suspects, row)} class="badge badge-suspect">Suspect</span>
                       <div class="muted small mono">
@@ -303,7 +389,9 @@ defmodule BeamdashWeb.SnapshotsLive do
           ),
         else: []
 
-    memory = Store.query(:memory, from: from, limit: @memory_points)
+    memory =
+      Store.query(:memory, [from: from, limit: @memory_points] ++ node_filter(socket.assigns))
+
     {suspect_key, suspects} = suspects(socket, from)
 
     assign(socket,
@@ -312,21 +400,25 @@ defmodule BeamdashWeb.SnapshotsLive do
       detail: detail,
       memory: memory,
       suspect_key: suspect_key,
-      suspects: suspects
+      suspects: suspects,
+      node_choices: node_choices(socket.assigns)
     )
   end
 
   # The marks ignore the filters, so they are recomputed only when the window
   # or its newest snapshot changes, not on every refresh.
   defp suspects(socket, from) do
-    key = {socket.assigns.window, latest(Store.times(:snapshots, from: from, limit: 1))}
+    node = node_filter(socket.assigns)
+    key = {socket.assigns.window, latest(Store.times(:snapshots, [from: from, limit: 1] ++ node))}
 
     if key == socket.assigns.suspect_key,
       do: {key, socket.assigns.suspects},
-      else: {key, Suspects.analyze(Store.query(:snapshots, from: from, limit: @suspect_rows))}
+      else:
+        {key,
+         Suspects.analyze(Store.query(:snapshots, [from: from, limit: @suspect_rows] ++ node))}
   end
 
-  defp suspect?(%{flagged: flagged}, row), do: Map.has_key?(flagged, {row.at, row.pid})
+  defp suspect?(%{flagged: flagged}, row), do: Map.has_key?(flagged, {row.node, row.at, row.pid})
 
   defp feature_label(:memory), do: "Memory"
   defp feature_label(:queue), do: "Mailbox"
@@ -434,9 +526,41 @@ defmodule BeamdashWeb.SnapshotsLive do
   defp latest([%{at: at} | _]), do: at
   defp latest([]), do: nil
 
-  defp filters(%{assigns: %{reason: reason, pid: pid}}) do
+  defp refresh_node(socket) do
+    %{server: server} = socket.assigns
+    %{status: status, node: node} = Target.status(server)
+    assign(socket, status: status, node: node, runs: runs())
+  end
+
+  # The sampler run of every connected extra node. The primary's sampler is a
+  # singleton that the connection does not stop.
+  defp runs do
+    for entry <- Connections.list(), entry.status == :connected, entry.server != Target do
+      %{
+        server: entry.server,
+        node: to_string(entry.node),
+        sampler: Connections.service(entry.server, Sampler)
+      }
+    end
+  end
+
+  defp shown_nodes(%{nodes: nodes}) when is_list(nodes), do: nodes
+  defp shown_nodes(%{node: nil}), do: []
+  defp shown_nodes(%{node: node}), do: [to_string(node)]
+
+  defp node_choices(assigns) do
+    connected = for %{node: node} when not is_nil(node) <- Connections.list(), do: to_string(node)
+    Enum.uniq(connected ++ shown_nodes(assigns))
+  end
+
+  defp node_filter(%{nodes: nodes}) when is_list(nodes), do: [node: nodes]
+  defp node_filter(%{node: nil}), do: []
+  defp node_filter(%{node: node}), do: [node: node]
+
+  defp filters(%{assigns: %{reason: reason, pid: pid}} = socket) do
     filters = if reason == "all", do: [], else: [reason: reason]
-    if pid == "", do: filters, else: [{:pid, pid} | filters]
+    filters = if pid == "", do: filters, else: [{:pid, pid} | filters]
+    node_filter(socket.assigns) ++ filters
   end
 
   # the rows of one snapshot, per reason, each sorted by the measure that made it appear

@@ -9,6 +9,7 @@ defmodule Beamdash.Application do
     children = [
       {Phoenix.PubSub, name: Beamdash.PubSub},
       Beamdash.Target,
+      Beamdash.Connections.supervisor_spec(),
       Beamdash.Tracer,
       Beamdash.ModuleCache,
       Beamdash.AppCache,

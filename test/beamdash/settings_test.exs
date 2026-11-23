@@ -14,7 +14,13 @@ defmodule Beamdash.SettingsTest do
     assert :ok = Settings.reset_notebooks_dir()
     assert Settings.notebooks_dir() == Settings.default_notebooks_dir()
     path = Path.join(System.tmp_dir!(), "beamdash-notebook-setting")
-    {:ok, socket} = BeamdashWeb.SettingsLive.mount(%{}, %{}, %Phoenix.LiveView.Socket{})
+
+    {:ok, socket} =
+      BeamdashWeb.SettingsLive.mount(
+        %{},
+        %{},
+        Beamdash.Test.Fixture.with_conn(%Phoenix.LiveView.Socket{})
+      )
 
     {:noreply, socket} =
       BeamdashWeb.SettingsLive.handle_event(
@@ -47,7 +53,10 @@ defmodule Beamdash.SettingsTest do
   test "settings switch changes the shared value and broadcasts it" do
     Phoenix.PubSub.subscribe(Beamdash.PubSub, "settings")
     view = BeamdashWeb.SettingsLive
-    {:ok, socket} = view.mount(%{}, %{}, %Phoenix.LiveView.Socket{})
+
+    {:ok, socket} =
+      view.mount(%{}, %{}, Beamdash.Test.Fixture.with_conn(%Phoenix.LiveView.Socket{}))
+
     assert socket.assigns.jev_enabled
     {:noreply, socket} = view.handle_event("toggle_jev", %{}, socket)
     refute Settings.jev_enabled?()
@@ -63,7 +72,10 @@ defmodule Beamdash.SettingsTest do
     on_exit(fn -> :ok = Settings.put_auto_reconnect(false) end)
     :ok = Settings.put_auto_reconnect(false)
     view = BeamdashWeb.SettingsLive
-    {:ok, socket} = view.mount(%{}, %{}, %Phoenix.LiveView.Socket{})
+
+    {:ok, socket} =
+      view.mount(%{}, %{}, Beamdash.Test.Fixture.with_conn(%Phoenix.LiveView.Socket{}))
+
     refute socket.assigns.auto_reconnect
 
     {:noreply, socket} = view.handle_event("toggle_auto_reconnect", %{}, socket)
@@ -85,11 +97,83 @@ defmodule Beamdash.SettingsTest do
     refute Map.has_key?(Settings.path() |> File.read!() |> Jason.decode!(), "auto_reconnect")
   end
 
+  test "multiple connections is off until switched on, and saved" do
+    on_exit(fn -> :ok = Settings.put_multiple_connections(false) end)
+    :ok = Settings.put_multiple_connections(false)
+    view = BeamdashWeb.SettingsLive
+
+    {:ok, socket} =
+      view.mount(%{}, %{}, Beamdash.Test.Fixture.with_conn(%Phoenix.LiveView.Socket{}))
+
+    refute socket.assigns.multiple_connections
+
+    {:noreply, socket} = view.handle_event("toggle_multiple_connections", %{}, socket)
+    assert socket.assigns.multiple_connections
+    assert %{"multiple_connections" => true} = Settings.path() |> File.read!() |> Jason.decode!()
+    :ok = Settings.reload()
+    assert Settings.multiple_connections?()
+
+    html =
+      socket.assigns
+      |> Map.put(:syntax, :erlang)
+      |> view.render()
+      |> Phoenix.LiveViewTest.rendered_to_string()
+
+    assert html =~ ~r/id="multiple-connections"[^>]*role="switch"[^>]*aria-checked="true"/s
+
+    {:noreply, socket} = view.handle_event("toggle_multiple_connections", %{}, socket)
+    refute socket.assigns.multiple_connections
+
+    refute Map.has_key?(
+             Settings.path() |> File.read!() |> Jason.decode!(),
+             "multiple_connections"
+           )
+  end
+
+  test "turning multiple connections off disconnects the other nodes and says which" do
+    on_exit(fn ->
+      for %{server: server} <- Beamdash.Connections.list(),
+          server != Beamdash.Target,
+          do: Beamdash.Connections.remove(server)
+
+      Beamdash.Target.disconnect()
+      :ok = Settings.put_multiple_connections(false)
+    end)
+
+    :ok = Settings.put_multiple_connections(true)
+    {_peer1, node1} = Beamdash.Test.Fixture.start_peer()
+    {_peer2, node2} = Beamdash.Test.Fixture.start_peer()
+    {:ok, _} = Beamdash.Target.connect(Atom.to_string(node1), Beamdash.Test.Fixture.cookie())
+    extra = Beamdash.Connections.target_for_connect()
+
+    {:ok, _} =
+      Beamdash.Target.connect(Atom.to_string(node2), Beamdash.Test.Fixture.cookie(), extra)
+
+    view = BeamdashWeb.SettingsLive
+
+    {:ok, socket} =
+      view.mount(%{}, %{}, Beamdash.Test.Fixture.with_conn(%Phoenix.LiveView.Socket{}))
+
+    socket =
+      Phoenix.Component.assign(socket,
+        conn: Map.put(socket.assigns.conn, :server, Beamdash.Target)
+      )
+
+    {:noreply, socket} = view.handle_event("toggle_multiple_connections", %{}, socket)
+
+    refute socket.assigns.multiple_connections
+    assert socket.assigns.conn.notice == "Multiple connections are off. Disconnected #{node2}."
+    assert Beamdash.Connections.list() |> Enum.map(& &1.server) == [Beamdash.Target]
+  end
+
   test "snapshot collection is off until switched on, and saved" do
     on_exit(fn -> :ok = Settings.put_snapshots_enabled(false) end)
     :ok = Settings.put_snapshots_enabled(false)
     view = BeamdashWeb.SettingsLive
-    {:ok, socket} = view.mount(%{}, %{}, %Phoenix.LiveView.Socket{})
+
+    {:ok, socket} =
+      view.mount(%{}, %{}, Beamdash.Test.Fixture.with_conn(%Phoenix.LiveView.Socket{}))
+
     refute socket.assigns.snapshots_enabled
 
     {:noreply, socket} = view.handle_event("toggle_snapshots", %{}, socket)
@@ -169,7 +253,11 @@ defmodule Beamdash.SettingsTest do
     on_exit(fn -> File.rm_rf!(dir) end)
 
     view = BeamdashWeb.SettingsLive
-    socket = %Phoenix.LiveView.Socket{assigns: %{__changed__: %{}, source_form: %{}}}
+
+    socket =
+      Beamdash.Test.Fixture.with_conn(%Phoenix.LiveView.Socket{
+        assigns: %{__changed__: %{}, source_form: %{}}
+      })
 
     {:noreply, socket} =
       view.handle_event("add_source_dir", %{"app" => " my_app ", "dir" => dir <> "/nope"}, socket)
@@ -195,7 +283,9 @@ defmodule Beamdash.SettingsTest do
     on_exit(fn -> File.rm_rf!(root) end)
 
     view = BeamdashWeb.SettingsLive
-    {:ok, socket} = view.mount(%{}, %{}, %Phoenix.LiveView.Socket{})
+
+    {:ok, socket} =
+      view.mount(%{}, %{}, Beamdash.Test.Fixture.with_conn(%Phoenix.LiveView.Socket{}))
 
     # opens at the folder typed (its nearest existing parent)
     form = %{"app" => "my_app", "dir" => Path.join(root, "nope")}
@@ -274,7 +364,9 @@ defmodule Beamdash.SettingsTest do
       File.write!(Path.join(dir, "prod.yaml"), "")
       Phoenix.PubSub.subscribe(Beamdash.PubSub, "settings")
       view = BeamdashWeb.SettingsLive
-      {:ok, socket} = view.mount(%{}, %{}, %Phoenix.LiveView.Socket{})
+
+      {:ok, socket} =
+        view.mount(%{}, %{}, Beamdash.Test.Fixture.with_conn(%Phoenix.LiveView.Socket{}))
 
       {:noreply, socket} =
         view.handle_event("set_kubeconfig_dir", %{"kubeconfig_dir" => " #{dir} "}, socket)
@@ -291,13 +383,19 @@ defmodule Beamdash.SettingsTest do
 
     test "the chosen directory is still chosen after a restart", %{dir: dir} do
       view = BeamdashWeb.SettingsLive
-      {:ok, socket} = view.mount(%{}, %{}, %Phoenix.LiveView.Socket{})
+
+      {:ok, socket} =
+        view.mount(%{}, %{}, Beamdash.Test.Fixture.with_conn(%Phoenix.LiveView.Socket{}))
+
       {:noreply, _} = view.handle_event("set_kubeconfig_dir", %{"kubeconfig_dir" => dir}, socket)
 
       # a restart: only the file is left
       :ok = Settings.reload()
       assert Settings.kubeconfig_dir() == dir
-      {:ok, socket} = view.mount(%{}, %{}, %Phoenix.LiveView.Socket{})
+
+      {:ok, socket} =
+        view.mount(%{}, %{}, Beamdash.Test.Fixture.with_conn(%Phoenix.LiveView.Socket{}))
+
       assert socket.assigns.kubeconfig_dir == dir
 
       # Reset forgets it, also across a restart
@@ -320,7 +418,10 @@ defmodule Beamdash.SettingsTest do
 
     test "a missing directory is reported, not saved silently", %{dir: dir} do
       view = BeamdashWeb.SettingsLive
-      {:ok, socket} = view.mount(%{}, %{}, %Phoenix.LiveView.Socket{})
+
+      {:ok, socket} =
+        view.mount(%{}, %{}, Beamdash.Test.Fixture.with_conn(%Phoenix.LiveView.Socket{}))
+
       missing = Path.join(dir, "nope")
 
       {:noreply, socket} =
@@ -338,7 +439,10 @@ defmodule Beamdash.SettingsTest do
       Settings.put_kubeconfig_dir(Path.join(dir, "missing/deeper"))
 
       view = BeamdashWeb.SettingsLive
-      {:ok, socket} = view.mount(%{}, %{}, %Phoenix.LiveView.Socket{})
+
+      {:ok, socket} =
+        view.mount(%{}, %{}, Beamdash.Test.Fixture.with_conn(%Phoenix.LiveView.Socket{}))
+
       assert socket.assigns.browser == nil
 
       # opens at the nearest existing parent of the current setting
@@ -378,9 +482,10 @@ defmodule Beamdash.SettingsTest do
     test "the connection bar re-lists clusters when the directory changes", %{dir: dir} do
       File.write!(Path.join(dir, "staging.yml"), "")
 
-      socket = %Phoenix.LiveView.Socket{
-        private: %{lifecycle: %Phoenix.LiveView.Lifecycle{}, live_temp: %{}}
-      }
+      socket =
+        Beamdash.Test.Fixture.with_conn(%Phoenix.LiveView.Socket{
+          private: %{lifecycle: %Phoenix.LiveView.Lifecycle{}, live_temp: %{}}
+        })
 
       {:cont, socket} = BeamdashWeb.Connection.on_mount(:default, %{}, %{}, socket)
       socket = Phoenix.Component.assign(socket, :conn, %{socket.assigns.conn | kube_pod: "old"})
@@ -410,7 +515,12 @@ defmodule Beamdash.SettingsTest do
     :ok = Settings.put_rpc_timeout(5_000)
     refute Map.has_key?(Settings.path() |> File.read!() |> Jason.decode!(), "rpc_timeout")
 
-    {:ok, socket} = BeamdashWeb.SettingsLive.mount(%{}, %{}, %Phoenix.LiveView.Socket{})
+    {:ok, socket} =
+      BeamdashWeb.SettingsLive.mount(
+        %{},
+        %{},
+        Beamdash.Test.Fixture.with_conn(%Phoenix.LiveView.Socket{})
+      )
 
     {:noreply, socket} =
       BeamdashWeb.SettingsLive.handle_event("set_rpc_timeout", %{"seconds" => "0"}, socket)
@@ -429,7 +539,12 @@ defmodule Beamdash.SettingsTest do
     assert Settings.trace_timeout() == 45_000
     assert %{"trace_timeout" => 45_000} = Settings.path() |> File.read!() |> Jason.decode!()
 
-    {:ok, socket} = BeamdashWeb.SettingsLive.mount(%{}, %{}, %Phoenix.LiveView.Socket{})
+    {:ok, socket} =
+      BeamdashWeb.SettingsLive.mount(
+        %{},
+        %{},
+        Beamdash.Test.Fixture.with_conn(%Phoenix.LiveView.Socket{})
+      )
 
     {:noreply, socket} =
       BeamdashWeb.SettingsLive.handle_event("set_trace_timeout", %{"seconds" => "0"}, socket)
@@ -451,7 +566,12 @@ defmodule Beamdash.SettingsTest do
     assert Settings.trace_call_limit() == 50
     assert %{"trace_call_limit" => 50} = Settings.path() |> File.read!() |> Jason.decode!()
 
-    {:ok, socket} = BeamdashWeb.SettingsLive.mount(%{}, %{}, %Phoenix.LiveView.Socket{})
+    {:ok, socket} =
+      BeamdashWeb.SettingsLive.mount(
+        %{},
+        %{},
+        Beamdash.Test.Fixture.with_conn(%Phoenix.LiveView.Socket{})
+      )
 
     {:noreply, socket} =
       BeamdashWeb.SettingsLive.handle_event("set_trace_call_limit", %{"calls" => "0"}, socket)
@@ -465,7 +585,9 @@ defmodule Beamdash.SettingsTest do
 
   test "GC page disables analysis and clears old advice when Jev is switched off" do
     view = BeamdashWeb.GCLive
-    {:ok, socket} = view.mount(%{}, %{}, %Phoenix.LiveView.Socket{})
+
+    {:ok, socket} =
+      view.mount(%{}, %{}, Beamdash.Test.Fixture.with_conn(%Phoenix.LiveView.Socket{}))
 
     socket =
       Phoenix.Component.assign(socket,

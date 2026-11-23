@@ -46,7 +46,7 @@ defmodule BeamdashWeb.MemoryLive do
 
   @impl true
   def mount(_params, _session, socket) do
-    %{status: status, node: node} = Target.status()
+    %{status: status, node: node} = Target.status(socket.assigns.conn.server)
 
     socket =
       assign(socket,
@@ -89,7 +89,7 @@ defmodule BeamdashWeb.MemoryLive do
       )
 
     if connected?(socket) do
-      :ok = Target.subscribe()
+      :ok = Target.subscribe(socket.assigns.conn.server)
       Process.send_after(self(), :tick, @refresh_ms)
       Process.send_after(self(), :ets_tick, @ets_refresh_ms)
       if status == :connected, do: send(self(), :start)
@@ -1845,7 +1845,13 @@ defmodule BeamdashWeb.MemoryLive do
             </span>
           </td>
           <td>
-            <button class="secondary small-btn" phx-click="ets_open" phx-value-id={inspect(t.id)}>
+            <span :if={t.protection == :private} class="ets-private">private</span>
+            <button
+              :if={t.protection != :private}
+              class="secondary small-btn"
+              phx-click="ets_open"
+              phx-value-id={inspect(t.id)}
+            >
               Browse
             </button>
           </td>

@@ -46,7 +46,7 @@ defmodule Beamdash.LogsGroupTest do
     end
 
     test "masked output has no stray #s from numbers inside timestamps" do
-      {_, _, masked} = Group.key(e(1, "at 2026-10-23T12:04:01Z done"))
+      {_, _, _, masked} = Group.key(e(1, "at 2026-10-23T12:04:01Z done"))
       assert masked == "at # done"
     end
 

@@ -1,11 +1,11 @@
 defmodule Beamdash.Crashes do
   @moduledoc """
-  Crash reports from the target, through erlyberly's error_logger handler.
+  Crash reports from the target, through the trace agent's error_logger handler.
 
-  On connect, `erlyberly` is installed as an error_logger report handler on
+  On connect, `beamdash_trace_agent` is installed as an error_logger report handler on
   the target with this process as its destination, so every crash report
   (a proc_lib process – gen_server, supervisor child, Task ... – dying
-  abnormally) is sent here as `{erlyberly_error_report, props}`.
+  abnormally) is sent here as `{beamdash_trace_agent_error_report, props}`.
   `Beamdash.Target` removes the handler again on disconnect.
 
   Subscribers receive `{:beamdash_crash, crash}` and
@@ -62,7 +62,7 @@ defmodule Beamdash.Crashes do
   end
 
   @impl true
-  def handle_info({:erlyberly_error_report, props}, state) do
+  def handle_info({:beamdash_trace_agent_error_report, props}, state) do
     crash = to_crash(props, state.next_id)
     notify(state, crash)
     reports = Enum.take([crash | state.reports], @max_reports)
@@ -83,8 +83,8 @@ defmodule Beamdash.Crashes do
   # Replace any handler left by an earlier session (it would point at a
   # pid that no longer exists), then add ours.
   defp install(state) do
-    Target.rpc(state.node, :error_logger, :delete_report_handler, [:erlyberly])
-    Target.rpc(state.node, :error_logger, :add_report_handler, [:erlyberly, [self()]])
+    Target.rpc(state.node, :error_logger, :delete_report_handler, [:beamdash_trace_agent])
+    Target.rpc(state.node, :error_logger, :add_report_handler, [:beamdash_trace_agent, [self()]])
     state
   end
 

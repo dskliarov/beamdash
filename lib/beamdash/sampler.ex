@@ -84,12 +84,15 @@ defmodule Beamdash.Sampler do
 
   @impl true
   def init(opts) do
+    target = Keyword.get(opts, :target, Target)
+    logs = Keyword.get(opts, :logs, Logs)
+
     state =
       Map.merge(fresh(nil), %{
         interval: Keyword.get(opts, :interval, @interval),
         store: Keyword.get(opts, :store, Store),
         monitor: Keyword.get(opts, :monitor, AnomalyMonitor),
-        source: Map.merge(default_source(), Map.new(Keyword.get(opts, :source, %{})))
+        source: Map.merge(default_source(target, logs), Map.new(Keyword.get(opts, :source, %{})))
       })
 
     schedule(state.interval)
@@ -106,13 +109,13 @@ defmodule Beamdash.Sampler do
     {:noreply, state}
   end
 
-  defp default_source do
+  defp default_source(target, logs) do
     %{
-      status: &Target.status/0,
-      processes: &Target.processes/0,
-      details: &Target.process_details/2,
+      status: fn -> Target.status(target) end,
+      processes: fn -> Target.processes(target) end,
+      details: fn pid, max -> Target.process_details(pid, max, target) end,
       memory: &read_memory/1,
-      logs: &Logs.entries/0
+      logs: fn -> Logs.entries(logs) end
     }
   end
 

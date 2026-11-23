@@ -53,7 +53,7 @@ defmodule Beamdash.TracerTest do
   end
 
   # Compile the fixture with debug_info into a directory the target can read,
-  # so erlyberly can find its record definitions.
+  # so the trace agent can find its record definitions.
   defp load_fixture(node) do
     dir = Path.join(System.tmp_dir!(), "beamdash_fixture_#{System.unique_integer([:positive])}")
     File.mkdir_p!(dir)
@@ -164,7 +164,7 @@ defmodule Beamdash.TracerTest do
     assert %{fun: :add, result: {:return, 7}} = next_completed_entry()
   end
 
-  test "a flood of calls trips erlyberly's overload cut-off", ctx do
+  test "a flood of calls trips the trace agent's overload cut-off", ctx do
     :ok = Tracer.start_trace(:beamdash_fixture, :add, 2, ctx.tracer)
     assert_receive {:beamdash_trace, :traces_changed}
 
@@ -242,20 +242,20 @@ defmodule Beamdash.TracerTest do
     b = ctx.node |> :erpc.call(:erlang, :self, []) |> :erlang.pid_to_list()
 
     call = fn pid, args ->
-      {:erlyberly_trace_log,
+      {:beamdash_trace_agent_trace_log,
        {:call,
         fn: {:beamdash_fixture, :add, args}, pid: pid, timetamp_call_us: 1, stack_trace: []}}
     end
 
     ret = fn pid, args, result ->
-      {:erlyberly_trace_log,
+      {:beamdash_trace_agent_trace_log,
        {:return_from,
         fn: {:beamdash_fixture, :add, args}, pid: pid, result: result, timetamp_return_us: 2}}
     end
 
     send(ctx.tracer, call.(a, [1, 1]))
     send(ctx.tracer, call.(a, [2, 2]))
-    send(ctx.tracer, {:erlyberly_trace_overload, 1_023})
+    send(ctx.tracer, {:beamdash_trace_agent_trace_overload, 1_023})
     for i <- 3..7, do: send(ctx.tracer, call.(b, [i, i]))
     send(ctx.tracer, ret.(a, [2, 2], 4))
     send(ctx.tracer, ret.(a, [1, 1], 2))
@@ -354,7 +354,7 @@ defmodule Beamdash.TracerTest do
     end
 
     test "is refused for the modules tracing runs in", ctx do
-      for mod <- [:erlyberly, :dbg, :erlang] do
+      for mod <- [:beamdash_trace_agent, :dbg, :erlang] do
         refute Tracer.wildcard_allowed?(mod)
 
         assert {:error, {:wildcard_not_allowed, ^mod}} =

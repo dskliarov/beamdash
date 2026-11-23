@@ -14,9 +14,10 @@ defmodule Beamdash.JevHiddenTest do
   end
 
   defp render(view, assigns, jev_enabled \\ true) do
-    socket = %Phoenix.LiveView.Socket{
-      private: %{lifecycle: %Phoenix.LiveView.Lifecycle{}, live_temp: %{}}
-    }
+    socket =
+      Beamdash.Test.Fixture.with_conn(%Phoenix.LiveView.Socket{
+        private: %{lifecycle: %Phoenix.LiveView.Lifecycle{}, live_temp: %{}}
+      })
 
     {:ok, socket} = view.mount(%{}, %{}, socket)
 

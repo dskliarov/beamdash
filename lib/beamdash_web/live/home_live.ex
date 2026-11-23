@@ -46,7 +46,7 @@ defmodule BeamdashWeb.HomeLive do
 
   @impl true
   def mount(_params, _session, socket) do
-    %{status: status, node: node} = Target.status()
+    %{status: status, node: node} = Target.status(socket.assigns.conn.server)
 
     socket =
       assign(socket,
@@ -102,7 +102,7 @@ defmodule BeamdashWeb.HomeLive do
       |> SourceTabs.init()
 
     if connected?(socket) do
-      :ok = Target.subscribe()
+      :ok = Target.subscribe(socket.assigns.conn.server)
       :ok = SysTracer.subscribe()
       socket = assign(socket, sys_traced: MapSet.new(SysTracer.traced()))
       Process.send_after(self(), :tick, @refresh_ms)
@@ -382,7 +382,7 @@ defmodule BeamdashWeb.HomeLive do
     do: {:noreply, assign(socket, dock_collapsed: !socket.assigns.dock_collapsed)}
 
   def handle_event("gc", _params, %{assigns: %{selected: pid}} = socket) when is_pid(pid) do
-    case Target.garbage_collect(pid) do
+    case Target.garbage_collect(pid, socket.assigns.conn.server) do
       {:ok, %{} = result} ->
         {:noreply, assign(socket, gc_result: result)}
 
@@ -450,11 +450,12 @@ defmodule BeamdashWeb.HomeLive do
 
   defp start_cpu_sample(socket, node) do
     request = {:cpu_sample, make_ref()}
+    server = socket.assigns.conn.server
 
     socket
     |> assign(cpu_request: request)
     |> start_async(request, fn ->
-      if Target.status() == %{status: :connected, node: node},
+      if Target.status(server) == %{status: :connected, node: node},
         do: CPU.sample(node),
         else: {:error, :not_connected}
     end)
@@ -746,10 +747,13 @@ defmodule BeamdashWeb.HomeLive do
       {:noreply, socket}
     else
       limit = socket.assigns.message_limit
+      server = socket.assigns.conn.server
       socket = assign(socket, detail_busy: true)
 
       {:noreply,
-       start_async(socket, :detail, fn -> {pid, Target.process_details(pid, limit)} end)}
+       start_async(socket, :detail, fn ->
+         {pid, Target.process_details(pid, limit, server)}
+       end)}
     end
   end
 
@@ -865,9 +869,11 @@ defmodule BeamdashWeb.HomeLive do
   defp refresh(%{assigns: %{refreshing?: true}} = socket), do: socket
 
   defp refresh(socket) do
+    server = socket.assigns.conn.server
+
     socket
     |> assign(refreshing?: true)
-    |> start_async(:refresh, fn -> Target.process_list() end)
+    |> start_async(:refresh, fn -> Target.process_list(server) end)
   end
 
   defp cancel_refresh(socket) do
@@ -1294,6 +1300,7 @@ defmodule BeamdashWeb.HomeLive do
         collapsed={@dock_collapsed}
         pending={@sys_pending}
         syntax={@syntax}
+        server={@conn.server}
       />
     </main>
     """

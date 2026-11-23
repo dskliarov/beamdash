@@ -48,12 +48,13 @@ defmodule BeamdashWeb.LogsLive do
   """
   use Phoenix.LiveView
 
-  alias Beamdash.{Format, Logs, Target}
+  alias Beamdash.{Connections, Format, Logs, Target}
   alias Beamdash.Logs.{Cascade, Filter, Group, Pretty, Tree}
   alias BeamdashWeb.TermView
 
   @max_rows 1_000
   @max_entries 2_000
+  @epoch ~U[0000-01-01 00:00:00Z]
   # the Tree and Crashes are rebuilt at most this often while lines arrive
   @tree_ms 1_000
   # Lines of a crash incident: its lines and this much around them
@@ -85,7 +86,15 @@ defmodule BeamdashWeb.LogsLive do
         pending: 0,
         view: :live,
         entries: [],
-        newest_id: 0,
+        next_id: 1,
+        newest: %{},
+        sources: [logs],
+        subscribed: MapSet.new(),
+        fixed_source?: session["logs_server"] != nil,
+        unchecked: MapSet.new(),
+        nodes: [],
+        connected: [],
+        colors: %{},
         previous: nil,
         previous_loading?: false,
         previous_error: nil,
@@ -129,8 +138,8 @@ defmodule BeamdashWeb.LogsLive do
 
     if connected?(socket) do
       :ok = Target.subscribe(target)
-      :ok = Logs.subscribe(logs)
-      {:ok, socket |> load_live() |> reset_rows()}
+      :ok = Connections.subscribe()
+      {:ok, socket |> refresh_sources() |> load_live() |> reset_rows()}
     else
       {:ok, socket}
     end
@@ -164,6 +173,17 @@ defmodule BeamdashWeb.LogsLive do
       end)
 
     {:noreply, socket |> assign(filter_text: text, filter: Filter.parse(text)) |> reset_rows()}
+  end
+
+  defp event("node_check", %{"node" => name}, socket) do
+    case Enum.find(socket.assigns.nodes, &(node_name(&1) == name)) do
+      nil ->
+        {:noreply, socket}
+
+      node ->
+        unchecked = toggle(socket.assigns.unchecked, node)
+        {:noreply, socket |> assign(unchecked: unchecked) |> reset_rows()}
+    end
   end
 
   defp event("clear_filter", _params, socket) do
@@ -306,7 +326,7 @@ defmodule BeamdashWeb.LogsLive do
   end
 
   defp event("clear", _params, socket) do
-    :ok = Logs.clear(socket.assigns.logs)
+    Enum.each(socket.assigns.sources, &(:ok = Logs.clear(&1)))
     {:noreply, cleared(socket)}
   end
 
@@ -653,17 +673,13 @@ defmodule BeamdashWeb.LogsLive do
 
   @impl true
   def handle_info(
-        {:beamdash_logs, {:snapshot, ref, info, entries}},
+        {:beamdash_logs, {:snapshot, ref, info, _entries}},
         %{assigns: %{source_ref: ref}} = socket
       ) do
-    newest = Enum.reduce(entries, 0, &max(&1.id, &2))
-
     {:noreply,
      socket
      |> assign(
        info: info,
-       entries: entries,
-       newest_id: newest,
        source_ref: nil,
        source_loading?: false,
        view: :live,
@@ -675,6 +691,7 @@ defmodule BeamdashWeb.LogsLive do
        source_error: nil,
        scope: lines_scope(socket.assigns.scope)
      )
+     |> load_live()
      |> reset_rows()}
   end
 
@@ -690,8 +707,9 @@ defmodule BeamdashWeb.LogsLive do
       a.paused? ->
         {:noreply, assign(socket, pending: a.pending + length(batch))}
 
-      Enum.any?(batch, &(&1.id <= a.newest_id)) ->
-        # an entry sent again (a continuation line joined it): start over
+      # an entry sent again (a continuation line joined it), or a line older
+      # than the page's newest, which the merged order puts mid-stream: start over
+      Enum.any?(batch, &(&1.id <= Map.get(a.newest, &1.node, 0))) or not in_order?(batch, a) ->
         socket = load_live(socket)
         {:noreply, if(a.view == :live, do: reset_rows(socket), else: socket)}
 
@@ -734,6 +752,11 @@ defmodule BeamdashWeb.LogsLive do
   def handle_info({:beamdash_target, {:disconnected, _}}, socket),
     do: {:noreply, assign(socket, status: :disconnected, app_levels: nil, app_level_note: nil)}
 
+  def handle_info({:beamdash_connections, :changed}, socket) do
+    socket = socket |> refresh_sources() |> load_live()
+    {:noreply, if(socket.assigns.view == :live, do: reset_rows(socket), else: socket)}
+  end
+
   def handle_info(:rebuild_tree, socket),
     do: {:noreply, socket |> assign(tree_timer: nil) |> refresh_tree()}
 
@@ -741,35 +764,124 @@ defmodule BeamdashWeb.LogsLive do
 
   ## Entries and rows
 
-  # the live entries, from Logs
+  # The live entries of every source, merged newest first, with page ids. A
+  # node whose stream is gone keeps the entries the page already has.
   defp load_live(socket) do
-    entries = Logs.entries(socket.assigns.logs)
-    # (from the entries alone: a restarted Logs numbers from 1 again)
-    newest = Enum.reduce(entries, 0, &max(&1.id, &2))
-    assign(socket, entries: entries, newest_id: newest)
+    a = socket.assigns
+    ids = Map.new(a.entries, &{{&1.node, &1.logs_id}, &1.id})
+
+    fresh =
+      a.sources |> Enum.flat_map(&Logs.entries/1) |> Enum.sort_by(&sort_at/1, {:desc, DateTime})
+
+    fresh_nodes = MapSet.new(fresh, & &1.node)
+    kept = Enum.reject(a.entries, &MapSet.member?(fresh_nodes, &1.node))
+    {fresh, next_id} = number(fresh, ids, a.next_id)
+
+    socket
+    |> assign(
+      entries: Enum.sort_by(fresh ++ kept, &sort_at/1, {:desc, DateTime}),
+      next_id: next_id,
+      newest: newest_of(fresh)
+    )
+    |> track_nodes()
+  end
+
+  # Page ids are numbered as entries arrive, so a row keeps its id when its
+  # Logs numbering changes; `ids` maps (node, Logs id) to the id already given.
+  # `entries` are newest first; ids rise with arrival, so they are given oldest first
+  defp number(entries, ids, next_id) do
+    {numbered, next} =
+      entries
+      |> Enum.reverse()
+      |> Enum.map_reduce(next_id, fn entry, next ->
+        case Map.fetch(ids, {entry.node, entry.id}) do
+          {:ok, id} -> {Map.merge(entry, %{logs_id: entry.id, id: id}), next}
+          :error -> {Map.merge(entry, %{logs_id: entry.id, id: next}), next + 1}
+        end
+      end)
+
+    {Enum.reverse(numbered), next}
+  end
+
+  defp newest_of(entries) do
+    Enum.reduce(entries, %{}, fn e, acc ->
+      Map.update(acc, e.node, e.logs_id, &max(&1, e.logs_id))
+    end)
+  end
+
+  defp sort_at(%{at: %DateTime{} = at}), do: at
+  defp sort_at(_entry), do: @epoch
+
+  # The Logs streams of the connected nodes, each subscribed once. A fixed
+  # Logs (a session given one, as in tests) is the only stream.
+  defp refresh_sources(socket) do
+    a = socket.assigns
+
+    sources =
+      if a.fixed_source?,
+        do: [a.logs],
+        else:
+          for(%{server: server} <- Connections.connected(), do: Connections.service(server, Logs))
+
+    sources = Enum.reject(sources, &is_nil/1)
+    for pid <- sources, not MapSet.member?(a.subscribed, pid), do: :ok = Logs.subscribe(pid)
+
+    assign(socket,
+      sources: sources,
+      subscribed: MapSet.union(a.subscribed, MapSet.new(sources))
+    )
+  end
+
+  # every node the page has entries for, or that is connected: its colour
+  # is kept for the page's life
+  defp track_nodes(socket) do
+    a = socket.assigns
+
+    connected =
+      if a.fixed_source?,
+        do: if(a.status == :connected, do: [a.node], else: []),
+        else: for(%{node: node, status: :connected} <- Connections.list(), do: node)
+
+    nodes = Enum.uniq(connected ++ Enum.map(a.entries, & &1.node))
+    colors = Enum.reduce(nodes, a.colors, &Map.put_new(&2, &1, map_size(&2)))
+    assign(socket, nodes: nodes, colors: colors, connected: connected)
   end
 
   defp cleared(socket) do
     socket =
       assign(socket,
         entries: [],
+        newest: %{},
         expanded: %{},
         open: MapSet.new(),
         scope: lines_scope(socket.assigns.scope)
       )
+      |> track_nodes()
 
     if socket.assigns.view == :live, do: reset_rows(socket), else: socket
   end
 
+  # a batch is in order when none of its lines is older than the page's newest
+  defp in_order?(_batch, %{entries: []}), do: true
+
+  defp in_order?(batch, %{entries: [top | _]}),
+    do: Enum.all?(batch, &(DateTime.compare(sort_at(&1), sort_at(top)) != :lt))
+
   # Newer entries (newest first) on top of the live ones.
   defp add_entries(socket, batch) do
     a = socket.assigns
+    {batch, next_id} = number(batch, %{}, a.next_id)
     all = batch ++ a.entries
     entries = Enum.take(all, @max_entries)
 
     socket =
       socket
-      |> assign(entries: entries, newest_id: max(a.newest_id, hd(batch).id))
+      |> assign(
+        entries: entries,
+        next_id: next_id,
+        newest: Map.merge(a.newest, newest_of(batch), fn _, x, y -> max(x, y) end)
+      )
+      |> track_nodes()
       |> schedule_tree()
 
     if a.view == :live do
@@ -957,8 +1069,15 @@ defmodule BeamdashWeb.LogsLive do
   defp visible?(entry, a) do
     Filter.level_ok?(a.min_level, entry) and Filter.match?(a.filter, entry) and
       (a.pattern == nil or Group.key(entry) == a.pattern) and
-      (a.scope == nil or in_scope?(a.scope, entry, a))
+      (a.scope == nil or in_scope?(a.scope, entry, a)) and
+      not MapSet.member?(a.unchecked, entry.node)
   end
+
+  defp none_checked?(a),
+    do: a.nodes != [] and Enum.all?(a.nodes, &MapSet.member?(a.unchecked, &1))
+
+  defp node_name(nil), do: "not connected"
+  defp node_name(node), do: Atom.to_string(node)
 
   defp in_scope?({:ids, _label, ids}, entry, _a), do: MapSet.member?(ids, entry.id)
 
@@ -975,7 +1094,7 @@ defmodule BeamdashWeb.LogsLive do
   defp tree_scope?(scope),
     do:
       is_tuple(scope) and
-        elem(scope, 0) in [:app, :module, :function, :template, :field, :group_template]
+        elem(scope, 0) in [:app, :module, :function, :node, :template, :field, :group_template]
 
   defp scope_label({:ids, label, _}), do: label
   defp scope_label({:window, label, _, _}), do: label
@@ -1071,7 +1190,7 @@ defmodule BeamdashWeb.LogsLive do
 
   defp seed_parent(socket, id) do
     case Tree.find(socket.assigns.tree.nodes, id) do
-      %{scope: {:group_template, _, _, _, groups, _}} ->
+      %{scope: {:group_template, _, _, _, _, groups, _}} ->
         checked = Enum.reject(groups, &match?({_, nil}, &1))
         assign(socket, tree_parent: groups, tree_checked: checked)
 
@@ -1218,6 +1337,31 @@ defmodule BeamdashWeb.LogsLive do
         </button>
       </div>
 
+      <div
+        :if={length(@nodes) > 1}
+        id="logs-nodes"
+        class="logs-nodes"
+        role="group"
+        aria-label="Nodes shown"
+      >
+        <label
+          :for={node <- @nodes}
+          class={["logs-node", BeamdashWeb.LogsTable.origin_class(@colors[node])]}
+          style={BeamdashWeb.LogsTable.origin_style(@colors[node])}
+        >
+          <input
+            type="checkbox"
+            phx-click="node_check"
+            phx-value-node={node_name(node)}
+            checked={not MapSet.member?(@unchecked, node)}
+          />
+          <span class="origin-dot" aria-hidden="true"></span>
+          {node_name(node)}<span :if={node not in @connected} class="muted small"> (disconnected)</span>
+        </label>
+      </div>
+
+      <p :if={none_checked?(assigns)} id="logs-no-nodes" class="help">No nodes selected</p>
+
       <div class="logs-controls">
         <form id="logs-level-form" phx-change="level">
           <select name="level" aria-label="Minimum level">
@@ -1252,7 +1396,7 @@ defmodule BeamdashWeb.LogsLive do
           />
         </form>
         <span :if={@pattern} class="chip">
-          pattern: {elem(@pattern, 2)}
+          pattern: {elem(@pattern, 3)}
           <button
             type="button"
             phx-click="clear_pattern"
@@ -1366,6 +1510,7 @@ defmodule BeamdashWeb.LogsLive do
         rows={@streams.rows}
         filter={@filter}
         node={if @status == :connected, do: @node}
+        origins={if length(@nodes) > 1, do: @colors}
         term_view={@term_view}
       />
 

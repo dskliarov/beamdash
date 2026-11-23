@@ -22,10 +22,11 @@ defmodule BeamdashWeb.TreePanel do
 
   defp fetch(socket) do
     pid = socket.assigns.pid
+    server = socket.assigns.server
 
     socket
     |> assign(loading: true)
-    |> start_async(:fetch, fn -> OtpProcess.tree(pid) end)
+    |> start_async(:fetch, fn -> OtpProcess.tree(server, pid) end)
   end
 
   @impl true

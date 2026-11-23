@@ -201,7 +201,7 @@ happening inside it.
   `dbg:tpl({Mod, '_', '_'}, ...)`); its call limit counts calls of any of
   them. It is offered only while none of the module's functions is traced
   on its own (the two would clear each other), and not for the modules the
-  tracing itself runs in (`erlyberly`, `dbg`, `erlang` and other preloaded
+  tracing itself runs in (`beamdash_trace_agent`, `dbg`, `erlang` and other preloaded
   runtime modules).
   A module's functions are listed in a grid, exported and not exported
   apart, with a search box (a name, or `name/arity`; Enter picks the first

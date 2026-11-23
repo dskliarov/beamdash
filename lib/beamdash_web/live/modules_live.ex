@@ -16,8 +16,8 @@ defmodule BeamdashWeb.ModulesLive do
 
   @impl true
   def mount(_params, _session, socket) do
-    %{status: status, node: node} = Target.status()
-    if connected?(socket), do: Target.subscribe()
+    %{status: status, node: node} = Target.status(socket.assigns.conn.server)
+    if connected?(socket), do: Target.subscribe(socket.assigns.conn.server)
     {:ok, socket |> assign(status: status, node: node) |> reset() |> list_modules()}
   end
 
@@ -269,7 +269,7 @@ defmodule BeamdashWeb.ModulesLive do
       )
       when not is_nil(mod) and language in ["erlang", "elixir"] do
     result =
-      case Target.status() do
+      case Target.status(socket.assigns.conn.server) do
         %{status: :connected, node: ^node} ->
           if language == "elixir",
             do:
@@ -341,7 +341,7 @@ defmodule BeamdashWeb.ModulesLive do
           socket
       )
       when is_binary(beam) and is_atom(mod) do
-    with %{status: :connected, node: ^node} <- Target.status(),
+    with %{status: :connected, node: ^node} <- Target.status(socket.assigns.conn.server),
          {:ok, backup} <- ModuleEditor.backup(node, mod),
          {:ok, {^mod, digest}} <- :beam_lib.md5(beam) do
       case ModuleEditor.load(node, mod, beam, backup.digest) do
@@ -388,7 +388,7 @@ defmodule BeamdashWeb.ModulesLive do
       )
       when is_map(backup) do
     result =
-      with %{status: :connected, node: ^node} <- Target.status(),
+      with %{status: :connected, node: ^node} <- Target.status(socket.assigns.conn.server),
            do: ModuleEditor.load(node, mod, backup.beam, digest)
 
     case result do
@@ -408,7 +408,7 @@ defmodule BeamdashWeb.ModulesLive do
       )
       when is_atom(mod) do
     result =
-      with %{status: :connected, node: ^node} <- Target.status(),
+      with %{status: :connected, node: ^node} <- Target.status(socket.assigns.conn.server),
            do: ModuleEditor.test_call(node, mod, fun, args)
 
     {:noreply,
@@ -426,7 +426,7 @@ defmodule BeamdashWeb.ModulesLive do
       )
       when is_binary(token) and language in ["erlang", "elixir"] and not is_nil(selected) do
     items =
-      if Target.status() == %{status: :connected, node: node},
+      if Target.status(socket.assigns.conn.server) == %{status: :connected, node: node},
         do: Console.complete(node, String.to_existing_atom(language), token),
         else: []
 

@@ -11,9 +11,10 @@ defmodule Beamdash.Logs.Tree do
       source (most `kubectl logs` text) go under "#{"no source"}", modules
       the node doesn't list under "#{"application unknown"}".
     * A line whose source names a function goes under a function branch
-      (`fun/arity`) of its module; a template is the message with its
-      variable parts masked (`Beamdash.Logs.Group.key/1`), within one
-      function, so the same message under two functions is two templates.
+      (`fun/arity`) of its module, then under a branch per node it came from
+      (`no node` when it has none). A template is the message with its
+      variable parts masked (`Beamdash.Logs.Group.key/1`), within one function
+      and node, so the same message under two functions is two templates.
 
   Every node counts its lines, problems (error and above) and warnings,
   when it first and last logged, and its lines over the window
@@ -28,6 +29,7 @@ defmodule Beamdash.Logs.Tree do
 
   @no_source "no source"
   @unknown_app "application unknown"
+  @no_node "no node"
   @problem_levels [:error, :critical, :alert, :emergency]
   @buckets 24
   @max_children 100
@@ -87,33 +89,40 @@ defmodule Beamdash.Logs.Tree do
   end
 
   @doc "A line's template: its message with the variable parts masked."
-  def template(entry), do: elem(Group.key(entry), 2)
+  def template(entry), do: elem(Group.key(entry), 3)
 
   @doc """
   True when the line is in the part of the tree `scope` names:
-  `{:app, app}`, `{:module, app, module}`, `{:function, app, module, fun}`
-  or `{:template, app, module, fun, template}` (a node's `scope`).
+  `{:app, app}`, `{:module, app, module}`, `{:function, app, module, fun}`,
+  `{:node, app, module, fun, node}` or `{:template, app, module, fun, node, template}`
+  (a node's `scope`; a line without a function has `:any` for its node).
   """
   def in_scope?({:app, app}, entry, apps), do: elem(place(entry, apps), 0) == app
   def in_scope?({:module, app, mod}, entry, apps), do: place(entry, apps) == {app, mod}
 
   def in_scope?({:function, app, mod, fun}, entry, apps),
-    do: place(entry, apps) == {app, mod} and function_of(entry) == fun
+    do: in_line?(entry, apps, app, mod, fun, :any)
 
-  def in_scope?({:template, app, mod, fun, template}, entry, apps),
-    do:
-      place(entry, apps) == {app, mod} and function_of(entry) == fun and
-        template(entry) == template
+  def in_scope?({:node, app, mod, fun, host}, entry, apps),
+    do: in_line?(entry, apps, app, mod, fun, host)
 
-  def in_scope?({:field, app, mod, fun, path}, entry, apps),
-    do:
-      place(entry, apps) == {app, mod} and function_of(entry) == fun and
-        grouped?(entry, path)
+  def in_scope?({:template, app, mod, fun, host, template}, entry, apps),
+    do: in_line?(entry, apps, app, mod, fun, host) and template(entry) == template
 
-  def in_scope?({:group_template, app, mod, fun, groups, template}, entry, apps),
+  def in_scope?({:field, app, mod, fun, host, path}, entry, apps),
+    do: in_line?(entry, apps, app, mod, fun, host) and grouped?(entry, path)
+
+  def in_scope?({:group_template, app, mod, fun, host, groups, template}, entry, apps),
     do:
-      place(entry, apps) == {app, mod} and function_of(entry) == fun and
-        template(entry) == template and grouped?(entry, groups)
+      in_line?(entry, apps, app, mod, fun, host) and template(entry) == template and
+        grouped?(entry, groups)
+
+  defp in_line?(entry, apps, app, mod, fun, host),
+    do:
+      place(entry, apps) == {app, mod} and function_of(entry) == fun and host_match?(host, entry)
+
+  defp host_match?(:any, _entry), do: true
+  defp host_match?(host, entry), do: entry[:node] == host
 
   defp grouped?(entry, pairs), do: Enum.all?(pairs, fn {k, v} -> field_value(entry, k) == v end)
 
@@ -122,26 +131,39 @@ defmodule Beamdash.Logs.Tree do
   def scope_label({:module, app, mod}), do: Enum.join([app, mod], " › ")
   def scope_label({:function, app, mod, fun}), do: Enum.join([app, mod, fun], " › ")
 
-  def scope_label({:template, app, mod, fun, template}),
-    do: [app, mod, fun, template] |> Enum.reject(&is_nil/1) |> Enum.join(" › ")
+  def scope_label({:node, app, mod, fun, host}),
+    do: Enum.join([app, mod, fun, host_label(host)], " › ")
 
-  def scope_label({:field, app, mod, fun, path}),
-    do: [app, mod, fun | pair_labels(path)] |> Enum.reject(&is_nil/1) |> Enum.join(" › ")
-
-  def scope_label({:group_template, app, mod, fun, groups, template}),
+  def scope_label({:template, app, mod, fun, host, template}),
     do:
-      [app, mod, fun | pair_labels(groups) ++ [template]]
+      [app, mod, fun, host_label(host), template]
+      |> Enum.reject(&is_nil/1)
+      |> Enum.join(" › ")
+
+  def scope_label({:field, app, mod, fun, host, path}),
+    do:
+      [app, mod, fun, host_label(host) | pair_labels(path)]
+      |> Enum.reject(&is_nil/1)
+      |> Enum.join(" › ")
+
+  def scope_label({:group_template, app, mod, fun, host, groups, template}),
+    do:
+      [app, mod, fun, host_label(host) | pair_labels(groups) ++ [template]]
       |> Enum.reject(&is_nil/1)
       |> Enum.join(" › ")
 
   defp pair_labels(pairs), do: for({key, value} <- pairs, do: field_label(key, value))
+
+  defp host_label(:any), do: nil
+  defp host_label(nil), do: @no_node
+  defp host_label(host), do: to_string(host)
 
   @doc """
   The tree of `entries` (newest first): `%{nodes, lines, modules,
   templates, new, window, template_cache}`, `window` the `{oldest, newest}` line times
   (nil when no line has one). A node is `%{id, kind, label, scope, count,
   problems, warnings, levels, first_at, last_at, spark, new, children,
-  more, sample}`; `kind` is `:app`, `:module` or `:template`, `sample` a
+  more, sample}`; `kind` is `:app`, `:module`, `:function`, `:node`, `:field` or `:template`, `sample` a
   template's newest line.
 
   Options: `apps` (`apps_map/1`), `since` (a `DateTime`: templates first
@@ -161,16 +183,18 @@ defmodule Beamdash.Logs.Tree do
     leaves =
       Enum.reduce(keyed, %{}, fn {entry, {_key, template}}, acc ->
         {app, mod} = place(entry, apps)
+        fun = function_of(entry)
         s = line_stats(entry, window)
         groups = groups_of(entry, group_keys)
-        Map.update(acc, {app, mod, function_of(entry), groups, template}, s, &merge(&1, s))
+        key = {app, mod, fun, host_key(entry, fun), groups, template}
+        Map.update(acc, key, s, &merge(&1, s))
       end)
 
     template_nodes =
-      for {{app, mod, fun, groups, template}, s} <- leaves do
+      for {{app, mod, fun, host, groups, template}, s} <- leaves do
         new = if since && s.first && s.first > since, do: 1, else: 0
-        scope = template_scope(app, mod, fun, groups, template)
-        {{app, mod}, fun, groups, node(:template, template, scope, s, [], new)}
+        scope = template_scope(app, mod, fun, host, groups, template)
+        {{app, mod}, fun, host, groups, node(:template, template, scope, s, [], new)}
       end
 
     nodes_by_module = Enum.group_by(template_nodes, &elem(&1, 0))
@@ -207,18 +231,30 @@ defmodule Beamdash.Logs.Tree do
   # each function's branch, then the lines outside any function
   defp module_children(app, mod, items) do
     items
-    |> Enum.group_by(fn {_, fun, _, _} -> fun end, fn {_, _, groups, node} -> {groups, node} end)
-    |> Enum.flat_map(fn {fun, sub} ->
-      nested = nest(sub, app, mod, fun, [])
+    |> Enum.group_by(fn {_, fun, _, _, _} -> fun end, fn {_, _, host, groups, node} ->
+      {host, groups, node}
+    end)
+    |> Enum.flat_map(fn
+      {nil, sub} ->
+        nest(for({_, groups, node} <- sub, do: {groups, node}), app, mod, nil, :any, [])
 
-      if fun == nil,
-        do: nested,
-        else: [parent(:function, fun, {:function, app, mod, fun}, nested)]
+      {fun, sub} ->
+        [parent(:function, fun, {:function, app, mod, fun}, host_branches(sub, app, mod, fun))]
+    end)
+  end
+
+  # a branch per node a function's lines came from, each with its templates
+  defp host_branches(items, app, mod, fun) do
+    items
+    |> Enum.group_by(fn {host, _, _} -> host end, fn {_, groups, node} -> {groups, node} end)
+    |> Enum.map(fn {host, sub} ->
+      children = nest(sub, app, mod, fun, host, [])
+      parent(:node, host_label(host), {:node, app, mod, fun, host}, children)
     end)
   end
 
   # the templates of a function, under a branch per checked field value
-  defp nest(items, app, mod, fun, prefix) do
+  defp nest(items, app, mod, fun, host, prefix) do
     {done, rest} = Enum.split_with(items, fn {groups, _} -> groups == [] end)
     templates = for {_, node} <- done, do: node
 
@@ -227,17 +263,22 @@ defmodule Beamdash.Logs.Tree do
       |> Enum.group_by(fn {[pair | _], _} -> pair end, fn {[_ | tail], node} -> {tail, node} end)
       |> Enum.map(fn {{key, value} = pair, sub} ->
         path = prefix ++ [pair]
-        children = nest(sub, app, mod, fun, path)
-        parent(:field, field_label(key, value), {:field, app, mod, fun, path}, children)
+        children = nest(sub, app, mod, fun, host, path)
+        parent(:field, field_label(key, value), {:field, app, mod, fun, host, path}, children)
       end)
 
     templates ++ fields
   end
 
-  defp template_scope(app, mod, fun, [], template), do: {:template, app, mod, fun, template}
+  defp template_scope(app, mod, fun, host, [], template),
+    do: {:template, app, mod, fun, host, template}
 
-  defp template_scope(app, mod, fun, groups, template),
-    do: {:group_template, app, mod, fun, groups, template}
+  defp template_scope(app, mod, fun, host, groups, template),
+    do: {:group_template, app, mod, fun, host, groups, template}
+
+  # a line without a function has no node branch, so its templates match any node
+  defp host_key(_entry, nil), do: :any
+  defp host_key(entry, _fun), do: entry[:node]
 
   defp groups_of(_entry, []), do: []
 

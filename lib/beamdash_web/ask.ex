@@ -32,11 +32,12 @@ defmodule BeamdashWeb.Ask do
     else
       ref = make_ref()
       parent = self()
+      server = socket.assigns.conn.server
 
       spawn(fn ->
         result =
           try do
-            AskAdvisor.ask(q, loaded_module(q))
+            AskAdvisor.ask(q, loaded_module(server, q))
           catch
             _, _ -> {:error, "#{Beamdash.Jev.name()} could not be reached. Try again."}
           end
@@ -80,8 +81,8 @@ defmodule BeamdashWeb.Ask do
   def handle_info({:beamdash_ask, _ref, _result}, socket), do: {:halt, socket}
   def handle_info(_message, socket), do: {:cont, socket}
 
-  defp loaded_module(q) do
-    with %{status: :connected} <- Target.status(),
+  defp loaded_module(server, q) do
+    with %{status: :connected} <- Target.status(server),
          {:ok, mods} <- ModuleCache.modules() do
       AskAdvisor.module_in(q, Enum.map(mods, &elem(&1, 0)))
     else

@@ -81,7 +81,8 @@ defmodule Beamdash.Store do
 
   @doc """
   Rows of `kind` with `at` in `from..to` (unix ms), newest first. Options:
-  `:from`, `:to`, `:limit` (default 100), and any key field to filter on.
+  `:from`, `:to`, `:limit` (default 100), and any key field to filter on. A
+  list filters on any of its values, `[]` matches nothing.
   """
   def query(kind, opts \\ [], server \\ __MODULE__),
     do: GenServer.call(server, {:query, kind, opts})
@@ -394,13 +395,22 @@ defmodule Beamdash.Store do
   defp conditions(keys, opts) do
     filters =
       for key <- keys ++ [:node], Keyword.has_key?(opts, key) do
-        {"#{key} = ?", key_value(Keyword.fetch!(opts, key))}
+        condition(key, Keyword.fetch!(opts, key))
       end
 
     where = Enum.join(["at >= ?", "at <= ?" | Enum.map(filters, &elem(&1, 0))], " AND ")
     args = [Keyword.get(opts, :from, 0), Keyword.get(opts, :to, @far_future)]
-    {where, args ++ Enum.map(filters, &elem(&1, 1))}
+    {where, args ++ Enum.flat_map(filters, &elem(&1, 1))}
   end
+
+  defp condition(_key, []), do: {"0 = 1", []}
+
+  defp condition(key, values) when is_list(values) do
+    marks = Enum.map_join(values, ", ", fn _ -> "?" end)
+    {"#{key} IN (#{marks})", Enum.map(values, &key_value/1)}
+  end
+
+  defp condition(key, value), do: {"#{key} = ?", [key_value(value)]}
 
   defp decode_row(keys, [id, at, node | rest]) do
     {key_values, [data]} = Enum.split(rest, length(keys))

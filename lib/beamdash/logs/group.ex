@@ -29,15 +29,15 @@ defmodule Beamdash.Logs.Group do
     ]
   end
 
-  @doc "The grouping key `{level, where, masked_message}` of an entry."
-  def key(%{level: level, where: where, message: message}) do
+  @doc "The grouping key `{node, level, where, masked_message}` of an entry."
+  def key(%{level: level, where: where, message: message} = entry) do
     masked =
       Enum.map_join(mask_spans(message), fn
         {:text, s} -> s
         {:var, _} -> "#"
       end)
 
-    {level, where, masked}
+    {Map.get(entry, :node), level, where, masked}
   end
 
   @doc "Splits `message` into `{:text, s}` and `{:var, s}` (the masked parts) segments."

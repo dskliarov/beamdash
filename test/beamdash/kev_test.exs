@@ -143,7 +143,10 @@ defmodule Beamdash.KevTest do
 
   test "Settings offers both models when both are configured and switches between them" do
     view = BeamdashWeb.SettingsLive
-    {:ok, socket} = view.mount(%{}, %{}, %Phoenix.LiveView.Socket{})
+
+    {:ok, socket} =
+      view.mount(%{}, %{}, Beamdash.Test.Fixture.with_conn(%Phoenix.LiveView.Socket{}))
+
     {:noreply, socket} = view.handle_event("set_backend", %{"backend" => "kev"}, socket)
     assert socket.assigns.jev_backend == :kev
     assert Settings.decision_backend() == :kev
@@ -165,7 +168,9 @@ defmodule Beamdash.KevTest do
   test "the port saved in Settings replaces KEV_URL's, and empty goes back to it" do
     Fixture.put_jev_config(kev_url: "http://kev.lan:8009/")
     view = BeamdashWeb.SettingsLive
-    {:ok, socket} = view.mount(%{}, %{}, %Phoenix.LiveView.Socket{})
+
+    {:ok, socket} =
+      view.mount(%{}, %{}, Beamdash.Test.Fixture.with_conn(%Phoenix.LiveView.Socket{}))
 
     {:noreply, socket} = view.handle_event("set_kev_port", %{"port" => "9200"}, socket)
     assert socket.assigns.kev_port_error == nil

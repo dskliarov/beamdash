@@ -14,7 +14,7 @@ defmodule BeamdashWeb.SeqLive do
 
   @impl true
   def mount(_params, _session, socket) do
-    %{status: status, node: node} = Target.status()
+    %{status: status, node: node} = Target.status(socket.assigns.conn.server)
 
     socket =
       assign(socket,
@@ -34,7 +34,7 @@ defmodule BeamdashWeb.SeqLive do
       )
 
     if connected?(socket) do
-      :ok = Target.subscribe()
+      :ok = Target.subscribe(socket.assigns.conn.server)
       :ok = SeqTracer.subscribe()
       {:ok, assign(socket, events: SeqTracer.events(), traces: SeqTracer.traces())}
     else

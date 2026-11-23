@@ -25,22 +25,22 @@ defmodule Beamdash.OtpProcessTest do
     pid = :erpc.call(ctx.node, :erlang, :whereis, [:beamdash_fixture])
     1 = :erpc.call(ctx.node, :beamdash_fixture, :bump, [])
 
-    assert {:ok, %{module: :beamdash_fixture, state: state}} = OtpProcess.state(pid)
+    assert {:ok, %{module: :beamdash_fixture, state: state}} = OtpProcess.state(Target, pid)
     assert %Record{name: :st, fields: [count: 1, name: :fixture]} = state
   end
 
   test "a process that is not OTP times out; an exited one is noproc", ctx do
     pid = :erpc.call(ctx.node, :erlang, :spawn, [:timer, :sleep, [:infinity]])
-    assert {:error, :timeout} = OtpProcess.state(pid)
+    assert {:error, :timeout} = OtpProcess.state(Target, pid)
 
     gone = :erpc.call(ctx.node, :erlang, :spawn, [:erlang, :now, []])
     Process.sleep(50)
-    assert {:error, :noproc} = OtpProcess.state(gone)
+    assert {:error, :noproc} = OtpProcess.state(Target, gone)
   end
 
   test "supervision tree under kernel_sup", ctx do
     sup = :erpc.call(ctx.node, :erlang, :whereis, [:kernel_sup])
-    assert {:ok, tree} = OtpProcess.tree(sup)
+    assert {:ok, tree} = OtpProcess.tree(Target, sup)
 
     assert %{id: :root, type: :supervisor, name: :kernel_sup, kind: :supervisor} = tree
     assert tree.strategy == :one_for_all

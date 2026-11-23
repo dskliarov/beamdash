@@ -137,9 +137,10 @@ defmodule Beamdash.ModuleSourceTest do
 
   describe "source tabs" do
     defp page(view, node, modules) do
-      socket = %Phoenix.LiveView.Socket{
-        private: %{lifecycle: %Phoenix.LiveView.Lifecycle{}, live_temp: %{}}
-      }
+      socket =
+        Beamdash.Test.Fixture.with_conn(%Phoenix.LiveView.Socket{
+          private: %{lifecycle: %Phoenix.LiveView.Lifecycle{}, live_temp: %{}}
+        })
 
       {:ok, socket} = view.mount(%{}, %{}, socket)
 
@@ -334,10 +335,11 @@ defmodule Beamdash.ModuleSourceTest do
          %{node: node} do
       server = :erpc.call(node, :erlang, :whereis, [:code_server])
 
-      socket = %Phoenix.LiveView.Socket{
-        private: %{lifecycle: %Phoenix.LiveView.Lifecycle{}, live_temp: %{}},
-        view: BeamdashWeb.HomeLive
-      }
+      socket =
+        Beamdash.Test.Fixture.with_conn(%Phoenix.LiveView.Socket{
+          private: %{lifecycle: %Phoenix.LiveView.Lifecycle{}, live_temp: %{}},
+          view: BeamdashWeb.HomeLive
+        })
 
       {:ok, socket} = BeamdashWeb.HomeLive.mount(%{}, %{}, socket)
       socket = Phoenix.Component.assign(socket, syntax: :erlang, status: :connected, node: node)
@@ -384,10 +386,11 @@ defmodule Beamdash.ModuleSourceTest do
       [_, id, serial] =
         Regex.run(~r/^<\d+\.(\d+)\.(\d+)>$/, inspect(server) |> String.trim_leading("#PID"))
 
-      socket = %Phoenix.LiveView.Socket{
-        private: %{lifecycle: %Phoenix.LiveView.Lifecycle{}, live_temp: %{}},
-        view: BeamdashWeb.HomeLive
-      }
+      socket =
+        Beamdash.Test.Fixture.with_conn(%Phoenix.LiveView.Socket{
+          private: %{lifecycle: %Phoenix.LiveView.Lifecycle{}, live_temp: %{}},
+          view: BeamdashWeb.HomeLive
+        })
 
       {:ok, socket} = BeamdashWeb.HomeLive.mount(%{}, %{}, socket)
       socket = Phoenix.Component.assign(socket, syntax: :erlang, status: :connected, node: node)
@@ -401,7 +404,7 @@ defmodule Beamdash.ModuleSourceTest do
     end
 
     test "a new node closes the sources" do
-      socket = SourceTabs.init(%Phoenix.LiveView.Socket{})
+      socket = SourceTabs.init(Beamdash.Test.Fixture.with_conn(%Phoenix.LiveView.Socket{}))
 
       socket =
         Phoenix.Component.assign(socket,
@@ -423,9 +426,10 @@ defmodule Beamdash.ModuleSourceTest do
   test "Modules selection loads source into the editor", %{node: node} do
     path = load(node, :src_editor_demo)
 
-    socket = %Phoenix.LiveView.Socket{
-      private: %{lifecycle: %Phoenix.LiveView.Lifecycle{}, live_temp: %{}}
-    }
+    socket =
+      Beamdash.Test.Fixture.with_conn(%Phoenix.LiveView.Socket{
+        private: %{lifecycle: %Phoenix.LiveView.Lifecycle{}, live_temp: %{}}
+      })
 
     {:ok, socket} = BeamdashWeb.ModulesLive.mount(%{}, %{}, socket)
 
@@ -461,9 +465,10 @@ defmodule Beamdash.ModuleSourceTest do
   test "Modules opens the module named in the URL without creating atoms", %{node: node} do
     path = load(node, :src_editor_link)
 
-    socket = %Phoenix.LiveView.Socket{
-      private: %{lifecycle: %Phoenix.LiveView.Lifecycle{}, live_temp: %{}}
-    }
+    socket =
+      Beamdash.Test.Fixture.with_conn(%Phoenix.LiveView.Socket{
+        private: %{lifecycle: %Phoenix.LiveView.Lifecycle{}, live_temp: %{}}
+      })
 
     {:ok, socket} = BeamdashWeb.ModulesLive.mount(%{}, %{}, socket)
 
@@ -486,9 +491,10 @@ defmodule Beamdash.ModuleSourceTest do
     path = load(node, :src_editor_missing, [])
     File.rm!(path)
 
-    socket = %Phoenix.LiveView.Socket{
-      private: %{lifecycle: %Phoenix.LiveView.Lifecycle{}, live_temp: %{}}
-    }
+    socket =
+      Beamdash.Test.Fixture.with_conn(%Phoenix.LiveView.Socket{
+        private: %{lifecycle: %Phoenix.LiveView.Lifecycle{}, live_temp: %{}}
+      })
 
     {:ok, socket} = BeamdashWeb.ModulesLive.mount(%{}, %{}, socket)
 
@@ -526,9 +532,10 @@ defmodule Beamdash.ModuleSourceTest do
       Beamdash.Settings.delete_source_dir("src_editor_checkout")
     end)
 
-    socket = %Phoenix.LiveView.Socket{
-      private: %{lifecycle: %Phoenix.LiveView.Lifecycle{}, live_temp: %{}}
-    }
+    socket =
+      Beamdash.Test.Fixture.with_conn(%Phoenix.LiveView.Socket{
+        private: %{lifecycle: %Phoenix.LiveView.Lifecycle{}, live_temp: %{}}
+      })
 
     {:ok, socket} = BeamdashWeb.ModulesLive.mount(%{}, %{}, socket)
 
@@ -565,9 +572,10 @@ defmodule Beamdash.ModuleSourceTest do
       File.rm_rf!(dir)
     end)
 
-    socket = %Phoenix.LiveView.Socket{
-      private: %{lifecycle: %Phoenix.LiveView.Lifecycle{}, live_temp: %{}}
-    }
+    socket =
+      Beamdash.Test.Fixture.with_conn(%Phoenix.LiveView.Socket{
+        private: %{lifecycle: %Phoenix.LiveView.Lifecycle{}, live_temp: %{}}
+      })
 
     {:ok, socket} = BeamdashWeb.ModulesLive.mount(%{}, %{}, socket)
 

@@ -8,7 +8,8 @@ defmodule Beamdash.ProfilePickerTest do
   ]
 
   defp socket do
-    {:ok, socket} = ProfileLive.mount(%{}, %{}, %Phoenix.LiveView.Socket{})
+    {:ok, socket} =
+      ProfileLive.mount(%{}, %{}, Beamdash.Test.Fixture.with_conn(%Phoenix.LiveView.Socket{}))
 
     Phoenix.Component.assign(socket,
       syntax: :erlang,
