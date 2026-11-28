@@ -57,6 +57,41 @@ const ColumnResize = {
   },
 };
 
+// Keeps a size the user dragged onto an element with CSS resize. The size is
+// kept in CSS variables on <html> (data-size-var is the variable prefix, e.g.
+// "--pace-keeper-modal" gives --pace-keeper-modal-w and -h), which LiveView
+// never rewrites, and in localStorage across reloads. The element's CSS reads
+// those variables, so a server update that drops the inline size keeps it.
+const PersistSize = {
+  mounted() {
+    this.prefix = this.el.dataset.sizeVar;
+    this.key = "beamdash:" + this.prefix;
+    let size = null;
+    try {
+      size = JSON.parse(localStorage.getItem(this.key));
+    } catch (_e) {}
+    if (size) this.set(size.width, size.height);
+    this.observer = new ResizeObserver(() => this.save());
+    this.observer.observe(this.el);
+  },
+  destroyed() {
+    this.observer.disconnect();
+  },
+  set(width, height) {
+    const style = document.documentElement.style;
+    if (width) style.setProperty(this.prefix + "-w", width);
+    if (height) style.setProperty(this.prefix + "-h", height);
+  },
+  save() {
+    const { width, height } = this.el.style;
+    if (!width && !height) return;
+    this.set(width, height);
+    try {
+      localStorage.setItem(this.key, JSON.stringify({ width, height }));
+    } catch (_e) {}
+  },
+};
+
 // Drag handle that resizes something by setting a CSS variable on <html>.
 // The size lives outside the LiveView-rendered DOM, so updates from the
 // server never reset it, and it is remembered (localStorage) across reloads.
@@ -455,7 +490,7 @@ const csrfToken = document.querySelector("meta[name='csrf-token']").getAttribute
 const liveSocket = new LiveView.LiveSocket("/live", Phoenix.Socket, {
   params: { _csrf_token: csrfToken },
   dom: { onPatchStart: target => MemoryScroll.onPatchStart(target), onPatchEnd: () => MemoryScroll.onPatchEnd() },
-  hooks: { ColumnResize, LogsScroll: globalThis.BeamLogsScroll, KinoChart: globalThis.BeamKinoChart, Resizer, DockSpacer, NavOverflow, NamespaceCombobox, LogExport, Highlight, SourceEditor: globalThis.BeamSourceEditor, ConsoleCompletion: globalThis.BeamConsoleCompletion, ReplConsole: globalThis.BeamReplConsole, NotebookFiles: globalThis.BeamNotebookFiles, CodeMirrorEditor: globalThis.BeamModuleEditor },
+  hooks: { ColumnResize, LogsScroll: globalThis.BeamLogsScroll, KinoChart: globalThis.BeamKinoChart, Resizer, PersistSize, DockSpacer, NavOverflow, NamespaceCombobox, LogExport, Highlight, SourceEditor: globalThis.BeamSourceEditor, ConsoleCompletion: globalThis.BeamConsoleCompletion, ReplConsole: globalThis.BeamReplConsole, NotebookFiles: globalThis.BeamNotebookFiles, CodeMirrorEditor: globalThis.BeamModuleEditor },
 });
 liveSocket.connect();
 window.liveSocket = liveSocket;

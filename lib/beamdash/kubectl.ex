@@ -169,8 +169,14 @@ defmodule Beamdash.Kubectl do
         ]
 
     case exec.(args) do
-      {output, 0} -> {:ok, String.trim(output)}
-      {output, status} -> {:error, {:image_lookup_failed, {status, String.trim(output)}}}
+      {output, 0} ->
+        case String.trim(output) do
+          "" -> {:error, {:image_lookup_failed, :no_image}}
+          image -> {:ok, image}
+        end
+
+      {output, status} ->
+        {:error, {:image_lookup_failed, {status, String.trim(output)}}}
     end
   catch
     kind, reason -> {:error, {:image_lookup_failed, {kind, reason}}}

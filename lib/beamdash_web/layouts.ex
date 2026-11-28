@@ -138,6 +138,11 @@ defmodule BeamdashWeb.Layouts do
     Enum.reject(Map.get(conn, :saved, []), &MapSet.member?(connected, &1["node"]))
   end
 
+  defp selected_saved?(conn) do
+    selected = Map.get(conn, :selected, [])
+    Enum.any?(unconnected_saved(conn), &(&1["id"] in selected))
+  end
+
   attr :progress, :map, required: true, doc: "a step: label, command (or nil), elapsed seconds"
 
   defp progress_line(assigns) do
@@ -206,83 +211,109 @@ defmodule BeamdashWeb.Layouts do
           >
             ×
           </button>
-          <div class="seg method-switch" role="group" aria-label="Connection method">
+          <div class="method-row">
+            <div class="seg method-switch" role="group" aria-label="Connection method">
+              <button
+                type="button"
+                class={["seg-btn", Map.get(@conn, :method, :direct) == :direct && "active"]}
+                aria-pressed={to_string(Map.get(@conn, :method, :direct) == :direct)}
+                phx-click="set_conn_method"
+                phx-value-method="direct"
+              >
+                Direct
+              </button>
+              <button
+                type="button"
+                class={["seg-btn", Map.get(@conn, :method, :direct) == :kubectl && "active"]}
+                aria-pressed={to_string(Map.get(@conn, :method, :direct) == :kubectl)}
+                phx-click="set_conn_method"
+                phx-value-method="kubectl"
+              >
+                {kube_method_label()}
+              </button>
+              <button
+                type="button"
+                class={["seg-btn", Map.get(@conn, :method, :direct) == :saved && "active"]}
+                aria-pressed={to_string(Map.get(@conn, :method, :direct) == :saved)}
+                phx-click="set_conn_method"
+                phx-value-method="saved"
+              >
+                Saved
+              </button>
+            </div>
             <button
-              type="button"
-              class={["seg-btn", Map.get(@conn, :method, :direct) == :direct && "active"]}
-              aria-pressed={to_string(Map.get(@conn, :method, :direct) == :direct)}
-              phx-click="set_conn_method"
-              phx-value-method="direct"
+              :if={
+                Map.get(@conn, :method, :direct) == :saved && @conn[:multiple] &&
+                  selected_saved?(@conn)
+              }
+              type="submit"
+              form="saved-batch"
+              id="connect-selected"
+              class="small-btn"
+              disabled={not is_nil(@conn[:connecting])}
             >
-              Direct
-            </button>
-            <button
-              type="button"
-              class={["seg-btn", Map.get(@conn, :method, :direct) == :kubectl && "active"]}
-              aria-pressed={to_string(Map.get(@conn, :method, :direct) == :kubectl)}
-              phx-click="set_conn_method"
-              phx-value-method="kubectl"
-            >
-              {kube_method_label()}
-            </button>
-            <button
-              type="button"
-              class={["seg-btn", Map.get(@conn, :method, :direct) == :saved && "active"]}
-              aria-pressed={to_string(Map.get(@conn, :method, :direct) == :saved)}
-              phx-click="set_conn_method"
-              phx-value-method="saved"
-            >
-              Saved
+              Connect selected
             </button>
           </div>
 
           <div :if={Map.get(@conn, :method, :direct) == :saved} class="conn-rows">
             <% available = unconnected_saved(@conn) %>
-            <div
+            <form
               :if={available != []}
-              id="saved-connections"
-              class="saved-connections"
-              aria-label="Saved connections"
+              id="saved-batch"
+              phx-change="saved_selection"
+              phx-submit="connect_saved_many"
             >
-              <section :for={{app, entries} <- saved_groups(available)} class="saved-group">
-                <h3 class="saved-app muted small">
-                  {if app == "", do: "Unknown application", else: app}
-                </h3>
-                <ul class="saved-group-list">
-                  <li :for={entry <- entries} class="saved-connection">
-                    <button
-                      type="button"
-                      class="secondary small-btn saved-connect"
-                      phx-click="connect_saved"
-                      phx-value-id={entry["id"]}
-                      disabled={not is_nil(@conn[:connecting])}
-                    >
-                      <span class="saved-name">{saved_title(entry)}</span>
-                      <span class="saved-meta">{saved_meta(entry)}</span>
-                    </button>
-                    <button
-                      type="button"
-                      class="icon-btn delete-saved"
-                      phx-click="forget_saved"
-                      phx-value-id={entry["id"]}
-                      aria-label={"Delete #{saved_title(entry)} (#{saved_meta(entry)})"}
-                      title="Delete"
-                    >
-                      <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
-                        <path
-                          d="M3 4h10M6.5 4V2.5h3V4M4.5 4l.6 9.5h5.8l.6-9.5"
-                          fill="none"
-                          stroke="currentColor"
-                          stroke-width="1.4"
-                          stroke-linecap="round"
-                          stroke-linejoin="round"
-                        />
-                      </svg>
-                    </button>
-                  </li>
-                </ul>
-              </section>
-            </div>
+              <div id="saved-connections" class="saved-connections" aria-label="Saved connections">
+                <section :for={{app, entries} <- saved_groups(available)} class="saved-group">
+                  <h3 class="saved-app muted small">
+                    {if app == "", do: "Unknown application", else: app}
+                  </h3>
+                  <ul class="saved-group-list">
+                    <li :for={entry <- entries} class="saved-connection">
+                      <input
+                        :if={@conn[:multiple]}
+                        type="checkbox"
+                        name="ids[]"
+                        value={entry["id"]}
+                        checked={entry["id"] in Map.get(@conn, :selected, [])}
+                        disabled={not is_nil(@conn[:connecting])}
+                        aria-label={"Connect #{saved_title(entry)} (#{saved_meta(entry)}) with the others"}
+                      />
+                      <button
+                        type="button"
+                        class="secondary small-btn saved-connect"
+                        phx-click="connect_saved"
+                        phx-value-id={entry["id"]}
+                        disabled={not is_nil(@conn[:connecting])}
+                      >
+                        <span class="saved-name">{saved_title(entry)}</span>
+                        <span class="saved-meta">{saved_meta(entry)}</span>
+                      </button>
+                      <button
+                        type="button"
+                        class="icon-btn delete-saved"
+                        phx-click="forget_saved"
+                        phx-value-id={entry["id"]}
+                        aria-label={"Delete #{saved_title(entry)} (#{saved_meta(entry)})"}
+                        title="Delete"
+                      >
+                        <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
+                          <path
+                            d="M3 4h10M6.5 4V2.5h3V4M4.5 4l.6 9.5h5.8l.6-9.5"
+                            fill="none"
+                            stroke="currentColor"
+                            stroke-width="1.4"
+                            stroke-linecap="round"
+                            stroke-linejoin="round"
+                          />
+                        </svg>
+                      </button>
+                    </li>
+                  </ul>
+                </section>
+              </div>
+            </form>
             <p :if={Map.get(@conn, :saved, []) == []} class="conn-hint muted small">
               No saved connections yet. A connection that works is kept here.
             </p>
@@ -546,6 +577,13 @@ defmodule BeamdashWeb.Layouts do
                   aria-pressed={to_string(@conn[:only_selected] == true)}
                 >
                   {if @conn[:only_selected], do: "Show all", else: "Show selected only"}
+                </button>
+                <button
+                  type="button"
+                  class="secondary small-btn conn-action"
+                  phx-click="disconnect_all"
+                >
+                  Disconnect all
                 </button>
               </div>
             </li>

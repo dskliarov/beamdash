@@ -1078,6 +1078,8 @@ table.gc-events td, table.gc-events th { padding: 3px 8px; }
 
 /* connection panel on every tab: method switch, then label | control | action rows */
 .connect-panel { --conn-label-w: 76px; display: flex; flex-direction: column; gap: 10px; width: 460px; max-width: 100%; padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px; }
+.connect-panel .method-row { align-items: center; display: flex; gap: 8px; justify-content: space-between; }
+.connect-panel:has(> .conn-close) .method-row { padding-right: 28px; }
 .connect-panel .method-switch { align-self: flex-start; }
 .connect-panel .method-switch .seg-btn { padding: 4px 14px; font-size: 13px; }
 .conn-rows { display: flex; flex-direction: column; gap: 8px; margin: 0; }
@@ -1104,6 +1106,7 @@ table.gc-events td, table.gc-events th { padding: 3px 8px; }
 .connect-panel select:focus-visible,
 .connect-panel button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 .connect-panel select:disabled { opacity: .55; }
+.connect-panel input[type=checkbox] { width: auto; height: auto; flex: 0 0 auto; margin: 0; padding: 0; }
 .connect-panel .conn-row button { box-sizing: border-box; height: 32px; padding: 0 14px; white-space: nowrap; }
 .conn-hint { margin: 0 0 0 calc(var(--conn-label-w) + 8px); }
 .combobox { position: relative; display: flex; min-width: 0; }

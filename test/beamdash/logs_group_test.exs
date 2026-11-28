@@ -58,6 +58,10 @@ defmodule Beamdash.LogsGroupTest do
       refute Group.key(e(1, "m")) == Group.key(e(2, "m", level: :error))
       refute Group.key(e(1, "m")) == Group.key(e(2, "m", where: "X"))
     end
+
+    test "a continuation line does not change the key" do
+      assert same_key?("cache miss for key user:1\n    at line 1", "cache miss for key user:2")
+    end
   end
 
   describe "mask_spans/1" do

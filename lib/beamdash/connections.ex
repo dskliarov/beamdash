@@ -138,6 +138,16 @@ defmodule Beamdash.Connections do
   end
 
   @doc """
+  `count` distinct targets for a batch connect with multiple connections on:
+  the first connection when it is free, the rest new ones. Calling
+  `target_for_connect/0` in a loop would hand the free first connection out
+  twice, since it stays free until its connect replies.
+  """
+  def targets_for_connect(count) do
+    [target_for_connect() | for(_ <- 2..count//1, do: start_extra())]
+  end
+
+  @doc """
   Adds a connection to `node`, a node the connected `source` is connected to,
   reached the way `source` reaches it. The other connections stay.
   """

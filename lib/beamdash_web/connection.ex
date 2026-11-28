@@ -159,6 +159,13 @@ defmodule BeamdashWeb.Connection do
     end
   end
 
+  def handle_event("disconnect_all", _params, socket) do
+    for %{server: server} <- Connections.list(), do: :ok = Connections.remove(server)
+
+    socket = socket |> resolve() |> update(connecting: nil)
+    {:halt, to_root(socket)}
+  end
+
   def handle_event("stop_reconnect", _params, socket) do
     :ok = Target.stop_reconnect(socket.assigns.conn.server)
     {:halt, update(socket, reconnecting: nil)}
@@ -346,12 +353,14 @@ defmodule BeamdashWeb.Connection do
         %{"namespace" => namespace, "container" => container, "binary" => binary},
         socket
       ) do
-    if socket.assigns.conn.connecting do
+    container = String.trim(container)
+    listed = ["" | Map.get(socket.assigns.conn, :kube_containers) || []]
+
+    if socket.assigns.conn.connecting || container not in listed do
       {:halt, socket}
     else
       namespace = String.trim(namespace)
       pod = socket.assigns.conn.kube_pod
-      container = String.trim(container)
       cluster = socket.assigns.conn.kube_cluster
       save_kube_selection(socket, binary)
 
@@ -388,6 +397,37 @@ defmodule BeamdashWeb.Connection do
 
       _ ->
         {:halt, socket}
+    end
+  end
+
+  def handle_event("saved_selection", params, socket) do
+    {:halt, update(socket, selected: Map.get(params, "ids", []))}
+  end
+
+  def handle_event("connect_saved_many", params, socket) do
+    conn = socket.assigns.conn
+    ids = Map.get(params, "ids", [])
+    connected = Enum.map(Connections.connected(), &to_string(&1.node))
+    entries = Enum.filter(conn.saved, &(&1["id"] in ids and &1["node"] not in connected))
+
+    cond do
+      conn.connecting != nil ->
+        {:halt, socket}
+
+      not conn.multiple ->
+        {:halt,
+         update(socket,
+           error: "Turn on Allow multiple connections in Settings to connect several at once."
+         )}
+
+      entries == [] ->
+        {:halt, update(socket, error: "Check the saved connections that are not connected yet.")}
+
+      true ->
+        case check_batch(entries) do
+          :ok -> {:halt, start_batch(socket, entries)}
+          {:error, message} -> {:halt, update(socket, error: message)}
+        end
     end
   end
 
@@ -605,7 +645,123 @@ defmodule BeamdashWeb.Connection do
     {:halt, socket}
   end
 
+  def handle_info({:beamdash_saved_many, results}, socket) do
+    {ok, failed} =
+      Enum.split_with(results, fn {_entry, _server, result} -> match?({:ok, _}, result) end)
+
+    for {entry, server, {:ok, info}} <- ok do
+      Connections.record_application(server, batch_identity(entry))
+      save_batch_entry(entry, server, info)
+    end
+
+    for {_entry, server, _result} <- failed, do: Connections.discard(server)
+    Connections.broadcast()
+
+    socket =
+      socket
+      |> update(connecting: nil, saved: LastConnection.list())
+      |> resolve()
+
+    case {ok, failed} do
+      {[{_, _, {:ok, info}} | _], []} -> {:halt, to_system(socket, info.node)}
+      _ -> {:halt, update(socket, error: batch_message(ok, failed))}
+    end
+  end
+
   def handle_info(_message, socket), do: {:cont, socket}
+
+  # One application per batch. A kubectl entry whose application is not known
+  # yet is connected on its own, since two unknown ones could be different.
+  defp check_batch([first | _] = entries) do
+    identity = batch_identity(first)
+
+    cond do
+      Enum.any?(entries, &(batch_identity(&1) != identity)) ->
+        {:error,
+         "The checked connections run different applications. Connect each one on its own."}
+
+      length(entries) > 1 and identity == {:kubectl, ""} ->
+        {:error, "A saved connection of unknown application is connected on its own."}
+
+      true ->
+        case Connections.check_application(identity, batch_label(first)) do
+          :ok -> :ok
+          {:error, reason} -> {:error, Format.error(reason)}
+        end
+    end
+  end
+
+  defp start_batch(socket, entries) do
+    pid = self()
+    work = Enum.zip(entries, Connections.targets_for_connect(length(entries)))
+
+    {:ok, _} =
+      Task.start(fn ->
+        results =
+          work
+          |> Task.async_stream(
+            fn {entry, server} -> {entry, server, connect_batch_entry(entry, server)} end,
+            timeout: :infinity
+          )
+          |> Enum.map(fn {:ok, result} -> result end)
+
+        send(pid, {:beamdash_saved_many, results})
+      end)
+
+    socket
+    |> update(error: nil, notice: nil)
+    |> put_progress(:connecting, progress_step("Connecting #{length(entries)} connections…", nil))
+  end
+
+  defp connect_batch_entry(%{"kind" => "node"} = entry, server) do
+    cookie = if(entry["cookie"] in [nil, ""], do: nil, else: entry["cookie"])
+    Target.connect(entry["node"], cookie, server)
+  catch
+    :exit, reason -> {:error, {:connect_failed, reason}}
+  end
+
+  defp connect_batch_entry(entry, server), do: Target.connect_saved_kubectl(entry, server)
+
+  defp batch_identity(%{"kind" => "node", "node" => node}),
+    do: {:direct, Connections.node_app(node)}
+
+  defp batch_identity(entry), do: {:kubectl, entry["app"] || ""}
+
+  defp batch_label(%{"kind" => "node", "node" => node}), do: node
+  defp batch_label(entry), do: entry["pod"]
+
+  defp save_batch_entry(%{"kind" => "node"} = entry, _server, _info) do
+    LastConnection.put(%{
+      "kind" => "node",
+      "node" => entry["node"],
+      "cookie" => entry["cookie"] || ""
+    })
+  end
+
+  # connect_batch_entry sets no identity on the result, so it is built from the entry
+  defp save_batch_entry(entry, server, info) do
+    ctx = %{
+      cluster: entry["kubeconfig"],
+      namespace: entry["namespace"],
+      pod: entry["pod"],
+      container: entry["container"],
+      binary: entry["binary"],
+      server: server
+    }
+
+    save_kube_connection(ctx, %{node: info.node, identity: batch_identity(entry)})
+  end
+
+  defp batch_message(ok, failed) do
+    failures =
+      Enum.map_join(failed, "; ", fn {entry, _server, {:error, reason}} ->
+        "#{batch_label(entry)}: #{Format.error(reason)}"
+      end)
+
+    if ok == [],
+      do: failures,
+      else: "Connected #{length(ok)} of #{length(ok) + length(failed)}. #{failures}"
+  end
 
   # The session's node when it is still connected, else the first connected
   # node, else the default target, disconnected.

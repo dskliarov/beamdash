@@ -284,6 +284,73 @@ defmodule Beamdash.LogsLiveTest do
     refute html =~ ~s(class="var")
   end
 
+  test "an expanded group stays open when a re-sent line rebuilds the rows", ctx do
+    {_, socket} = ctx |> mount() |> render()
+    {html, socket} = socket |> event("toggle_row", %{"id" => "g-1"}) |> render()
+    assert html =~ ~s(aria-expanded="true")
+
+    socket =
+      info(socket, {:beamdash_logs, {:entries, [%{new_entry(3, "again") | node: ctx.node}]}})
+
+    {html, _} = render(socket)
+    assert html =~ ~s(aria-expanded="true")
+    assert html =~ ~s(user:<span class="var">3</span>)
+  end
+
+  test "an open group stays open when its newest line gets a continuation", ctx do
+    script =
+      "printf '2026-10-23T12:00:01Z [info] cache miss for key user:1\\n'; " <>
+        "printf '2026-10-23T12:00:01Z [info] cache miss for key user:2\\n'; " <>
+        "sleep 1; printf '2026-10-23T12:00:01Z     at line 1\\n'; sleep 3"
+
+    logs =
+      start_supervised!(
+        {Logs,
+         name: :"lv_cont_#{System.unique_integer([:positive])}",
+         target: ctx.target,
+         source_fun: fn _ -> @kubectl end,
+         logs_cmd: fn _args -> {System.find_executable("sh"), ["-c", script]} end,
+         kubectl_logger: false},
+        id: :cont_logs
+      )
+
+    ctx = %{ctx | logs: logs}
+    socket = mount(ctx)
+    eventually(fn -> length(Logs.entries(logs)) == 2 end)
+
+    {html, socket} = socket |> pump() |> render()
+    [group] = row_ids(html)
+    {html, socket} = socket |> event("toggle_row", %{"id" => group}) |> render()
+    assert html =~ ~s(aria-expanded="true")
+
+    eventually(fn -> Enum.any?(Logs.entries(logs), &(&1.message =~ "at line 1")) end)
+    {html, _} = socket |> pump() |> render()
+    assert html =~ ~s(aria-expanded="true")
+  end
+
+  test "an expanded group stays open when eviction trims its oldest line", ctx do
+    {_, socket} = ctx |> empty_logs() |> mount() |> render()
+    socket = info(socket, {:beamdash_logs, {:entries, [new_entry(1, "alpha")]}})
+    socket = info(socket, {:beamdash_logs, {:entries, Enum.map(4..2//-1, &similar/1)}})
+
+    socket =
+      info(socket, {:beamdash_logs, {:entries, Enum.map(2000..5//-1, &new_entry(&1, "idle"))}})
+
+    {html, socket} = render(socket)
+    [_alpha, group, _idle] = row_ids(html)
+    {html, socket} = socket |> event("toggle_row", %{"id" => group}) |> render()
+    assert html =~ ~s(aria-expanded="true")
+
+    socket =
+      info(
+        socket,
+        {:beamdash_logs, {:entries, [new_entry(2002, "idle"), new_entry(2001, "idle")]}}
+      )
+
+    {html, _} = render(socket)
+    assert html =~ ~s(aria-expanded="true")
+  end
+
   test "a single line opens its full message and metadata", ctx do
     {_, socket} = ctx |> mount() |> render()
 
@@ -945,6 +1012,15 @@ defmodule Beamdash.LogsLiveTest do
       batch = ids |> Enum.reverse() |> Enum.map(&similar/1)
       socket |> info({:beamdash_logs, {:entries, batch}}) |> render()
     end)
+  end
+
+  # applies the Logs messages already sent, until none arrive for 200 ms
+  defp pump(socket) do
+    receive do
+      {:beamdash_logs, _} = message -> socket |> info(message) |> pump()
+    after
+      200 -> socket
+    end
   end
 
   defp stream_ops(socket), do: socket.assigns.streams.rows

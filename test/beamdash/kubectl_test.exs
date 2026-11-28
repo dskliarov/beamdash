@@ -205,6 +205,13 @@ defmodule Beamdash.KubectlTest do
                Kubectl.pod_image(nil, "pace", "api-0", nil, exec)
     end
 
+    test "an empty image (no container matched) is an image lookup error" do
+      exec = fn _args -> {"\n", 0} end
+
+      assert {:error, {:image_lookup_failed, :no_image}} =
+               Kubectl.pod_image(nil, "pace", "api-0", "gone", exec)
+    end
+
     test "a raised exec is an image lookup error" do
       exec = fn _args -> raise "kubectl missing" end
 

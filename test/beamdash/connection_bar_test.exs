@@ -1038,6 +1038,31 @@ defmodule Beamdash.ConnectionBarTest do
     assert failed.assigns.conn.error == nil
   end
 
+  test "connect_kubectl with a container the page did not list does not connect" do
+    conn =
+      Map.merge(socket().assigns.conn, %{
+        method: :kubectl,
+        connecting: false,
+        kube_cluster: "/tmp/prod.yaml",
+        kube_namespace: "shop",
+        kube_pod: "app-1",
+        kube_containers: ["app", "sidecar"],
+        kube_container: "app"
+      })
+
+    s = Phoenix.Component.assign(socket(), :conn, conn)
+    container = "x\")||(@.name!=\""
+
+    assert {:halt, unchanged} =
+             Connection.handle_event(
+               "connect_kubectl",
+               %{"namespace" => "shop", "container" => container, "binary" => "/app/bin/a"},
+               s
+             )
+
+    refute unchanged.assigns.conn.connecting
+  end
+
   test "a namespace listing for another cluster is ignored" do
     s = on_cluster("/k/prod.yaml", %{method: :kubectl, kube_namespaces: ["default"]})
 
@@ -1504,5 +1529,133 @@ defmodule Beamdash.ConnectionBarTest do
     assert html =~ ~r/>\s*Node\s*</
     assert html =~ ~r/>\s*Cookie\s*</
     assert html =~ ~s(class="seg method-switch")
+  end
+
+  test "saved connections get a checkbox and Connect selected only with multiple connections on" do
+    :ok = LastConnection.forget()
+    :ok = LastConnection.put(%{"kind" => "node", "node" => "api@a", "cookie" => ""})
+    s = on_saved_tab(socket())
+    s = Phoenix.Component.assign(s, :conn, Map.put(s.assigns.conn, :connecting, nil))
+
+    on = Phoenix.Component.assign(s, :conn, Map.put(s.assigns.conn, :multiple, true))
+    html = bar(on)
+    assert html =~ ~s(name="ids[]")
+    refute html =~ ~s(id="connect-selected")
+
+    {:halt, selected} =
+      Connection.handle_event(
+        "saved_selection",
+        %{"ids" => [hd(LastConnection.list())["id"]]},
+        on
+      )
+
+    assert bar(selected) =~ ~s(id="connect-selected")
+    assert bar(selected) =~ ~r/type="checkbox"[^>]*checked/
+
+    off = Phoenix.Component.assign(s, :conn, Map.put(s.assigns.conn, :multiple, false))
+    html = bar(off)
+    refute html =~ ~s(name="ids[]")
+    refute html =~ ~s(id="connect-selected")
+
+    {:halt, refused} =
+      Connection.handle_event(
+        "connect_saved_many",
+        %{"ids" => [hd(LastConnection.list())["id"]]},
+        off
+      )
+
+    assert refused.assigns.conn.error =~ "Allow multiple connections"
+  end
+
+  describe "connecting several saved connections at once" do
+    setup do
+      previous_method = Settings.connection_method()
+      :ok = Settings.put_connection_method(:direct)
+      :ok = Settings.put_multiple_connections(true)
+
+      on_exit(fn ->
+        for %{server: server} <- Connections.list(),
+            server != Target,
+            do: Connections.remove(server)
+
+        Target.disconnect()
+        Settings.put_multiple_connections(false)
+        Settings.put_connection_method(previous_method)
+      end)
+
+      :ok
+    end
+
+    test "a checked saved connection goes through the batch and is connected and kept" do
+      {_peer, node} = Fixture.start_peer()
+      :ok = LastConnection.forget()
+
+      :ok =
+        LastConnection.put(%{
+          "kind" => "node",
+          "node" => Atom.to_string(node),
+          "cookie" => Fixture.cookie()
+        })
+
+      ids = Enum.map(LastConnection.list(), & &1["id"])
+      s = mounted_bar()
+      s = Phoenix.Component.assign(s, :conn, Map.put(s.assigns.conn, :multiple, true))
+
+      {:halt, started} = Connection.handle_event("connect_saved_many", %{"ids" => ids}, s)
+      assert started.assigns.conn.connecting
+
+      assert_receive {:beamdash_saved_many, results}, 30_000
+      {:halt, _} = Connection.handle_info({:beamdash_saved_many, results}, started)
+
+      assert %{status: :connected, node: ^node} = Target.status()
+      assert [%{"node" => saved}] = LastConnection.list()
+      assert saved == Atom.to_string(node)
+    end
+
+    test "checked connections of different applications are refused before anything connects" do
+      {_peer1, node1} = Fixture.start_peer()
+      {_peer2, node2} = Fixture.start_peer()
+      :ok = LastConnection.forget()
+
+      for node <- [node1, node2] do
+        :ok =
+          LastConnection.put(%{
+            "kind" => "node",
+            "node" => Atom.to_string(node),
+            "cookie" => Fixture.cookie()
+          })
+      end
+
+      ids = Enum.map(LastConnection.list(), & &1["id"])
+      s = mounted_bar()
+      s = Phoenix.Component.assign(s, :conn, Map.put(s.assigns.conn, :multiple, true))
+
+      {:halt, refused} = Connection.handle_event("connect_saved_many", %{"ids" => ids}, s)
+      assert refused.assigns.conn.error =~ "different applications"
+      refute refused.assigns.conn.connecting
+      refute_received {:beamdash_saved_many, _}
+      assert Connections.list() == []
+    end
+
+    test "Disconnect all ends every connection, next to Add connection and Show all" do
+      {_peer1, node1} = Fixture.start_peer()
+      {_peer2, node2} = Fixture.start_peer()
+      {:ok, _} = Target.connect(Atom.to_string(node1), Fixture.cookie())
+
+      {:ok, _} =
+        Target.connect(Atom.to_string(node2), Fixture.cookie(), Connections.target_for_connect())
+
+      assert length(Connections.list()) == 2
+
+      s = mounted_bar()
+      s = Phoenix.Component.assign(s, :conn, Map.put(s.assigns.conn, :multiple, true))
+      html = bar(s)
+      assert html =~ ~s(phx-click="disconnect_all")
+      assert html =~ "Disconnect all"
+
+      {:halt, _} = Connection.handle_event("disconnect_all", %{}, s)
+      assert Connections.list() == []
+      assert Target.status().status == :disconnected
+    end
   end
 end
