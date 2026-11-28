@@ -5,7 +5,9 @@ defmodule Beamdash.MemoryRefreshTest do
   alias BeamdashWeb.MemoryLive
 
   defp connected_socket do
-    {:ok, socket} = MemoryLive.mount(%{}, %{}, %Phoenix.LiveView.Socket{})
+    {:ok, socket} =
+      MemoryLive.mount(%{}, %{}, Beamdash.Test.Fixture.with_conn(%Phoenix.LiveView.Socket{}))
+
     Phoenix.Component.assign(socket, status: :connected, node: :fake@host)
   end
 

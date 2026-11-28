@@ -13,13 +13,13 @@ defmodule BeamdashWeb.NodesLive do
   """
   use Phoenix.LiveView
 
-  alias Beamdash.{Format, Target}
+  alias Beamdash.{Connections, Format, Target}
 
   @refresh_ms 5_000
 
   @impl true
   def mount(_params, session, socket) do
-    target = session["target"] || Target
+    target = session["target"] || active_server(socket)
     %{status: status, node: node} = Target.status(target)
 
     socket =
@@ -93,6 +93,24 @@ defmodule BeamdashWeb.NodesLive do
 
   def handle_event("switch", _params, socket), do: {:noreply, socket}
 
+  def handle_event("connect_node", %{"node" => name}, %{assigns: %{switching: nil}} = socket) do
+    node = Enum.find(listed(socket.assigns), &(Atom.to_string(&1) == name))
+
+    if node && multiple?(socket.assigns) &&
+         not MapSet.member?(connected_nodes(socket.assigns), node) do
+      source = socket.assigns.target
+
+      {:noreply,
+       socket
+       |> assign(switching: node, note: nil, error: nil)
+       |> start_async(:connect_node, fn -> Connections.connect_from(source, node) end)}
+    else
+      {:noreply, socket}
+    end
+  end
+
+  def handle_event("connect_node", _params, socket), do: {:noreply, socket}
+
   # only one of `nodes`: the name is never made into an atom
   defp switch(socket, name, nodes) do
     case Enum.find(nodes, &(Atom.to_string(&1) == name)) do
@@ -129,6 +147,15 @@ defmodule BeamdashWeb.NodesLive do
   def handle_async(:switch, {:exit, reason}, socket),
     do: {:noreply, switch_failed(socket, Format.error(reason))}
 
+  def handle_async(:connect_node, {:ok, {:ok, info}}, socket),
+    do: {:noreply, assign(socket, switching: nil, note: "Connected to #{info.node}.")}
+
+  def handle_async(:connect_node, {:ok, {:error, reason}}, socket),
+    do: {:noreply, switch_failed(socket, Format.error(reason))}
+
+  def handle_async(:connect_node, {:exit, reason}, socket),
+    do: {:noreply, switch_failed(socket, Format.error(reason))}
+
   defp switch_failed(socket, text) do
     assign(socket,
       switching: nil,
@@ -152,15 +179,29 @@ defmodule BeamdashWeb.NodesLive do
 
   def handle_info(_message, socket), do: {:noreply, socket}
 
+  defp active_server(%{assigns: %{conn: %{server: server}}}), do: server
+  defp active_server(_socket), do: Target
+
   # the nodes shown, other than the attached one
   defp listed(%{nodes: nil}), do: []
   defp listed(%{nodes: n, show_hidden: true}), do: n.visible ++ n.hidden
   defp listed(%{nodes: n}), do: n.visible
 
+  defp multiple?(assigns), do: assigns[:conn][:multiple] == true
+
+  defp connected_nodes(assigns) do
+    for %{node: node, status: :connected} <- assigns[:conn][:connections] || [],
+        into: MapSet.new(),
+        do: node
+  end
+
   ## Rendering
 
   @impl true
   def render(assigns) do
+    assigns =
+      assign(assigns, multiple: multiple?(assigns), connected: connected_nodes(assigns))
+
     ~H"""
     <main class="wrap nodes-page">
       <BeamdashWeb.Layouts.header
@@ -201,7 +242,7 @@ defmodule BeamdashWeb.NodesLive do
             <tr class="current">
               <td class="mono"><strong>{@nodes.this}</strong></td>
               <td>attached</td>
-              <td></td>
+              <td><span class="node-connected">Connected</span></td>
             </tr>
             <tr :for={{node, kind} <- rows(assigns)}>
               <td class="mono">
@@ -219,6 +260,23 @@ defmodule BeamdashWeb.NodesLive do
               <td>{kind}</td>
               <td>
                 <span :if={@switching == node} class="muted small">Connecting…</span>
+                <span
+                  :if={@multiple and @switching != node and MapSet.member?(@connected, node)}
+                  class="node-connected"
+                >
+                  Connected
+                </span>
+                <button
+                  :if={@multiple and @switching != node and not MapSet.member?(@connected, node)}
+                  type="button"
+                  class="secondary small-btn"
+                  phx-click="connect_node"
+                  phx-value-node={node}
+                  disabled={@switching != nil}
+                  title={"Add a connection to #{node}"}
+                >
+                  Connect
+                </button>
               </td>
             </tr>
           </tbody>

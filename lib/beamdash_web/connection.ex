@@ -23,7 +23,8 @@ defmodule BeamdashWeb.Connection do
 
   `@conn.connecting` and `@conn.kube_progress` are the step a kubectl connect
   or a pod listing is on (label, command, elapsed seconds), shown in the bar
-  while it runs.
+  while it runs. `@conn.connecting_others` maps the server of each other
+  connection that is connecting to its step, one bar line each.
 
   The bar lists the saved connections (`Beamdash.LastConnection`, kept across
   restarts). Clicking one connects it, and each can be deleted. The form
@@ -31,20 +32,22 @@ defmodule BeamdashWeb.Connection do
   that failed to connect is offered instead until one succeeds.
   """
   import Phoenix.Component, only: [assign: 3]
-  import Phoenix.LiveView, only: [attach_hook: 4, connected?: 1, push_navigate: 2]
+  import Phoenix.LiveView, only: [attach_hook: 4, connected?: 1, push_navigate: 2, redirect: 2]
 
-  alias Beamdash.{Format, Kubectl, LastConnection, Settings, Target}
+  alias Beamdash.{Connections, Format, Kubectl, LastConnection, Settings, Target}
 
   @refresh_ms 2_000
   @last_node {__MODULE__, :last_node}
+  @only_selected {__MODULE__, :only_selected}
   # the last kubectl listings (namespaces, a restored selection), so the
   # bar of each page mounted soon after fills without running kubectl again
   @kube_cache {__MODULE__, :kube_cache}
   @kube_cache_ms 60_000
   @progress_ms 1_000
 
-  def on_mount(:default, _params, _session, socket) do
-    %{status: status, node: node} = Target.status()
+  def on_mount(:default, _params, session, socket) do
+    selected = session["selected_node"]
+    {server, status, node} = choose(selected)
     saved = LastConnection.list()
     direct = Enum.find(saved, &(&1["kind"] == "node")) || %{}
     kube_saved = Settings.kube_selection()
@@ -60,14 +63,20 @@ defmodule BeamdashWeb.Connection do
       |> assign(
         :conn,
         Map.merge(clusters, %{
+          server: server,
+          selected_node: selected,
           status: status,
           node: node,
+          connections: listed(clusters.kube_clusters),
           info: nil,
           node_input: if(node, do: Atom.to_string(node), else: last_node(direct["node"] || "")),
           cookie_input: direct["cookie"] || "",
           saved: saved,
           error: nil,
           method: Settings.connection_method(),
+          multiple: Settings.multiple_connections?(),
+          panel: false,
+          only_selected: :persistent_term.get(@only_selected, false),
           kube_cluster: cluster,
           kube_namespace:
             if(cluster == kube_saved["cluster"], do: kube_saved["namespace"], else: ""),
@@ -76,16 +85,19 @@ defmodule BeamdashWeb.Connection do
           kube_pods: nil,
           kube_pods_listing: false,
           kube_target:
-            if(status == :connected, do: kube_target(Target.source(), clusters.kube_clusters)),
+            if(status == :connected,
+              do: kube_target(Target.source(server), clusters.kube_clusters)
+            ),
           kube_restore_ref: nil,
           kube_containers: nil,
           kube_container: nil,
           kube_binaries: nil,
           kube_binary: nil,
           connecting: nil,
+          connecting_others: %{},
           kube_progress: nil,
           progress_timer: false,
-          reconnecting: if(status == :connected, do: nil, else: Target.reconnecting()),
+          reconnecting: if(status == :connected, do: nil, else: Target.reconnecting(server)),
           plugins: active_plugins()
         })
       )
@@ -93,7 +105,8 @@ defmodule BeamdashWeb.Connection do
       |> attach_hook(:conn_info, :handle_info, &handle_info/2)
 
     if connected?(socket) do
-      :ok = Target.subscribe()
+      subscribe_all()
+      :ok = Connections.subscribe()
       :ok = Target.subscribe_connecting()
       :ok = Phoenix.PubSub.subscribe(Beamdash.PubSub, "plugins")
       send(self(), :beamdash_conn_tick)
@@ -111,51 +124,61 @@ defmodule BeamdashWeb.Connection do
     :persistent_term.put(@last_node, node)
     cookie = params |> Map.get("cookie", "") |> String.trim()
 
-    case Target.connect(node, if(cookie == "", do: nil, else: cookie)) do
-      {:ok, info} ->
-        # remembered for the form, also after a restart
-        LastConnection.put(%{"kind" => "node", "node" => node, "cookie" => cookie})
-        :persistent_term.erase(@last_node)
-
-        # the page hears {:connected, node} from Target as well
+    case Connections.find_node(node) do
+      %{node: existing} ->
         {:halt,
          socket
-         |> update(
-           status: :connected,
-           node: info.node,
-           info: info,
-           error: nil,
-           cookie_input: cookie,
-           kube_target: nil,
-           saved: LastConnection.list()
-         )
-         |> to_system()}
+         |> to_node(existing)
+         |> update(notice: "#{existing} is already connected, so it is selected.")}
 
-      {:error, reason} ->
-        {:halt,
-         update(socket, error: Format.error(reason), node_input: node, cookie_input: cookie)}
+      nil ->
+        identity = {:direct, Connections.node_app(node)}
+
+        case if(node == "", do: :ok, else: Connections.check_application(identity, node)) do
+          :ok ->
+            connect_direct(socket, node, cookie, identity)
+
+          {:error, reason} ->
+            {:halt,
+             update(socket, error: Format.error(reason), node_input: node, cookie_input: cookie)}
+        end
     end
   end
 
-  def handle_event("disconnect", _params, socket) do
-    :ok = Target.disconnect()
+  def handle_event("disconnect", params, socket) do
+    case disconnect_server(socket, params) do
+      nil ->
+        {:halt, socket}
 
-    {:halt,
-     socket
-     |> update(
-       status: :disconnected,
-       node: nil,
-       info: nil,
-       kube_target: nil,
-       reconnecting: nil,
-       connecting: nil
-     )
-     |> to_root()}
+      server ->
+        own? = server == socket.assigns.conn.server
+        :ok = Connections.remove(server)
+
+        socket = socket |> resolve() |> then(&if(own?, do: update(&1, connecting: nil), else: &1))
+        {:halt, if(socket.assigns.conn.status == :connected, do: socket, else: to_root(socket))}
+    end
+  end
+
+  def handle_event("disconnect_all", _params, socket) do
+    for %{server: server} <- Connections.list(), do: :ok = Connections.remove(server)
+
+    socket = socket |> resolve() |> update(connecting: nil)
+    {:halt, to_root(socket)}
   end
 
   def handle_event("stop_reconnect", _params, socket) do
-    :ok = Target.stop_reconnect()
+    :ok = Target.stop_reconnect(socket.assigns.conn.server)
     {:halt, update(socket, reconnecting: nil)}
+  end
+
+  def handle_event("toggle_panel", _params, socket) do
+    {:halt, update(socket, panel: not socket.assigns.conn[:panel])}
+  end
+
+  def handle_event("toggle_only_selected", _params, socket) do
+    only_selected = not socket.assigns.conn[:only_selected]
+    :persistent_term.put(@only_selected, only_selected)
+    {:halt, update(socket, only_selected: only_selected)}
   end
 
   # namespaces are re-listed each time Kubernetes is picked from another
@@ -180,26 +203,30 @@ defmodule BeamdashWeb.Connection do
   # picking a different cluster invalidates everything listed under the old
   # one, same reset `"select_kube_pod"` does for a different pod.
   def handle_event("select_kube_cluster", %{"cluster" => cluster}, socket) do
-    Settings.put_kube_selection(%{"cluster" => cluster})
+    if Enum.any?(Map.get(socket.assigns.conn, :kube_clusters, []), &(&1.path == cluster)) do
+      Settings.put_kube_selection(%{"cluster" => cluster})
 
-    {:halt,
-     socket
-     |> update(
-       kube_cluster: cluster,
-       kube_progress: nil,
-       kube_namespace: "",
-       kube_namespaces: [],
-       kube_pods: nil,
-       kube_pods_listing: false,
-       kube_restore_ref: nil,
-       kube_pod: "",
-       kube_containers: nil,
-       kube_container: nil,
-       kube_binaries: nil,
-       kube_binary: nil,
-       error: nil
-     )
-     |> list_namespaces()}
+      {:halt,
+       socket
+       |> update(
+         kube_cluster: cluster,
+         kube_progress: nil,
+         kube_namespace: "",
+         kube_namespaces: [],
+         kube_pods: nil,
+         kube_pods_listing: false,
+         kube_restore_ref: nil,
+         kube_pod: "",
+         kube_containers: nil,
+         kube_container: nil,
+         kube_binaries: nil,
+         kube_binary: nil,
+         error: nil
+       )
+       |> list_namespaces()}
+    else
+      {:halt, socket}
+    end
   end
 
   def handle_event(
@@ -278,27 +305,36 @@ defmodule BeamdashWeb.Connection do
         %{"namespace" => namespace, "pod" => pod, "container" => container},
         socket
       ) do
-    namespace = String.trim(namespace)
-    pod = String.trim(pod)
+    if container in (Map.get(socket.assigns.conn, :kube_containers) || []) do
+      namespace = String.trim(namespace)
+      pod = String.trim(pod)
 
-    Settings.put_kube_selection(%{
-      "cluster" => socket.assigns.conn.kube_cluster,
-      "namespace" => namespace,
-      "pod" => pod,
-      "container" => container
-    })
+      Settings.put_kube_selection(%{
+        "cluster" => socket.assigns.conn.kube_cluster,
+        "namespace" => namespace,
+        "pod" => pod,
+        "container" => container
+      })
 
-    socket =
-      update(socket, kube_container: container, kube_binaries: nil, kube_binary: nil, error: nil)
+      socket =
+        update(socket,
+          kube_container: container,
+          kube_binaries: nil,
+          kube_binary: nil,
+          error: nil
+        )
 
-    {:halt,
-     start_kube_listing(
-       socket,
-       socket.assigns.conn.kube_cluster,
-       namespace,
-       {:container, pod, socket.assigns.conn.kube_containers, container},
-       Settings.kube_selection()
-     )}
+      {:halt,
+       start_kube_listing(
+         socket,
+         socket.assigns.conn.kube_cluster,
+         namespace,
+         {:container, pod, socket.assigns.conn.kube_containers, container},
+         Settings.kube_selection()
+       )}
+    else
+      {:halt, socket}
+    end
   end
 
   def handle_event("select_kube_binary", %{"binary" => binary}, socket) do
@@ -317,12 +353,14 @@ defmodule BeamdashWeb.Connection do
         %{"namespace" => namespace, "container" => container, "binary" => binary},
         socket
       ) do
-    if socket.assigns.conn.connecting do
+    container = String.trim(container)
+    listed = ["" | Map.get(socket.assigns.conn, :kube_containers) || []]
+
+    if socket.assigns.conn.connecting || container not in listed do
       {:halt, socket}
     else
       namespace = String.trim(namespace)
       pod = socket.assigns.conn.kube_pod
-      container = String.trim(container)
       cluster = socket.assigns.conn.kube_cluster
       save_kube_selection(socket, binary)
 
@@ -331,7 +369,8 @@ defmodule BeamdashWeb.Connection do
         namespace: namespace,
         pod: pod,
         container: container,
-        binary: binary
+        binary: binary,
+        server: Connections.target_for_connect()
       }
 
       pid = self()
@@ -361,6 +400,37 @@ defmodule BeamdashWeb.Connection do
     end
   end
 
+  def handle_event("saved_selection", params, socket) do
+    {:halt, update(socket, selected: Map.get(params, "ids", []))}
+  end
+
+  def handle_event("connect_saved_many", params, socket) do
+    conn = socket.assigns.conn
+    ids = Map.get(params, "ids", [])
+    connected = Enum.map(Connections.connected(), &to_string(&1.node))
+    entries = Enum.filter(conn.saved, &(&1["id"] in ids and &1["node"] not in connected))
+
+    cond do
+      conn.connecting != nil ->
+        {:halt, socket}
+
+      not conn.multiple ->
+        {:halt,
+         update(socket,
+           error: "Turn on Allow multiple connections in Settings to connect several at once."
+         )}
+
+      entries == [] ->
+        {:halt, update(socket, error: "Check the saved connections that are not connected yet.")}
+
+      true ->
+        case check_batch(entries) do
+          :ok -> {:halt, start_batch(socket, entries)}
+          {:error, message} -> {:halt, update(socket, error: message)}
+        end
+    end
+  end
+
   def handle_event(_event, _params, socket), do: {:cont, socket}
 
   @doc false
@@ -377,35 +447,30 @@ defmodule BeamdashWeb.Connection do
     {:halt, refresh(socket)}
   end
 
-  def handle_info({:beamdash_target, {:connected, node}}, socket),
-    do:
-      {:cont,
-       socket
-       |> update(
-         status: :connected,
-         node: node,
-         error: nil,
-         node_input: Atom.to_string(node),
-         reconnecting: nil,
-         kube_target:
-           kube_target(Target.source(), Map.get(socket.assigns.conn, :kube_clusters, []))
-       )
-       |> refresh()}
+  # The event does not say which connection it is about, so the bar is
+  # worked out again from the connections.
+  def handle_info({:beamdash_target, {:connected, _node}}, socket) do
+    socket = socket |> resolve() |> update(error: nil)
+    {:cont, refresh(socket)}
+  end
 
   def handle_info({:beamdash_target, {:disconnected, reason}}, socket) do
-    error = if reason == :nodedown, do: "Lost the connection to #{socket.assigns.conn.node}."
+    lost = socket.assigns.conn.node
+    error = if reason == :nodedown, do: "Lost the connection to #{lost}."
+    Connections.prune()
+    socket = socket |> resolve() |> update(error: error)
 
-    {:cont,
-     socket
-     |> update(
-       status: :disconnected,
-       node: nil,
-       info: nil,
-       kube_target: nil,
-       error: error,
-       reconnecting: Target.reconnecting()
-     )
-     |> then(fn s -> if reason == :reconnect, do: s, else: to_root(s) end)}
+    socket =
+      if socket.assigns.conn.status == :connected or reason == :reconnect,
+        do: socket,
+        else: to_root(socket)
+
+    {:cont, socket}
+  end
+
+  def handle_info({:beamdash_connections, :changed}, socket) do
+    subscribe_all()
+    {:halt, resolve(socket)}
   end
 
   # Broadcast on the "settings" topic, which `BeamdashWeb.Syntax` (mounted
@@ -435,6 +500,7 @@ defmodule BeamdashWeb.Connection do
         error: nil
       )
       |> update(kube_clusters(dir))
+      |> then(&update(&1, connections: listed(&1.assigns.conn.kube_clusters)))
 
     {:halt,
      if(socket.assigns.conn[:method] == :kubectl, do: list_namespaces(socket), else: socket)}
@@ -488,37 +554,45 @@ defmodule BeamdashWeb.Connection do
   end
 
   def handle_info({:beamdash_kube_connected, ctx, result}, socket) do
+    if match?({:error, _}, result), do: Connections.discard(ctx.server)
+
     case result do
       {:error, :cancelled} ->
         {:halt, update(socket, connecting: nil)}
 
       {:ok, info} ->
-        save_kube_connection(ctx, info.node)
+        save_kube_connection(ctx, info)
+        Connections.broadcast()
 
-        # the page hears {:connected, node} from Target as well
         {:halt,
          socket
          |> update(
-           status: :connected,
-           node: info.node,
-           info: info,
            error: nil,
            connecting: nil,
            kube_namespace: ctx.namespace,
            kube_pod: ctx.pod,
            kube_container: ctx.container,
            kube_binary: ctx.binary,
-           kube_target:
-             kube_target(
-               {:kubectl, %{kubeconfig: ctx.cluster, namespace: ctx.namespace, pod: ctx.pod}},
-               socket.assigns.conn.kube_clusters
-             ),
            saved: LastConnection.list()
          )
-         |> to_system()}
+         |> to_system(info.node)}
 
       {:error, {:saved_pod_unavailable, reason}} ->
         {:halt, saved_pod_unavailable(socket, ctx, reason)}
+
+      {:error, {:already_connected, node}} ->
+        socket =
+          case Connections.find_node(Atom.to_string(node)) do
+            %{node: existing} ->
+              socket
+              |> to_node(existing)
+              |> update(notice: "#{existing} is already connected, so it is selected.")
+
+            nil ->
+              update(socket, error: "#{node} is already connected.")
+          end
+
+        {:halt, update(socket, connecting: nil)}
 
       {:error, reason} ->
         {:halt,
@@ -533,9 +607,15 @@ defmodule BeamdashWeb.Connection do
     end
   end
 
-  def handle_info({:beamdash_connecting, step}, socket) do
+  def handle_info({:beamdash_connecting, server, step}, socket) do
     step = if step, do: progress_step(step.label, step.command)
-    {:halt, put_progress(socket, :connecting, step)}
+
+    socket =
+      if own_server?(socket, server),
+        do: put_progress(socket, :connecting, step),
+        else: put_other_progress(socket, server, step)
+
+    {:halt, socket}
   end
 
   def handle_info(:beamdash_progress_tick, socket) do
@@ -543,6 +623,7 @@ defmodule BeamdashWeb.Connection do
       socket
       |> tick_progress(:connecting)
       |> tick_progress(:kube_progress)
+      |> tick_other_progress()
 
     if active_progress?(socket) do
       Process.send_after(self(), :beamdash_progress_tick, @progress_ms)
@@ -564,13 +645,188 @@ defmodule BeamdashWeb.Connection do
     {:halt, socket}
   end
 
+  def handle_info({:beamdash_saved_many, results}, socket) do
+    {ok, failed} =
+      Enum.split_with(results, fn {_entry, _server, result} -> match?({:ok, _}, result) end)
+
+    for {entry, server, {:ok, info}} <- ok do
+      Connections.record_application(server, batch_identity(entry))
+      save_batch_entry(entry, server, info)
+    end
+
+    for {_entry, server, _result} <- failed, do: Connections.discard(server)
+    Connections.broadcast()
+
+    socket =
+      socket
+      |> update(connecting: nil, saved: LastConnection.list())
+      |> resolve()
+
+    case {ok, failed} do
+      {[{_, _, {:ok, info}} | _], []} -> {:halt, to_system(socket, info.node)}
+      _ -> {:halt, update(socket, error: batch_message(ok, failed))}
+    end
+  end
+
   def handle_info(_message, socket), do: {:cont, socket}
+
+  # One application per batch. A kubectl entry whose application is not known
+  # yet is connected on its own, since two unknown ones could be different.
+  defp check_batch([first | _] = entries) do
+    identity = batch_identity(first)
+
+    cond do
+      Enum.any?(entries, &(batch_identity(&1) != identity)) ->
+        {:error,
+         "The checked connections run different applications. Connect each one on its own."}
+
+      length(entries) > 1 and identity == {:kubectl, ""} ->
+        {:error, "A saved connection of unknown application is connected on its own."}
+
+      true ->
+        case Connections.check_application(identity, batch_label(first)) do
+          :ok -> :ok
+          {:error, reason} -> {:error, Format.error(reason)}
+        end
+    end
+  end
+
+  defp start_batch(socket, entries) do
+    pid = self()
+    work = Enum.zip(entries, Connections.targets_for_connect(length(entries)))
+
+    {:ok, _} =
+      Task.start(fn ->
+        results =
+          work
+          |> Task.async_stream(
+            fn {entry, server} -> {entry, server, connect_batch_entry(entry, server)} end,
+            timeout: :infinity
+          )
+          |> Enum.map(fn {:ok, result} -> result end)
+
+        send(pid, {:beamdash_saved_many, results})
+      end)
+
+    socket
+    |> update(error: nil, notice: nil)
+    |> put_progress(:connecting, progress_step("Connecting #{length(entries)} connections…", nil))
+  end
+
+  defp connect_batch_entry(%{"kind" => "node"} = entry, server) do
+    cookie = if(entry["cookie"] in [nil, ""], do: nil, else: entry["cookie"])
+    Target.connect(entry["node"], cookie, server)
+  catch
+    :exit, reason -> {:error, {:connect_failed, reason}}
+  end
+
+  defp connect_batch_entry(entry, server), do: Target.connect_saved_kubectl(entry, server)
+
+  defp batch_identity(%{"kind" => "node", "node" => node}),
+    do: {:direct, Connections.node_app(node)}
+
+  defp batch_identity(entry), do: {:kubectl, entry["app"] || ""}
+
+  defp batch_label(%{"kind" => "node", "node" => node}), do: node
+  defp batch_label(entry), do: entry["pod"]
+
+  defp save_batch_entry(%{"kind" => "node"} = entry, _server, _info) do
+    LastConnection.put(%{
+      "kind" => "node",
+      "node" => entry["node"],
+      "cookie" => entry["cookie"] || ""
+    })
+  end
+
+  # connect_batch_entry sets no identity on the result, so it is built from the entry
+  defp save_batch_entry(entry, server, info) do
+    ctx = %{
+      cluster: entry["kubeconfig"],
+      namespace: entry["namespace"],
+      pod: entry["pod"],
+      container: entry["container"],
+      binary: entry["binary"],
+      server: server
+    }
+
+    save_kube_connection(ctx, %{node: info.node, identity: batch_identity(entry)})
+  end
+
+  defp batch_message(ok, failed) do
+    failures =
+      Enum.map_join(failed, "; ", fn {entry, _server, {:error, reason}} ->
+        "#{batch_label(entry)}: #{Format.error(reason)}"
+      end)
+
+    if ok == [],
+      do: failures,
+      else: "Connected #{length(ok)} of #{length(ok) + length(failed)}. #{failures}"
+  end
+
+  # The session's node when it is still connected, else the first connected
+  # node, else the default target, disconnected.
+  defp choose(selected) do
+    connected = Connections.connected()
+
+    case Enum.find(connected, &(Atom.to_string(&1.node) == selected)) || List.first(connected) do
+      nil -> {Target, :disconnected, nil}
+      %{server: server, node: node} -> {server, :connected, node}
+    end
+  end
+
+  defp resolve(socket) do
+    conn = socket.assigns.conn
+    {server, status, node} = choose(conn.selected_node)
+
+    update(socket,
+      server: server,
+      status: status,
+      node: node,
+      info: if(status == :connected and node == conn.node, do: conn.info),
+      connections: listed(conn.kube_clusters),
+      kube_target:
+        if(status == :connected,
+          do: kube_target(Target.source(server), conn.kube_clusters)
+        ),
+      reconnecting: if(status == :connected, do: nil, else: Target.reconnecting(server))
+    )
+  end
+
+  defp disconnect_server(_socket, %{"server" => key}) do
+    case Connections.find_key(key) do
+      %{server: server} -> server
+      nil -> nil
+    end
+  end
+
+  defp disconnect_server(socket, %{"node" => node}) do
+    case Enum.find(Map.get(socket.assigns.conn, :connections, []), &(to_string(&1.node) == node)) do
+      %{server: server} -> server
+      nil -> socket.assigns.conn.server
+    end
+  end
+
+  defp disconnect_server(socket, _params), do: socket.assigns.conn.server
+
+  defp subscribe_all do
+    Enum.each(Connections.list(), fn %{server: server} -> :ok = Target.subscribe(server) end)
+  end
 
   # [] when the registry isn't there (it never breaks the bar)
   defp active_plugins do
     Beamdash.Plugins.active()
   catch
     :exit, _ -> []
+  end
+
+  defp listed(clusters) do
+    for entry <- Connections.list() do
+      kube =
+        if entry.status == :connected,
+          do: kube_target(Target.source(entry.server), clusters)
+
+      Map.put(entry, :kube_target, kube)
+    end
   end
 
   @doc false
@@ -588,15 +844,15 @@ defmodule BeamdashWeb.Connection do
 
   def kube_target(_source, _clusters), do: nil
 
-  defp refresh(%{assigns: %{conn: %{status: :connected}}} = socket) do
-    case Target.node_info() do
+  defp refresh(%{assigns: %{conn: %{status: :connected} = conn}} = socket) do
+    case Target.node_info(conn.server) do
       {:ok, info} -> update(socket, info: info)
       {:error, _} -> socket
     end
   end
 
-  defp refresh(%{assigns: %{conn: %{status: :disconnected}}} = socket),
-    do: update(socket, reconnecting: Target.reconnecting())
+  defp refresh(%{assigns: %{conn: %{status: :disconnected} = conn}} = socket),
+    do: update(socket, reconnecting: Target.reconnecting(conn.server))
 
   defp refresh(socket), do: socket
 
@@ -817,16 +1073,72 @@ defmodule BeamdashWeb.Connection do
     )
   end
 
+  defp connect_direct(socket, node, cookie, identity) do
+    server = Connections.target_for_connect()
+
+    case Target.connect(node, if(cookie == "", do: nil, else: cookie), server) do
+      {:ok, info} ->
+        Connections.record_application(server, identity)
+        # remembered for the form, also after a restart
+        LastConnection.put(%{"kind" => "node", "node" => node, "cookie" => cookie})
+        :persistent_term.erase(@last_node)
+        Connections.broadcast()
+
+        {:halt,
+         socket
+         |> update(
+           error: nil,
+           notice: nil,
+           cookie_input: cookie,
+           saved: LastConnection.list(),
+           node_input: node,
+           selected_node: Atom.to_string(info.node)
+         )
+         |> resolve()
+         |> refresh()
+         |> to_system(info.node)}
+
+      {:error, reason} ->
+        Connections.discard(server)
+
+        {:halt,
+         update(socket, error: Format.error(reason), node_input: node, cookie_input: cookie)}
+    end
+  end
+
   defp connect_kubectl(ctx) do
-    Target.connect_via_kubectl(ctx.cluster, ctx.namespace, ctx.pod, ctx.container, ctx.binary)
+    container = if ctx.container in [nil, ""], do: nil, else: ctx.container
+
+    with {:ok, image} <- Kubectl.pod_image(ctx.cluster, ctx.namespace, ctx.pod, container) do
+      connect_as({:kubectl, Kubectl.image_repository(image)}, ctx.pod, ctx.server, fn ->
+        Target.connect_via_kubectl(
+          ctx.cluster,
+          ctx.namespace,
+          ctx.pod,
+          ctx.container,
+          ctx.binary,
+          ctx.server
+        )
+      end)
+    end
   catch
     :exit, reason -> {:error, {:connect_failed, reason}}
   end
 
-  defp connect_saved(entry) do
-    Target.connect_saved_kubectl(entry)
+  defp connect_saved(entry, server) do
+    connect_as({:kubectl, entry["app"]}, entry["pod"], server, fn ->
+      Target.connect_saved_kubectl(entry, server)
+    end)
   catch
     :exit, reason -> {:error, {:connect_failed, reason}}
+  end
+
+  defp connect_as(identity, label, server, connect) do
+    with :ok <- Connections.check_application(identity, label),
+         {:ok, info} <- connect.() do
+      Connections.record_application(server, identity)
+      {:ok, Map.put(info, :identity, identity)}
+    end
   end
 
   defp connect_saved_kube(socket, entry) do
@@ -838,7 +1150,8 @@ defmodule BeamdashWeb.Connection do
         namespace: entry["namespace"],
         pod: entry["pod"],
         container: entry["container"],
-        binary: entry["binary"]
+        binary: entry["binary"],
+        server: Connections.target_for_connect()
       }
 
       Settings.put_kube_selection(%{
@@ -852,7 +1165,9 @@ defmodule BeamdashWeb.Connection do
       pid = self()
 
       {:ok, _} =
-        Task.start(fn -> send(pid, {:beamdash_kube_connected, ctx, connect_saved(entry)}) end)
+        Task.start(fn ->
+          send(pid, {:beamdash_kube_connected, ctx, connect_saved(entry, ctx.server)})
+        end)
 
       socket
       |> update(
@@ -867,11 +1182,12 @@ defmodule BeamdashWeb.Connection do
     end
   end
 
-  defp save_kube_connection(ctx, node) do
+  defp save_kube_connection(ctx, %{node: node, identity: {_kind, app}}) do
     LastConnection.put(%{
       "kind" => "kubectl",
       "node" => Atom.to_string(node),
-      "cookie" => cookie_text(Target.cookie()),
+      "app" => app,
+      "cookie" => cookie_text(Target.cookie(ctx.server)),
       "kubeconfig" => ctx.cluster,
       "namespace" => ctx.namespace,
       "pod" => ctx.pod,
@@ -908,33 +1224,58 @@ defmodule BeamdashWeb.Connection do
 
   # One tick chain at a time: it runs while any progress is active and clears
   # `progress_timer` when it stops, so a step set later starts a new chain.
-  defp put_progress(socket, key, step) do
-    socket = update(socket, [{key, step}])
+  defp own_server?(socket, server),
+    do: GenServer.whereis(server) == GenServer.whereis(socket.assigns.conn.server)
 
-    if step && !socket.assigns.conn.progress_timer do
+  defp put_progress(socket, key, step) do
+    socket |> update([{key, step}]) |> start_progress_timer(step)
+  end
+
+  defp put_other_progress(socket, server, step) do
+    others = socket.assigns.conn.connecting_others
+
+    others =
+      if step, do: Map.put(others, server, step), else: Map.delete(others, server)
+
+    socket |> update(connecting_others: others) |> start_progress_timer(step)
+  end
+
+  defp start_progress_timer(socket, nil), do: socket
+
+  defp start_progress_timer(socket, _step) do
+    if socket.assigns.conn.progress_timer do
+      socket
+    else
       Process.send_after(self(), :beamdash_progress_tick, @progress_ms)
       update(socket, progress_timer: true)
-    else
-      socket
     end
   end
 
   defp progress_step(label, command),
     do: %{label: label, command: command, since: System.monotonic_time(:millisecond), elapsed: 0}
 
-  defp active_progress?(socket),
-    do: Enum.any?([:connecting, :kube_progress], fn key -> socket.assigns.conn[key] end)
+  defp active_progress?(socket) do
+    map_size(socket.assigns.conn.connecting_others) > 0 or
+      Enum.any?([:connecting, :kube_progress], fn key -> socket.assigns.conn[key] end)
+  end
 
   defp tick_progress(socket, key) do
     case socket.assigns.conn[key] do
-      nil ->
-        socket
-
-      step ->
-        elapsed = div(System.monotonic_time(:millisecond) - step.since, 1000)
-        update(socket, [{key, %{step | elapsed: elapsed}}])
+      nil -> socket
+      step -> update(socket, [{key, %{step | elapsed: elapsed(step)}}])
     end
   end
+
+  defp tick_other_progress(socket) do
+    others =
+      Map.new(socket.assigns.conn.connecting_others, fn {server, step} ->
+        {server, %{step | elapsed: elapsed(step)}}
+      end)
+
+    update(socket, connecting_others: others)
+  end
+
+  defp elapsed(step), do: div(System.monotonic_time(:millisecond) - step.since, 1000)
 
   # Read at mount and when the directory changes in Settings, not re-listed
   # on every render: the set of kubeconfig files rarely changes mid-session.
@@ -955,8 +1296,18 @@ defmodule BeamdashWeb.Connection do
 
   # A connect from the bar lands on the System tab, the node's overview
   # (staying put when already there).
-  defp to_system(%{view: BeamdashWeb.SystemLive} = socket), do: socket
-  defp to_system(socket), do: push_navigate(socket, to: "/system")
+  # The selection is stored by the controller, so every selection goes through
+  # it and the page reloads. Without a path, the controller returns to the page
+  # the request came from.
+  defp to_system(socket, node), do: select_and_go(socket, node, "/system")
+
+  defp to_node(socket, node), do: select_and_go(socket, node, nil)
+
+  defp select_and_go(socket, node, path) do
+    params = %{"node" => Atom.to_string(node)}
+    params = if path, do: Map.put(params, "return_to", path), else: params
+    redirect(socket, to: "/connections/select?" <> URI.encode_query(params))
+  end
 
   defp to_root(%{view: BeamdashWeb.HomeLive} = socket), do: socket
   defp to_root(socket), do: push_navigate(socket, to: "/")

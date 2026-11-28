@@ -3,17 +3,19 @@ defmodule BeamdashWeb.NotebookLive do
   alias Beamdash.{Console, Format, Notebook, NotebookStore, Settings, Target}
 
   @impl true
-  def mount(_, _, socket) do
-    %{status: status, node: node} = Target.status()
+  def mount(_, session, socket) do
+    server = session["server"]
+    %{status: status, node: node} = Target.status(server)
 
     if connected?(socket) do
-      Target.subscribe()
+      Target.subscribe(server)
       Phoenix.PubSub.subscribe(Beamdash.PubSub, "settings")
     end
 
     {:ok,
      socket
      |> assign(
+       server: server,
        status: status,
        node: node,
        cell_targets: %{},
@@ -840,7 +842,10 @@ defmodule BeamdashWeb.NotebookLive do
   defp current_target?(socket, :remote),
     do:
       socket.assigns.status == :connected and
-        Target.status() == %{status: :connected, node: socket.assigns.node}
+        Target.status(socket.assigns.server) == %{
+          status: :connected,
+          node: socket.assigns.node
+        }
 
   defp close_remote_sessions(socket) do
     {remote, local} =

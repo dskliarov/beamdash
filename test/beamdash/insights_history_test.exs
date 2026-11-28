@@ -26,7 +26,11 @@ defmodule Beamdash.InsightsHistoryTest do
   end
 
   defp socket do
-    socket = %Socket{private: %{lifecycle: %Lifecycle{}, live_temp: %{}}}
+    socket =
+      Beamdash.Test.Fixture.with_conn(%Socket{
+        private: %{lifecycle: %Lifecycle{}, live_temp: %{}}
+      })
+
     {:ok, socket} = InsightsLive.mount(%{}, %{}, socket)
     Phoenix.Component.assign(socket, status: :connected, node: :app@host)
   end

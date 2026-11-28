@@ -99,9 +99,9 @@ defmodule Beamdash.Milestone4Test do
 
     test "the index is built once and reused", ctx do
       assert :ok = CallGraph.index(ctx.node)
-      {:ok, pid} = Target.rpc(ctx.node, :erlang, :whereis, [:erlyberly_xref])
+      {:ok, pid} = Target.rpc(ctx.node, :erlang, :whereis, [:beamdash_trace_agent_xref])
       assert :ok = CallGraph.index(ctx.node)
-      assert {:ok, ^pid} = Target.rpc(ctx.node, :erlang, :whereis, [:erlyberly_xref])
+      assert {:ok, ^pid} = Target.rpc(ctx.node, :erlang, :whereis, [:beamdash_trace_agent_xref])
     end
   end
 
@@ -124,20 +124,23 @@ defmodule Beamdash.Milestone4Test do
 
     test "disconnecting removes the handler from the target", ctx do
       assert {:ok, handlers} = Target.rpc(ctx.node, :gen_event, :which_handlers, [:error_logger])
-      assert :erlyberly in handlers
+      assert :beamdash_trace_agent in handlers
 
       :ok = Target.disconnect(ctx.target)
       {:ok, _} = Target.connect(Atom.to_string(ctx.node), Fixture.cookie(), ctx.target)
       # reconnecting installs exactly one fresh handler; the old one may take a moment to go
-      assert eventually(fn -> erlyberly_handlers(ctx.node) == 1 end)
+      assert eventually(fn -> beamdash_trace_agent_handlers(ctx.node) == 1 end)
     end
   end
 
   test "gen_server state prints as an Erlang record in Erlang syntax" do
     rec =
       Record.decode(
-        {:erlyberly_record, :st,
-         [{:erlyberly_record_field, :count, 1}, {:erlyberly_record_field, :name, :fixture}]}
+        {:beamdash_trace_agent_record, :st,
+         [
+           {:beamdash_trace_agent_record_field, :count, 1},
+           {:beamdash_trace_agent_record_field, :name, :fixture}
+         ]}
       )
 
     assert Beamdash.Format.term({:reply, :ok, rec}, :erlang) ==
@@ -148,9 +151,9 @@ defmodule Beamdash.Milestone4Test do
   end
 
   # nil while the node is not reachable yet, so the poll keeps waiting
-  defp erlyberly_handlers(node) do
+  defp beamdash_trace_agent_handlers(node) do
     case Target.rpc(node, :gen_event, :which_handlers, [:error_logger]) do
-      {:ok, handlers} -> Enum.count(handlers, &(&1 == :erlyberly))
+      {:ok, handlers} -> Enum.count(handlers, &(&1 == :beamdash_trace_agent))
       {:error, _} -> nil
     end
   end

@@ -133,14 +133,29 @@ defmodule BeamdashWeb.LogsTable do
 
   attr :term_view, :atom, default: :pretty
 
+  attr :origins, :map,
+    default: nil,
+    doc: "node colours, when lines from several nodes show: each row names its origin"
+
   def table(assigns) do
     ~H"""
-    <div class="log logs-table" role="table" aria-label="Log lines" tabindex="0">
+    <div
+      id="logs-table"
+      class="log logs-table"
+      role="table"
+      aria-label="Log lines"
+      tabindex="0"
+      phx-hook="ColumnResize"
+    >
       <div class="log-cols logs-cols log-head" role="row">
-        <span role="columnheader">Time (UTC)</span>
-        <span role="columnheader">Level</span>
-        <span role="columnheader">Process</span>
-        <span role="columnheader">Where</span>
+        <span role="columnheader">Time (UTC)<span
+          class="logs-col-grip"
+          data-col="0"
+          aria-hidden="true"
+        ></span></span>
+        <span role="columnheader">Level<span class="logs-col-grip" data-col="1" aria-hidden="true"></span></span>
+        <span role="columnheader">Process<span class="logs-col-grip" data-col="2" aria-hidden="true"></span></span>
+        <span role="columnheader">Where<span class="logs-col-grip" data-col="3" aria-hidden="true"></span></span>
         <span role="columnheader">Message</span>
         <span role="columnheader"><span class="sr-only">Actions</span></span>
       </div>
@@ -163,13 +178,16 @@ defmodule BeamdashWeb.LogsTable do
             phx-value-entry={row.entry.id}
             title={row_title(row)}
           >
-            <span class="mono" role="cell" title={first_at(row)}>{time(row.entry.at)}</span>
+            <span class="mono" role="cell" title={first_at(row)}>
+              {time(row.entry.at)}
+            </span>
             <span role="cell"><.level level={row.entry.level} /></span>
             <span class="mono" role="cell"><.pid pid={row.entry.pid} node={@node} /></span>
             <span class="mono" role="cell">{row.entry.where}</span>
             <span class="logs-msg" role="cell" title={row.entry.message}>
               {highlighted(first_line(row.entry.message), @filter)}
             </span>
+            <.origin :if={@origins} node={row.entry.node} colors={@origins} />
             <span class="logs-actions" role="cell">
               <%= if row.count > 1 do %>
                 <span class="count-badge" title={"#{row.count} similar lines"}>×{row.count}</span>
@@ -248,11 +266,14 @@ defmodule BeamdashWeb.LogsTable do
                 phx-value-id={e.id}
                 phx-value-row={row.id}
               >
-                <span class="mono" role="cell">{time(e.at)}</span>
+                <span class="mono" role="cell">
+                  {time(e.at)}
+                </span>
                 <span role="cell"><.level level={e.level} /></span>
                 <span class="mono" role="cell"><.pid pid={e.pid} node={@node} /></span>
                 <span class="mono" role="cell">{e.where}</span>
                 <span class="logs-line-msg" role="cell">{masked(spans)}</span>
+                <.origin :if={@origins} node={e.node} colors={@origins} />
                 <span role="cell"></span>
               </div>
               <.details :if={e.id in row.open} entry={e} node={@node} term_view={@term_view} />
@@ -261,6 +282,32 @@ defmodule BeamdashWeb.LogsTable do
         </div>
       </div>
     </div>
+    """
+  end
+
+  # the first six nodes have fixed colours in the stylesheet; later ones get a hue
+  @doc false
+  def origin_class(index) when is_integer(index) and index < 6, do: "origin-#{index}"
+  def origin_class(_index), do: nil
+
+  @doc false
+  def origin_style(index) when is_integer(index) and index >= 6,
+    do: "--origin: hsl(#{rem(index * 137, 360)}, 55%, 45%)"
+
+  def origin_style(_index), do: nil
+
+  attr :node, :atom, default: nil
+  attr :colors, :map, required: true
+
+  defp origin(assigns) do
+    ~H"""
+    <span
+      class={["logs-origin", origin_class(@colors[@node])]}
+      style={origin_style(@colors[@node])}
+      title="The node this line came from"
+    >
+      {if @node, do: Atom.to_string(@node), else: "not connected"}
+    </span>
     """
   end
 

@@ -143,6 +143,83 @@ defmodule Beamdash.KubectlTest do
     end
   end
 
+  describe "image_repository/1" do
+    test "drops the tag and the digest" do
+      assert Kubectl.image_repository("registry:5000/team/api:1.4.2") == "registry:5000/team/api"
+
+      assert Kubectl.image_repository("registry:5000/team/api@sha256:abc") ==
+               "registry:5000/team/api"
+
+      assert Kubectl.image_repository("registry:5000/team/api:1.4.2@sha256:abc") ==
+               "registry:5000/team/api"
+    end
+
+    test "keeps a registry port and a bare image" do
+      assert Kubectl.image_repository("registry:5000/app") == "registry:5000/app"
+      assert Kubectl.image_repository("nginx") == "nginx"
+      assert Kubectl.image_repository("nginx:1.25") == "nginx"
+    end
+  end
+
+  describe "pod_image/5" do
+    test "reads the named container's image, passing kubeconfig and namespace" do
+      exec = fn args ->
+        send(self(), {:args, args})
+        {"registry:5000/team/api:1.4.2\n", 0}
+      end
+
+      assert {:ok, "registry:5000/team/api:1.4.2"} =
+               Kubectl.pod_image("/kube/prod.yaml", "pace", "api-0", "api", exec)
+
+      assert_received {:args, args}
+
+      assert [
+               "--kubeconfig",
+               "/kube/prod.yaml",
+               "-n",
+               "pace",
+               "get",
+               "pod",
+               "api-0",
+               "-o",
+               jsonpath
+             ] =
+               args
+
+      assert jsonpath == ~s|jsonpath={.spec.containers[?(@.name=="api")].image}|
+    end
+
+    test "a single-container pod reads the only container" do
+      exec = fn args ->
+        assert List.last(args) == "jsonpath={.spec.containers[*].image}"
+        {"api:1\n", 0}
+      end
+
+      assert {:ok, "api:1"} = Kubectl.pod_image(nil, "pace", "api-0", nil, exec)
+    end
+
+    test "a non-zero exit is an image lookup error with the kubectl output" do
+      exec = fn _args -> {"Error from server (NotFound)\n", 1} end
+
+      assert {:error, {:image_lookup_failed, {1, "Error from server (NotFound)"}}} =
+               Kubectl.pod_image(nil, "pace", "api-0", nil, exec)
+    end
+
+    test "an empty image (no container matched) is an image lookup error" do
+      exec = fn _args -> {"\n", 0} end
+
+      assert {:error, {:image_lookup_failed, :no_image}} =
+               Kubectl.pod_image(nil, "pace", "api-0", "gone", exec)
+    end
+
+    test "a raised exec is an image lookup error" do
+      exec = fn _args -> raise "kubectl missing" end
+
+      assert {:error, {:image_lookup_failed, {:error, %RuntimeError{}}}} =
+               Kubectl.pod_image(nil, "pace", "api-0", nil, exec)
+    end
+  end
+
   describe "list_namespaces/2" do
     test "parses a jsonpath namespace list" do
       exec = fn args ->

@@ -20,9 +20,10 @@ defmodule Beamdash.Insights.Suspects do
   @top 10
 
   @doc """
-  `analyze(rows)` takes snapshot rows from `Beamdash.Store` (`at`, `pid`,
-  `data`) and returns `%{rows, flagged, suspects}`: `rows` is how many were
-  compared, `flagged` maps `{at, pid}` to the score of each suspect row, and
+  `analyze(rows)` takes snapshot rows from `Beamdash.Store` (`node`, `at`,
+  `pid`, `data`) and returns `%{rows, flagged, suspects}`: `rows` is how many
+  were compared, `flagged` maps `{node, at, pid}` to the score of each suspect
+  row, and
   `suspects` lists up to #{@top} processes, most flagged snapshots first, each
   as `%{pid, name, snapshots, score, feature, memory, queue, rate}`.
   """
@@ -43,7 +44,12 @@ defmodule Beamdash.Insights.Suspects do
 
     labels = Nx.to_flat_list(model.labels)
     scored = score(Enum.zip([rows, points, labels]))
-    flagged = for {row, s} <- scored, s.score >= @threshold, into: %{}, do: {{row.at, row.pid}, s}
+
+    flagged =
+      for {row, s} <- scored,
+          s.score >= @threshold,
+          into: %{},
+          do: {{row.node, row.at, row.pid}, s}
 
     %{rows: length(rows), flagged: flagged, suspects: suspects(scored, flagged)}
   end
@@ -105,7 +111,7 @@ defmodule Beamdash.Insights.Suspects do
 
   defp suspects(scored, flagged) do
     scored
-    |> Enum.filter(fn {row, _} -> Map.has_key?(flagged, {row.at, row.pid}) end)
+    |> Enum.filter(fn {row, _} -> Map.has_key?(flagged, {row.node, row.at, row.pid}) end)
     |> Enum.group_by(fn {row, _} -> row.pid end)
     |> Enum.map(fn {pid, items} ->
       {worst, s} = Enum.max_by(items, fn {_, s} -> s.score end)

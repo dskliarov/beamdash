@@ -64,6 +64,85 @@ defmodule BeamdashWeb.Layouts do
 
   defp saved_meta(_entry), do: "direct"
 
+  defp shown_connections(%{connections: connections, server: server} = conn) do
+    if conn[:only_selected],
+      do: Enum.filter(connections, &(&1.server == server)),
+      else: connections
+  end
+
+  attr :target, :map, required: true, doc: "a Kubernetes pod: cluster, namespace and pod name"
+
+  defp kube_labels(assigns) do
+    ~H"""
+    <span class="kube-target">
+      <span class="kube-part">
+        <span class="kube-key">cluster</span>
+        <strong>{@target.cluster}</strong>
+      </span>
+      <span class="kube-part">
+        <span class="kube-key">namespace</span>
+        <strong>{@target.namespace}</strong>
+      </span>
+      <span class="kube-part">
+        <span class="kube-key">pod</span>
+        <strong>{@target.pod}</strong>
+      </span>
+    </span>
+    """
+  end
+
+  attr :label, :string, required: true, doc: "the node the button disconnects, for its label"
+
+  attr :server, :string,
+    default: nil,
+    doc: "the connection's key; nil disconnects the session's own"
+
+  defp disconnect_x(assigns) do
+    ~H"""
+    <button
+      type="button"
+      class="icon-btn conn-disconnect"
+      phx-click="disconnect"
+      phx-value-server={@server}
+      aria-label={"Disconnect #{@label}"}
+      title="Disconnect"
+    >
+      <svg viewBox="0 0 16 16" width="10" height="10" aria-hidden="true">
+        <path
+          d="M3 3l10 10M13 3L3 13"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="2"
+          stroke-linecap="round"
+        />
+      </svg>
+    </button>
+    """
+  end
+
+  # saved is most recent first, so the groups are too
+  defp saved_groups(saved) do
+    groups = Enum.group_by(saved, &saved_app/1)
+    saved |> Enum.map(&saved_app/1) |> Enum.uniq() |> Enum.map(&{&1, groups[&1]})
+  end
+
+  defp saved_app(entry), do: entry["app"] || ""
+
+  defp unconnected_saved(conn) do
+    connected =
+      for c <- Map.get(conn, :connections, []),
+          c.status == :connected,
+          into: MapSet.new(),
+          do: to_string(c.node)
+
+    Enum.reject(Map.get(conn, :saved, []), &MapSet.member?(connected, &1["node"]))
+  end
+
+  defp selected_saved?(conn) do
+    selected = Map.get(conn, :selected, [])
+    Enum.any?(unconnected_saved(conn), &(&1["id"] in selected))
+  end
+
   attr :progress, :map, required: true, doc: "a step: label, command (or nil), elapsed seconds"
 
   defp progress_line(assigns) do
@@ -93,7 +172,12 @@ defmodule BeamdashWeb.Layouts do
     ~H"""
     <header class="bar">
       <h1>beamdash</h1>
-      <.nav active={@active} syntax={@syntax} plugins={(@conn && @conn[:plugins]) || []} />
+      <.nav
+        active={@active}
+        syntax={@syntax}
+        plugins={(@conn && @conn[:plugins]) || []}
+        compare={multiple_connections?(@conn)}
+      />
 
       <div :if={@conn} class="conn-line">
         <div
@@ -113,78 +197,131 @@ defmodule BeamdashWeb.Layouts do
           </span>
           <button type="button" class="secondary small-btn" phx-click="stop_reconnect">Stop</button>
         </div>
-        <div :if={@conn.status != :connected} class="connect-panel">
-          <div class="seg method-switch" role="group" aria-label="Connection method">
+        <div
+          :if={@conn.status != :connected or (@conn[:multiple] && @conn[:panel])}
+          class={["connect-panel", @conn.status == :connected && "below"]}
+        >
+          <button
+            :if={@conn.status == :connected}
+            type="button"
+            class="icon-btn conn-close"
+            phx-click="toggle_panel"
+            aria-label="Close connect"
+            title="Close"
+          >
+            ×
+          </button>
+          <div class="method-row">
+            <div class="seg method-switch" role="group" aria-label="Connection method">
+              <button
+                type="button"
+                class={["seg-btn", Map.get(@conn, :method, :direct) == :direct && "active"]}
+                aria-pressed={to_string(Map.get(@conn, :method, :direct) == :direct)}
+                phx-click="set_conn_method"
+                phx-value-method="direct"
+              >
+                Direct
+              </button>
+              <button
+                type="button"
+                class={["seg-btn", Map.get(@conn, :method, :direct) == :kubectl && "active"]}
+                aria-pressed={to_string(Map.get(@conn, :method, :direct) == :kubectl)}
+                phx-click="set_conn_method"
+                phx-value-method="kubectl"
+              >
+                {kube_method_label()}
+              </button>
+              <button
+                type="button"
+                class={["seg-btn", Map.get(@conn, :method, :direct) == :saved && "active"]}
+                aria-pressed={to_string(Map.get(@conn, :method, :direct) == :saved)}
+                phx-click="set_conn_method"
+                phx-value-method="saved"
+              >
+                Saved
+              </button>
+            </div>
             <button
-              type="button"
-              class={["seg-btn", Map.get(@conn, :method, :direct) == :direct && "active"]}
-              aria-pressed={to_string(Map.get(@conn, :method, :direct) == :direct)}
-              phx-click="set_conn_method"
-              phx-value-method="direct"
+              :if={
+                Map.get(@conn, :method, :direct) == :saved && @conn[:multiple] &&
+                  selected_saved?(@conn)
+              }
+              type="submit"
+              form="saved-batch"
+              id="connect-selected"
+              class="small-btn"
+              disabled={not is_nil(@conn[:connecting])}
             >
-              Direct
-            </button>
-            <button
-              type="button"
-              class={["seg-btn", Map.get(@conn, :method, :direct) == :kubectl && "active"]}
-              aria-pressed={to_string(Map.get(@conn, :method, :direct) == :kubectl)}
-              phx-click="set_conn_method"
-              phx-value-method="kubectl"
-            >
-              {kube_method_label()}
-            </button>
-            <button
-              type="button"
-              class={["seg-btn", Map.get(@conn, :method, :direct) == :saved && "active"]}
-              aria-pressed={to_string(Map.get(@conn, :method, :direct) == :saved)}
-              phx-click="set_conn_method"
-              phx-value-method="saved"
-            >
-              Saved
+              Connect selected
             </button>
           </div>
 
           <div :if={Map.get(@conn, :method, :direct) == :saved} class="conn-rows">
-            <ul
-              :if={Map.get(@conn, :saved, []) != []}
-              id="saved-connections"
-              class="saved-connections"
-              aria-label="Saved connections"
+            <% available = unconnected_saved(@conn) %>
+            <form
+              :if={available != []}
+              id="saved-batch"
+              phx-change="saved_selection"
+              phx-submit="connect_saved_many"
             >
-              <li :for={entry <- @conn.saved} class="saved-connection">
-                <button
-                  type="button"
-                  class="secondary small-btn saved-connect"
-                  phx-click="connect_saved"
-                  phx-value-id={entry["id"]}
-                  disabled={not is_nil(@conn[:connecting])}
-                >
-                  <span class="saved-name">{saved_title(entry)}</span>
-                  <span class="saved-meta">{saved_meta(entry)}</span>
-                </button>
-                <button
-                  type="button"
-                  class="icon-btn delete-saved"
-                  phx-click="forget_saved"
-                  phx-value-id={entry["id"]}
-                  aria-label={"Delete #{saved_title(entry)} (#{saved_meta(entry)})"}
-                  title="Delete"
-                >
-                  <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
-                    <path
-                      d="M3 4h10M6.5 4V2.5h3V4M4.5 4l.6 9.5h5.8l.6-9.5"
-                      fill="none"
-                      stroke="currentColor"
-                      stroke-width="1.4"
-                      stroke-linecap="round"
-                      stroke-linejoin="round"
-                    />
-                  </svg>
-                </button>
-              </li>
-            </ul>
+              <div id="saved-connections" class="saved-connections" aria-label="Saved connections">
+                <section :for={{app, entries} <- saved_groups(available)} class="saved-group">
+                  <h3 class="saved-app muted small">
+                    {if app == "", do: "Unknown application", else: app}
+                  </h3>
+                  <ul class="saved-group-list">
+                    <li :for={entry <- entries} class="saved-connection">
+                      <input
+                        :if={@conn[:multiple]}
+                        type="checkbox"
+                        name="ids[]"
+                        value={entry["id"]}
+                        checked={entry["id"] in Map.get(@conn, :selected, [])}
+                        disabled={not is_nil(@conn[:connecting])}
+                        aria-label={"Connect #{saved_title(entry)} (#{saved_meta(entry)}) with the others"}
+                      />
+                      <button
+                        type="button"
+                        class="secondary small-btn saved-connect"
+                        phx-click="connect_saved"
+                        phx-value-id={entry["id"]}
+                        disabled={not is_nil(@conn[:connecting])}
+                      >
+                        <span class="saved-name">{saved_title(entry)}</span>
+                        <span class="saved-meta">{saved_meta(entry)}</span>
+                      </button>
+                      <button
+                        type="button"
+                        class="icon-btn delete-saved"
+                        phx-click="forget_saved"
+                        phx-value-id={entry["id"]}
+                        aria-label={"Delete #{saved_title(entry)} (#{saved_meta(entry)})"}
+                        title="Delete"
+                      >
+                        <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
+                          <path
+                            d="M3 4h10M6.5 4V2.5h3V4M4.5 4l.6 9.5h5.8l.6-9.5"
+                            fill="none"
+                            stroke="currentColor"
+                            stroke-width="1.4"
+                            stroke-linecap="round"
+                            stroke-linejoin="round"
+                          />
+                        </svg>
+                      </button>
+                    </li>
+                  </ul>
+                </section>
+              </div>
+            </form>
             <p :if={Map.get(@conn, :saved, []) == []} class="conn-hint muted small">
               No saved connections yet. A connection that works is kept here.
+            </p>
+            <p
+              :if={Map.get(@conn, :saved, []) != [] and available == []}
+              class="conn-hint muted small"
+            >
+              Every saved connection is already connected.
             </p>
           </div>
 
@@ -371,43 +508,119 @@ defmodule BeamdashWeb.Layouts do
           </div>
         </div>
 
-        <div :if={@conn.status == :connected} class="connected">
+        <div
+          :if={@conn.status == :connected or length(Map.get(@conn, :connections, [])) > 1}
+          class="connected"
+        >
           <p :if={@working} id="working" class="working muted small" role="status" aria-live="polite">
             {@working}…
           </p>
-          <span class="dot" aria-hidden="true"></span>
-          <span class="connected-name">
-            <span :if={@conn[:kube_target]} class="kube-target">
-              <span class="kube-part">
-                <span class="kube-key">cluster</span>
-                <strong>{@conn.kube_target.cluster}</strong>
-              </span>
-              <span class="kube-part">
-                <span class="kube-key">namespace</span>
-                <strong>{@conn.kube_target.namespace}</strong>
-              </span>
-              <span class="kube-part">
-                <span class="kube-key">pod</span>
-                <strong>{@conn.kube_target.pod}</strong>
-              </span>
+          <span
+            :if={length(Map.get(@conn, :connections, [])) <= 1}
+            class="dot"
+            aria-hidden="true"
+          ></span>
+          <div :if={length(Map.get(@conn, :connections, [])) <= 1} class="connected-single">
+            <span class="connected-name">
+              <.kube_labels :if={@conn[:kube_target]} target={@conn.kube_target} />
+              <strong>{@conn.node}</strong>
+              <.disconnect_x label={@conn.node} />
             </span>
-            <strong>{@conn.node}</strong>
-          </span>
-          <button phx-click="disconnect" class="secondary">Disconnect</button>
+            <div :if={@conn[:multiple]} class="conn-actions">
+              <button
+                type="button"
+                class="secondary small-btn conn-action"
+                phx-click="toggle_panel"
+                aria-expanded={to_string(@conn[:panel] == true)}
+              >
+                {if @conn[:panel], do: "Hide connect", else: "Add connection"}
+              </button>
+            </div>
+          </div>
+          <ul
+            :if={length(Map.get(@conn, :connections, [])) > 1}
+            id="connected-nodes"
+            class="connected-nodes"
+            aria-label="Connected nodes"
+          >
+            <li
+              :for={c <- shown_connections(@conn)}
+              class={["connected-node", c.server == @conn.server && "selected"]}
+            >
+              <a
+                href={select_href(c.node)}
+                class="connected-label connected-select"
+                aria-current={if c.server == @conn.server, do: "true"}
+              >
+                <span class={["dot", c.status != :connected && "dot-wait"]} aria-hidden="true"></span>
+                <span class="connected-name">
+                  <.kube_labels :if={c[:kube_target]} target={c.kube_target} />
+                  <strong>{c.node}</strong>
+                </span>
+              </a>
+              <.disconnect_x label={c.node} server={Beamdash.Connections.key(c.server)} />
+            </li>
+            <li :if={@conn[:multiple]} class="connected-node connected-add">
+              <div class="conn-actions">
+                <button
+                  type="button"
+                  class="secondary small-btn conn-action"
+                  phx-click="toggle_panel"
+                  aria-expanded={to_string(@conn[:panel] == true)}
+                >
+                  {if @conn[:panel], do: "Hide connect", else: "Add connection"}
+                </button>
+                <button
+                  type="button"
+                  class="secondary small-btn conn-action"
+                  phx-click="toggle_only_selected"
+                  aria-pressed={to_string(@conn[:only_selected] == true)}
+                >
+                  {if @conn[:only_selected], do: "Show all", else: "Show selected only"}
+                </button>
+                <button
+                  type="button"
+                  class="secondary small-btn conn-action"
+                  phx-click="disconnect_all"
+                >
+                  Disconnect all
+                </button>
+              </div>
+            </li>
+          </ul>
         </div>
       </div>
     </header>
     <div
-      :if={@conn && @conn.status != :connected && (@conn[:connecting] || @conn[:kube_progress])}
+      :if={
+        @conn &&
+          (@conn[:connecting] ||
+             (@conn.status != :connected && @conn[:kube_progress]) ||
+             (@conn[:connecting_others] || %{}) != %{})
+      }
       class="conn-progress-slot"
     >
       <div class="conn-progress-overlay">
-        <.progress_line :if={@conn[:connecting]} progress={@conn.connecting} />
-        <.progress_line :if={@conn[:kube_progress]} progress={@conn.kube_progress} />
+        <.progress_line :if={@conn[:connecting]} progress={@conn[:connecting]} />
+        <.progress_line
+          :if={@conn.status != :connected && @conn[:kube_progress]}
+          progress={@conn[:kube_progress]}
+        />
+        <.progress_line
+          :for={{_server, step} <- @conn[:connecting_others] || %{}}
+          progress={step}
+        />
       </div>
     </div>
     <p :if={@conn && @conn.error} class="error conn-error" role="alert">{@conn.error}</p>
-    <div :if={(@ask && @ask_on) || (@conn && @conn.status == :connected)} class="subbar">
+    <p :if={@conn && @conn[:notice]} class="muted small conn-notice" role="status">{@conn.notice}</p>
+    <div
+      :if={
+        (@ask && @ask_on) || (@conn && @conn.status == :connected) ||
+          (@conn && length(Map.get(@conn, :connections, [])) > 1)
+      }
+      class="subbar"
+    >
       <div :if={@ask && @ask_on} class="ask">
         <form id="ask-form" phx-submit="ask" role="search">
           <input
@@ -435,18 +648,23 @@ defmodule BeamdashWeb.Layouts do
           </button>
         </div>
       </div>
-      <div :if={@conn && @conn.status == :connected} class="node-info muted small">
-        <%= if @conn.info do %>
-          <span>OTP {@conn.info.otp_release}</span>
-          <span>{Beamdash.Format.number(@conn.info.process_count)} processes</span>
-          <span>{Beamdash.Format.bytes(@conn.info.memory_total)} memory</span>
-        <% else %>
-          <span>Reading node info…</span>
-        <% end %>
+      <div class="node-meta">
+        <div :if={@conn && @conn.status == :connected} class="node-info muted small">
+          <%= if @conn.info do %>
+            <span>OTP {@conn.info.otp_release}</span>
+            <span>{Beamdash.Format.number(@conn.info.process_count)} processes</span>
+            <span>{Beamdash.Format.bytes(@conn.info.memory_total)} memory</span>
+          <% else %>
+            <span>Reading node info…</span>
+          <% end %>
+        </div>
       </div>
     </div>
     """
   end
+
+  defp select_href(node),
+    do: "/connections/select?" <> URI.encode_query(%{"node" => to_string(node)})
 
   # The tabs in three groups: the node, its processes, tracing. Each: path,
   # active key, short label, full name, shortcut key (g then the key).
@@ -460,6 +678,10 @@ defmodule BeamdashWeb.Layouts do
        {"/modules", :modules, "Modules", "Modules", "u"},
        {"/console", :console, "Console", "Remote console", "e"},
        {"/memory", :memory, "Memory", "Memory", "m"},
+       {"/compare", :compare, "Compare", "Compare processes and memory of up to three nodes",
+        "k"},
+       {"/kubernetes", :kubernetes, "Kubernetes",
+        "Pod, containers, images and events of the connected nodes", "y"},
        {"/logs", :logs, "Logs", "Logs", "o"}
      ]},
     {"Processes",
@@ -482,13 +704,18 @@ defmodule BeamdashWeb.Layouts do
   @doc "The tab groups: `[{group, [{path, key, label, title, shortcut}]}]`."
   def tab_groups, do: @groups
 
-  defp visible_groups do
-    if Beamdash.Settings.snapshots_enabled?() do
-      @groups
-    else
-      for {group, tabs} <- @groups, do: {group, Enum.reject(tabs, &(elem(&1, 1) == :snapshots))}
-    end
+  defp multiple_connections?(conn), do: length((conn && conn[:connections]) || []) > 1
+
+  defp visible_groups(compare?) do
+    snapshots? = Beamdash.Settings.snapshots_enabled?()
+
+    for {group, tabs} <- @groups,
+        do: {group, Enum.filter(tabs, &visible_tab?(elem(&1, 1), snapshots?, compare?))}
   end
+
+  defp visible_tab?(:snapshots, snapshots?, _compare?), do: snapshots?
+  defp visible_tab?(:compare, _snapshots?, compare?), do: compare?
+  defp visible_tab?(_key, _snapshots?, _compare?), do: true
 
   attr :active, :any, required: true, doc: "a tab's key, or {:plugin, app, slug}"
   attr :syntax, :atom, required: true
@@ -496,6 +723,8 @@ defmodule BeamdashWeb.Layouts do
   attr :plugins, :list,
     default: [],
     doc: "the active plugins, `Beamdash.Plugins.active/1`: `[%{app, name, pages}]`"
+
+  attr :compare, :boolean, default: false, doc: "whether the Compare tab is shown"
 
   @doc """
   The tabs, grouped (node, processes, tracing) with short labels; the full
@@ -509,7 +738,7 @@ defmodule BeamdashWeb.Layouts do
   More and has no shortcut.
   """
   def nav(assigns) do
-    assigns = assign(assigns, groups: visible_groups())
+    assigns = assign(assigns, groups: visible_groups(assigns.compare))
 
     ~H"""
     <nav class="tabs" id="main-nav" phx-hook="NavOverflow" aria-label="Main">

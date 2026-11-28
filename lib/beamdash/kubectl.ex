@@ -146,6 +146,55 @@ defmodule Beamdash.Kubectl do
   defp dns_namespace(_), do: nil
 
   @doc """
+  The image of `container` in `pod`, or of the only container when `container`
+  is nil. The image is what identifies an application across pods.
+  """
+  @spec pod_image(String.t() | nil, String.t(), String.t(), String.t() | nil, (list(String.t()) ->
+                                                                                 {binary(),
+                                                                                  integer()})) ::
+          {:ok, String.t()} | {:error, term()}
+  def pod_image(kubeconfig, namespace, pod, container, exec \\ &run_kubectl/1) do
+    selector = if container, do: ~s|[?(@.name=="#{container}")]|, else: "[*]"
+
+    args =
+      kubeconfig_args(kubeconfig) ++
+        [
+          "-n",
+          namespace,
+          "get",
+          "pod",
+          pod,
+          "-o",
+          "jsonpath={.spec.containers#{selector}.image}"
+        ]
+
+    case exec.(args) do
+      {output, 0} ->
+        case String.trim(output) do
+          "" -> {:error, {:image_lookup_failed, :no_image}}
+          image -> {:ok, image}
+        end
+
+      {output, status} ->
+        {:error, {:image_lookup_failed, {status, String.trim(output)}}}
+    end
+  catch
+    kind, reason -> {:error, {:image_lookup_failed, {kind, reason}}}
+  end
+
+  @doc """
+  The repository of an image: the image without its digest and its tag. A
+  colon only starts a tag after the last `/`, so a registry port is kept.
+  """
+  @spec image_repository(String.t()) :: String.t()
+  def image_repository(image) do
+    [name | _] = String.split(image, "@", parts: 2)
+    {path, [last]} = name |> String.split("/") |> Enum.split(-1)
+    [repo | _] = String.split(last, ":", parts: 2)
+    Enum.join(path ++ [repo], "/")
+  end
+
+  @doc """
   Namespaces in the cluster `kubeconfig` points at, offered as suggestions
   in the namespace field (a cluster whose RBAC forbids listing them gives
   an error; the field then just takes the typed name).
@@ -241,6 +290,168 @@ defmodule Beamdash.Kubectl do
   catch
     kind, reason -> {:error, {:container_list_failed, {kind, reason}}}
   end
+
+  @doc """
+  What kubectl reports about `pod`: its phase, node, IP, owner and conditions,
+  each container with its image, the image digest it runs, readiness,
+  restarts, state and resources, and the events `kubectl describe` lists for
+  the pod, newest first.
+  """
+  @spec pod_info(
+          String.t() | nil,
+          String.t(),
+          String.t(),
+          (list(String.t()) -> {binary(), integer()})
+        ) :: {:ok, map()} | {:error, term()}
+  def pod_info(kubeconfig, namespace, pod, exec \\ &run_kubectl/1) do
+    with {:ok, base} <- cluster_args(kubeconfig, exec),
+         {:ok, pod_json} <-
+           get_json(exec, base ++ ["get", "pod", pod, "-n", namespace, "-o", "json"], :pod_failed),
+         {:ok, events_json} <-
+           get_json(
+             exec,
+             base ++
+               [
+                 "get",
+                 "events",
+                 "-n",
+                 namespace,
+                 "--field-selector",
+                 "involvedObject.kind=Pod,involvedObject.name=#{pod}",
+                 "-o",
+                 "json"
+               ],
+             :events_failed
+           ) do
+      {:ok, pod_summary(pod_json, events_json)}
+    end
+  catch
+    kind, reason -> {:error, {:pod_failed, {kind, reason}}}
+  end
+
+  defp get_json(exec, args, tag) do
+    case exec.(args) do
+      {output, 0} ->
+        case Jason.decode(output) do
+          {:ok, json} -> {:ok, json}
+          {:error, _} -> {:error, {tag, :invalid_json}}
+        end
+
+      {output, status} ->
+        {:error, {tag, {status, String.trim(output)}}}
+    end
+  end
+
+  defp pod_summary(pod, events_json) do
+    status = pod["status"] || %{}
+    spec = pod["spec"] || %{}
+    statuses = Map.new(status["containerStatuses"] || [], &{&1["name"], &1})
+    owner = List.first(get_in(pod, ["metadata", "ownerReferences"]) || [])
+
+    events =
+      events_json
+      |> Map.get("items", [])
+      |> Enum.map(&event/1)
+      |> Enum.sort_by(& &1.last_seen, :desc)
+
+    %{
+      phase: status["phase"],
+      node: spec["nodeName"],
+      ip: status["podIP"],
+      host_ip: status["hostIP"],
+      host_network: spec["hostNetwork"] == true,
+      started: status["startTime"],
+      owner: owner && "#{owner["kind"]}/#{owner["name"]}",
+      conditions:
+        for(
+          c <- status["conditions"] || [],
+          do: %{type: c["type"], status: c["status"], reason: c["reason"]}
+        ),
+      containers:
+        for(
+          c <- spec["containers"] || [],
+          do: container(c, Map.get(statuses, c["name"], %{}), events)
+        ),
+      events: events
+    }
+  end
+
+  defp container(spec, status, events) do
+    %{
+      name: spec["name"],
+      image: spec["image"],
+      image_id: status["imageID"],
+      ready: status["ready"] == true,
+      restarts: status["restartCount"] || 0,
+      state: state(status["state"]),
+      requests: get_in(spec, ["resources", "requests"]) || %{},
+      limits: get_in(spec, ["resources", "limits"]) || %{},
+      ports: for(p <- spec["ports"] || [], do: port(p)),
+      liveness: probe(spec["livenessProbe"], "Liveness", spec["name"], events),
+      readiness: probe(spec["readinessProbe"], "Readiness", spec["name"], events)
+    }
+  end
+
+  defp port(p) do
+    %{
+      name: p["name"],
+      container_port: p["containerPort"],
+      host_port: p["hostPort"],
+      protocol: p["protocol"] || "TCP"
+    }
+  end
+
+  defp probe(nil, _kind, _container, _events), do: nil
+
+  defp probe(p, kind, container, events) do
+    %{
+      action: action(p),
+      initial_delay: p["initialDelaySeconds"] || 0,
+      period: p["periodSeconds"] || 10,
+      failure_threshold: p["failureThreshold"] || 3,
+      failures: probe_failures(events, container, kind)
+    }
+  end
+
+  defp action(%{"httpGet" => h}), do: "GET #{h["path"] || "/"} :#{h["port"]}"
+  defp action(%{"tcpSocket" => t}), do: "TCP :#{t["port"]}"
+  defp action(%{"grpc" => g}), do: "gRPC :#{g["port"]}"
+  defp action(%{"exec" => e}), do: "exec #{Enum.join(e["command"] || [], " ")}"
+  defp action(_), do: "—"
+
+  defp probe_failures(events, container, kind) do
+    prefix = "#{kind} probe failed"
+
+    events
+    |> Enum.filter(
+      &(&1.container == container and &1.reason == "Unhealthy" and
+          String.starts_with?(&1.message || "", prefix))
+    )
+    |> Enum.map(& &1.count)
+    |> Enum.sum()
+  end
+
+  defp state(%{"running" => %{"startedAt" => at}}), do: {:running, at}
+  defp state(%{"waiting" => waiting}), do: {:waiting, waiting["reason"] || ""}
+
+  defp state(%{"terminated" => terminated}),
+    do: {:terminated, terminated["reason"] || "", terminated["exitCode"]}
+
+  defp state(_), do: {:unknown, nil}
+
+  defp event(e) do
+    %{
+      type: e["type"],
+      reason: e["reason"],
+      message: e["message"],
+      count: e["count"] || 1,
+      container: container_of(get_in(e, ["involvedObject", "fieldPath"])),
+      last_seen: e["lastTimestamp"] || e["eventTime"] || e["firstTimestamp"]
+    }
+  end
+
+  defp container_of("spec.containers{" <> rest), do: String.trim_trailing(rest, "}")
+  defp container_of(_), do: nil
 
   @doc """
   Absolute paths of release binaries in `pod`'s `container`: the executables

@@ -507,9 +507,10 @@ defmodule Beamdash.ConsoleTest do
   end
 
   test "renders successful results as styled code and escapes their contents" do
-    socket = %Phoenix.LiveView.Socket{
-      private: %{lifecycle: %Phoenix.LiveView.Lifecycle{}, live_temp: %{}}
-    }
+    socket =
+      Beamdash.Test.Fixture.with_conn(%Phoenix.LiveView.Socket{
+        private: %{lifecycle: %Phoenix.LiveView.Lifecycle{}, live_temp: %{}}
+      })
 
     {:ok, socket} = BeamdashWeb.ConsoleLive.mount(%{}, %{}, socket)
 
@@ -559,9 +560,10 @@ defmodule Beamdash.ConsoleTest do
   end
 
   test "incomplete REPL input restores the draft and does not consume a prompt number" do
-    socket = %Phoenix.LiveView.Socket{
-      private: %{lifecycle: %Phoenix.LiveView.Lifecycle{}, live_temp: %{}}
-    }
+    socket =
+      Beamdash.Test.Fixture.with_conn(%Phoenix.LiveView.Socket{
+        private: %{lifecycle: %Phoenix.LiveView.Lifecycle{}, live_temp: %{}}
+      })
 
     {:ok, socket} = BeamdashWeb.ConsoleLive.mount(%{}, %{}, socket)
     ref = make_ref()
@@ -630,9 +632,10 @@ defmodule Beamdash.ConsoleTest do
   end
 
   test "console view shows the target and ignores results from an old session" do
-    socket = %Phoenix.LiveView.Socket{
-      private: %{lifecycle: %Phoenix.LiveView.Lifecycle{}, live_temp: %{}}
-    }
+    socket =
+      Beamdash.Test.Fixture.with_conn(%Phoenix.LiveView.Socket{
+        private: %{lifecycle: %Phoenix.LiveView.Lifecycle{}, live_temp: %{}}
+      })
 
     {:ok, socket} = BeamdashWeb.ConsoleLive.mount(%{}, %{}, socket)
 
@@ -669,9 +672,10 @@ defmodule Beamdash.ConsoleTest do
   test "console view records errors and retains history when the session resets" do
     ref = make_ref()
 
-    socket = %Phoenix.LiveView.Socket{
-      private: %{lifecycle: %Phoenix.LiveView.Lifecycle{}, live_temp: %{}}
-    }
+    socket =
+      Beamdash.Test.Fixture.with_conn(%Phoenix.LiveView.Socket{
+        private: %{lifecycle: %Phoenix.LiveView.Lifecycle{}, live_temp: %{}}
+      })
 
     {:ok, socket} = BeamdashWeb.ConsoleLive.mount(%{}, %{}, socket)
 

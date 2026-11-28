@@ -41,11 +41,13 @@ defmodule Beamdash.AnomalyMonitor do
 
   @impl true
   def init(opts) do
+    target = Keyword.get(opts, :target, Target)
+
     state =
       Map.merge(fresh(nil), %{
         closed: [],
         interval: Keyword.get(opts, :interval, @interval),
-        source: Map.merge(default_source(), Map.new(Keyword.get(opts, :source, %{}))),
+        source: Map.merge(default_source(target), Map.new(Keyword.get(opts, :source, %{}))),
         watchers: %{},
         timer: nil
       })
@@ -92,10 +94,10 @@ defmodule Beamdash.AnomalyMonitor do
     {:noreply, if(map_size(watchers) == 0, do: pause(state), else: state)}
   end
 
-  defp default_source do
+  defp default_source(target) do
     %{
-      status: &Target.status/0,
-      processes: &Target.processes/0,
+      status: fn -> Target.status(target) end,
+      processes: fn -> Target.processes(target) end,
       clock: fn -> {System.system_time(:millisecond), System.monotonic_time(:microsecond)} end
     }
   end

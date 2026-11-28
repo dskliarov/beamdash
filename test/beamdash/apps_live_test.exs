@@ -21,10 +21,11 @@ defmodule Beamdash.AppsLiveTest do
   end
 
   defp cold_socket(node) do
-    socket = %Phoenix.LiveView.Socket{
-      transport_pid: self(),
-      private: %{lifecycle: %Phoenix.LiveView.Lifecycle{}, live_temp: %{}}
-    }
+    socket =
+      Beamdash.Test.Fixture.with_conn(%Phoenix.LiveView.Socket{
+        transport_pid: self(),
+        private: %{lifecycle: %Phoenix.LiveView.Lifecycle{}, live_temp: %{}}
+      })
 
     Component.assign(socket,
       status: :connected,

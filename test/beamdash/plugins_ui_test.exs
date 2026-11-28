@@ -68,7 +68,7 @@ defmodule Beamdash.PluginsUiTest do
   end
 
   defp socket(view) do
-    %Socket{
+    Beamdash.Test.Fixture.with_conn(%Socket{
       id: "phx-test",
       endpoint: @endpoint,
       router: BeamdashWeb.Router,
@@ -76,7 +76,7 @@ defmodule Beamdash.PluginsUiTest do
       transport_pid: self(),
       host_uri: URI.parse("http://localhost:4000"),
       private: %{lifecycle: %Lifecycle{}, live_temp: %{}, root_view: view}
-    }
+    })
     |> Phoenix.Component.assign(:syntax, :erlang)
   end
 
@@ -720,7 +720,7 @@ defmodule Beamdash.PluginsUiTest do
   describe "connection hook" do
     test "keeps the active plugins and tells the page" do
       socket =
-        %Socket{view: SettingsLive}
+        Beamdash.Test.Fixture.with_conn(%Socket{view: SettingsLive})
         |> Phoenix.Component.assign(:conn, %{status: :disconnected, plugins: [:stale]})
         |> Phoenix.Component.assign(:plugins, [])
         |> Phoenix.Component.assign(:plugins_server, Beamdash.Plugins)

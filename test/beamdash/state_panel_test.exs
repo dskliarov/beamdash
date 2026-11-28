@@ -6,7 +6,7 @@ defmodule BeamdashWeb.StatePanelTest do
   alias BeamdashWeb.StatePanel
 
   defp panel(state) do
-    {:ok, socket} = StatePanel.mount(%Phoenix.LiveView.Socket{})
+    {:ok, socket} = StatePanel.mount(Beamdash.Test.Fixture.with_conn(%Phoenix.LiveView.Socket{}))
 
     %{
       socket

@@ -138,7 +138,7 @@ defmodule Beamdash.JevFeaturesTest do
 
       own = %{
         pid: :c.pid(0, 699, 0),
-        registered_name: :erlyberly_tcollector,
+        registered_name: :beamdash_trace_agent_tcollector,
         memory: 10 ** 9,
         message_queue_len: 9
       }
@@ -212,7 +212,7 @@ defmodule Beamdash.JevFeaturesTest do
 
     test "the hook navigates on a clear answer and lists options otherwise" do
       socket =
-        %Phoenix.LiveView.Socket{}
+        Beamdash.Test.Fixture.with_conn(%Phoenix.LiveView.Socket{})
         |> Phoenix.Component.assign(:ask, %{query: "q", busy: :ref, options: [], error: nil})
 
       assert {:halt, s} =
@@ -272,7 +272,10 @@ defmodule Beamdash.JevFeaturesTest do
   describe "pages" do
     test "Memory tab shows the health check and the view to open" do
       view = BeamdashWeb.MemoryLive
-      {:ok, socket} = view.mount(%{}, %{}, %Phoenix.LiveView.Socket{})
+
+      {:ok, socket} =
+        view.mount(%{}, %{}, Beamdash.Test.Fixture.with_conn(%Phoenix.LiveView.Socket{}))
+
       [binary | _] = MoreScenarios.memory()
       {:ok, advice} = MemoryAdvisor.analyze(binary.evidence, request: always("binary"))
 
@@ -320,7 +323,10 @@ defmodule Beamdash.JevFeaturesTest do
 
     test "Processes tab: triage bar, flags and links with sort and filter" do
       view = BeamdashWeb.HomeLive
-      {:ok, socket} = view.mount(%{}, %{}, %Phoenix.LiveView.Socket{})
+
+      {:ok, socket} =
+        view.mount(%{}, %{}, Beamdash.Test.Fixture.with_conn(%Phoenix.LiveView.Socket{}))
+
       pid = :c.pid(0, 777, 0)
 
       proc = %{
@@ -380,7 +386,10 @@ defmodule Beamdash.JevFeaturesTest do
 
     test "Seq trace page shows the pattern check with its basis" do
       view = BeamdashWeb.SeqLive
-      {:ok, socket} = view.mount(%{}, %{}, %Phoenix.LiveView.Socket{})
+
+      {:ok, socket} =
+        view.mount(%{}, %{}, Beamdash.Test.Fixture.with_conn(%Phoenix.LiveView.Socket{}))
+
       [storm | _] = MoreScenarios.seq()
       {:ok, advice} = SeqAdvisor.analyze(storm.evidence, request: always("request_storm"))
 

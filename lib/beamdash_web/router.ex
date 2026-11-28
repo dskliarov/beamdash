@@ -22,6 +22,8 @@ defmodule BeamdashWeb.Router do
   scope "/", BeamdashWeb do
     pipe_through :browser
 
+    get "/connections/select", ConnectionController, :select
+
     live_session :default,
       on_mount: [BeamdashWeb.Syntax, BeamdashWeb.Connection, BeamdashWeb.Ask] do
       live "/", HomeLive
@@ -32,6 +34,8 @@ defmodule BeamdashWeb.Router do
       live "/modules", ModulesLive
       live "/console", ConsoleLive
       live "/memory", MemoryLive
+      live "/compare", CompareLive
+      live "/kubernetes", KubernetesLive
       live "/logs", LogsLive
       live "/gc", GCLive
       live "/trace", TraceLive

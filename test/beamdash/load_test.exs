@@ -62,9 +62,10 @@ defmodule Beamdash.LoadTest do
       |> Load.add(sample(500, [{1, 100, 500}, {2, 0, 500}, {3, 500, 500}], 2_000, 3_000_000))
       |> Load.add(sample(1000, [{1, 200, 1000}, {2, 0, 1000}, {3, 600, 1000}], 4_000, 3_100_000))
 
-    socket = %Phoenix.LiveView.Socket{
-      private: %{lifecycle: %Phoenix.LiveView.Lifecycle{}, live_temp: %{}}
-    }
+    socket =
+      Beamdash.Test.Fixture.with_conn(%Phoenix.LiveView.Socket{
+        private: %{lifecycle: %Phoenix.LiveView.Lifecycle{}, live_temp: %{}}
+      })
 
     {:ok, socket} = LoadLive.mount(%{}, %{}, socket)
 

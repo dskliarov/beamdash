@@ -46,7 +46,7 @@ defmodule Beamdash.LogsGroupTest do
     end
 
     test "masked output has no stray #s from numbers inside timestamps" do
-      {_, _, masked} = Group.key(e(1, "at 2026-10-23T12:04:01Z done"))
+      {_, _, _, masked} = Group.key(e(1, "at 2026-10-23T12:04:01Z done"))
       assert masked == "at # done"
     end
 
@@ -57,6 +57,10 @@ defmodule Beamdash.LogsGroupTest do
     test "level and where are part of the key" do
       refute Group.key(e(1, "m")) == Group.key(e(2, "m", level: :error))
       refute Group.key(e(1, "m")) == Group.key(e(2, "m", where: "X"))
+    end
+
+    test "a continuation line does not change the key" do
+      assert same_key?("cache miss for key user:1\n    at line 1", "cache miss for key user:2")
     end
   end
 

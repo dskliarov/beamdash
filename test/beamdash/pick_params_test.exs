@@ -11,7 +11,9 @@ defmodule BeamdashWeb.PickParamsTest do
   end
 
   defp socket do
-    %Phoenix.LiveView.Socket{private: %{lifecycle: %Phoenix.LiveView.Lifecycle{}, live_temp: %{}}}
+    Beamdash.Test.Fixture.with_conn(%Phoenix.LiveView.Socket{
+      private: %{lifecycle: %Phoenix.LiveView.Lifecycle{}, live_temp: %{}}
+    })
   end
 
   test "the picker state survives the trip through a path" do

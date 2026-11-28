@@ -15,8 +15,8 @@ defmodule Beamdash.OtpProcess do
   module's record definitions (when it has debug info), or
   `{:error, :timeout | :noproc | reason}`.
   """
-  def state(pid) do
-    with %{status: :connected, node: node} <- Target.status(),
+  def state(server, pid) do
+    with %{status: :connected, node: node} <- Target.status(server),
          {:ok, {:ok, mod, state, defs}} <-
            Target.rpc(node, :beamdash_agent, :get_state, [pid], @timeout) do
       {:ok, %{module: mod, state: Record.name_records(state, defs), at: DateTime.utc_now()}}
@@ -34,8 +34,8 @@ defmodule Beamdash.OtpProcess do
   `:strategy` (supervisors) and `:children` (a list, `:more` past the depth
   limit, or `{:error, reason}`).
   """
-  def tree(pid) do
-    with %{status: :connected, node: node} <- Target.status(),
+  def tree(server, pid) do
+    with %{status: :connected, node: node} <- Target.status(server),
          {:ok, tree} <- Target.rpc(node, :beamdash_agent, :supervision_tree, [pid], @timeout) do
       {:ok, Map.put(tree, :at, DateTime.utc_now())}
     else

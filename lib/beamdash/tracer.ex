@@ -1,17 +1,17 @@
 defmodule Beamdash.Tracer do
   @moduledoc """
-  Call tracing on the connected node, driven by erlyberly's trace collector
-  (`lib/erlyberly.ex`, loaded into the target on connect).
+  Call tracing on the connected node, driven by the trace agent's trace collector
+  (`lib/beamdash_trace_agent.ex`, loaded into the target on connect).
 
   `start_trace/4` asks the target to trace `{mod, fun, arity}` and gives it
-  this process's pid. erlyberly's collector then *sends* to us, so nothing
+  this process's pid. the trace agent's collector then *sends* to us, so nothing
   is polled:
 
-    * `{:erlyberly_trace_log, {:call | :return_from | :exception_from, props}}`
-    * `{:erlyberly_trace_overload, queue_len}` – the collector fell behind, so
-      erlyberly stopped all tracing and cleared every pattern
-    * `{:erlyberly_module_loaded, mod, functions}` – a traced module was
-      reloaded and erlyberly re-applied its traces
+    * `{:beamdash_trace_agent_trace_log, {:call | :return_from | :exception_from, props}}`
+    * `{:beamdash_trace_agent_trace_overload, queue_len}` – the collector fell behind, so
+      the trace agent stopped all tracing and cleared every pattern
+    * `{:beamdash_trace_agent_module_loaded, mod, functions}` – a traced module was
+      reloaded and the trace agent re-applied its traces
 
   Calls and their returns arrive as separate messages. They are paired per
   process: each call is pushed on that pid's stack and the next return or
@@ -39,7 +39,7 @@ defmodule Beamdash.Tracer do
 
   alias Beamdash.{Record, Target}
 
-  # Collector queue length at which erlyberly suspends tracing.
+  # Collector queue length at which the trace agent suspends tracing.
   @max_queue_len 1_000
   # Entries kept here for the UI.
   @max_entries 2_000
@@ -83,7 +83,7 @@ defmodule Beamdash.Tracer do
 
   # The trace collector, dbg and the runtime's own preloaded modules: tracing
   # every function of these would trace the tracing (or the whole VM).
-  @no_wildcard ~w(erlyberly beamdash_agent dbg erlang erts_internal erts_code_purger
+  @no_wildcard ~w(beamdash_trace_agent beamdash_agent dbg erlang erts_internal erts_code_purger
                   erts_literal_area_collector erts_dirty_process_signal_handler erl_tracer
                   erl_prim_loader init prim_eval prim_file prim_inet prim_net prim_socket
                   prim_buffer prim_zip zlib atomics counters persistent_term socket_registry)a
@@ -158,7 +158,7 @@ defmodule Beamdash.Tracer do
   end
 
   def handle_call(:stop_all, _from, state) do
-    if state.node, do: Target.rpc(state.node, :erlyberly, :stop_traces, [])
+    if state.node, do: Target.rpc(state.node, :beamdash_trace_agent, :stop_traces, [])
     state = %{state | traces: MapSet.new(), open: %{}, limits: %{}}
     notify(state, :traces_changed)
     {:reply, :ok, state}
@@ -198,7 +198,7 @@ defmodule Beamdash.Tracer do
 
   def handle_call({:module_functions, timeout}, _from, state) do
     reply =
-      case Target.rpc(state.node, :erlyberly, :module_functions, [], timeout) do
+      case Target.rpc(state.node, :beamdash_trace_agent, :module_functions, [], timeout) do
         {:ok, mods} -> {:ok, for({mod, exports, locals} <- mods, do: {mod, exports, locals})}
         error -> error
       end
@@ -207,12 +207,12 @@ defmodule Beamdash.Tracer do
   end
 
   @impl true
-  def handle_info({:erlyberly_trace_log, log}, state) do
+  def handle_info({:beamdash_trace_agent_trace_log, log}, state) do
     {:noreply, handle_log(log, state)}
   end
 
-  def handle_info({:erlyberly_trace_overload, queue_len}, state) do
-    # erlyberly has already stopped tracing: every trace is gone. Limited traces
+  def handle_info({:beamdash_trace_agent_trace_overload, queue_len}, state) do
+    # The trace agent has already stopped tracing: every trace is gone. Limited traces
     # stay at 0 so calls queued behind this message are not recorded, and open
     # calls keep their stack so their returns complete them.
     limits = Map.new(state.limits, fn {mfa, _} -> {mfa, 0} end)
@@ -222,9 +222,9 @@ defmodule Beamdash.Tracer do
     {:noreply, state}
   end
 
-  # erlyberly reports every module load on the target; only reloads of
+  # The trace agent reports every module load on the target; only reloads of
   # modules we are tracing matter (their traces were just re-applied).
-  def handle_info({:erlyberly_module_loaded, mod, _functions}, state) do
+  def handle_info({:beamdash_trace_agent_module_loaded, mod, _functions}, state) do
     if Enum.any?(state.traces, &match?({^mod, _, _}, &1)),
       do: notify(state, {:module_loaded, mod})
 
@@ -249,7 +249,7 @@ defmodule Beamdash.Tracer do
     args = [{node(), self()}, mod, fun, arity, @max_queue_len]
     mfa = {mod, fun, arity}
 
-    case Target.rpc(state.node, :erlyberly, :start_trace, args) do
+    case Target.rpc(state.node, :beamdash_trace_agent, :start_trace, args) do
       {:ok, {:ok, _collector}} ->
         # A finished trace of this module leaves its count at 0 to drop the
         # calls still arriving while it is switched off. A whole-module one
@@ -399,7 +399,7 @@ defmodule Beamdash.Tracer do
 
   defp stop(state, {mod, fun, arity} = mfa) do
     reply =
-      case Target.rpc(state.node, :erlyberly, :stop_trace, [mod, fun, arity, true]) do
+      case Target.rpc(state.node, :beamdash_trace_agent, :stop_trace, [mod, fun, arity, true]) do
         {:ok, :ok} -> :ok
         {:error, reason} -> {:error, reason}
       end

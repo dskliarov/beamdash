@@ -14,13 +14,20 @@ defmodule Beamdash.LastConnection do
   points elsewhere; `false` turns remembering off.
 
   An entry is a map with string keys: `id`, `kind` (`"node"` or `"kubectl"`),
-  `node`, `cookie`, and for `"kubectl"` also `kubeconfig`, `namespace`, `pod`,
-  `container` and `binary` (`""` where unused).
+  `node`, `cookie`, `app` (the node name prefix, or the image repository for
+  `"kubectl"`, `""` when unknown), and for `"kubectl"` also `kubeconfig`,
+  `namespace`, `pod`, `container` and `binary` (`""` where unused).
+
+  Ten entries are kept while multiple connections are off, thirty when on.
+  Shrinking the list happens on the next save, not on read.
   """
 
+  alias Beamdash.Connections
+
   @cache {__MODULE__, :saved}
-  @max 10
-  @fields ~w(kind node cookie kubeconfig namespace pod container binary)
+  @max_single 10
+  @max_multiple 30
+  @fields ~w(kind node cookie app kubeconfig namespace pod container binary)
   @identity_fields ~w(kind kubeconfig namespace pod container binary)
 
   @doc "The saved connections, most recent first."
@@ -48,7 +55,7 @@ defmodule Beamdash.LastConnection do
 
       entry ->
         others = Enum.reject(list(), &(identity(&1) == identity(entry)))
-        store(Enum.take([entry | others], @max))
+        store(Enum.take([entry | others], cap()))
     end
   end
 
@@ -91,10 +98,14 @@ defmodule Beamdash.LastConnection do
   defp normalize(%{"node" => node} = attrs) when is_binary(node) and node != "" do
     entry = Map.new(@fields, &{&1, text(attrs[&1])})
     kind = if entry["kind"] == "kubectl", do: "kubectl", else: "node"
-    Map.merge(entry, %{"id" => text(attrs["id"]), "kind" => kind})
+    app = if kind == "node", do: Connections.node_app(node), else: entry["app"]
+    Map.merge(entry, %{"id" => text(attrs["id"]), "kind" => kind, "app" => app})
   end
 
   defp normalize(_attrs), do: nil
+
+  defp cap,
+    do: if(Beamdash.Settings.multiple_connections?(), do: @max_multiple, else: @max_single)
 
   defp text(value), do: if(is_binary(value), do: value, else: "")
 
@@ -109,7 +120,7 @@ defmodule Beamdash.LastConnection do
   end
 
   defp decode(%{"connections" => list}) when is_list(list),
-    do: list |> Enum.flat_map(&List.wrap(normalize_saved(&1))) |> Enum.take(@max)
+    do: Enum.flat_map(list, &List.wrap(normalize_saved(&1)))
 
   defp decode(legacy), do: List.wrap(normalize_saved(legacy))
 

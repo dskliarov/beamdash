@@ -40,7 +40,7 @@ defmodule Beamdash.SuspectsTest do
   test "steady processes are not flagged" do
     result = Suspects.analyze(history())
 
-    flagged_pids = result.flagged |> Map.keys() |> Enum.map(&elem(&1, 1)) |> Enum.uniq()
+    flagged_pids = result.flagged |> Map.keys() |> Enum.map(&elem(&1, 2)) |> Enum.uniq()
     assert flagged_pids == [@spike]
     assert map_size(result.flagged) == 5
   end

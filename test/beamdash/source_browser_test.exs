@@ -32,9 +32,10 @@ defmodule Beamdash.SourceBrowserTest do
   end
 
   test "picking a file loads CodeMirror, updates its baseline and clears staged code", %{dir: dir} do
-    socket = %Phoenix.LiveView.Socket{
-      private: %{lifecycle: %Phoenix.LiveView.Lifecycle{}, live_temp: %{}}
-    }
+    socket =
+      Beamdash.Test.Fixture.with_conn(%Phoenix.LiveView.Socket{
+        private: %{lifecycle: %Phoenix.LiveView.Lifecycle{}, live_temp: %{}}
+      })
 
     {:ok, socket} = ModulesLive.mount(%{}, %{}, socket)
 
@@ -63,9 +64,10 @@ defmodule Beamdash.SourceBrowserTest do
   end
 
   test "missing source exposes the browse control and navigation can be cancelled", %{dir: dir} do
-    socket = %Phoenix.LiveView.Socket{
-      private: %{lifecycle: %Phoenix.LiveView.Lifecycle{}, live_temp: %{}}
-    }
+    socket =
+      Beamdash.Test.Fixture.with_conn(%Phoenix.LiveView.Socket{
+        private: %{lifecycle: %Phoenix.LiveView.Lifecycle{}, live_temp: %{}}
+      })
 
     {:ok, socket} = ModulesLive.mount(%{}, %{}, socket)
 
@@ -98,9 +100,10 @@ defmodule Beamdash.SourceBrowserTest do
     assert {:error, _} = SourceBrowser.load(browser, "large.ex")
     assert SourceBrowser.open(Path.join(dir, "missing")).error != nil
 
-    socket = %Phoenix.LiveView.Socket{
-      private: %{lifecycle: %Phoenix.LiveView.Lifecycle{}, live_temp: %{}}
-    }
+    socket =
+      Beamdash.Test.Fixture.with_conn(%Phoenix.LiveView.Socket{
+        private: %{lifecycle: %Phoenix.LiveView.Lifecycle{}, live_temp: %{}}
+      })
 
     {:ok, socket} = ModulesLive.mount(%{}, %{}, socket)
 

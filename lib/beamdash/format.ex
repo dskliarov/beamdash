@@ -91,7 +91,7 @@ defmodule Beamdash.Format do
   def pretty(term, :erlang, width), do: erlang_text(term, line_length: width, depth: -1)
 
   # io_lib_pretty with record names and field names, as the Erlang shell
-  # prints them. Records recovered by erlyberly become tuples again and
+  # prints them. Records recovered by the trace agent become tuples again and
   # their field names are fed back through record_print_fun.
   defp erlang_text(term, opts) do
     {plain, defs} = Record.to_erlang(term)
@@ -191,6 +191,12 @@ defmodule Beamdash.Format do
 
   def error({:pod_not_found, node, namespace}),
     do: "No pod in namespace #{namespace} runs #{node}"
+
+  def error({:different_application, app, label, other}),
+    do: "Connected to #{app}. #{label} runs #{other}, so it is not added."
+
+  def error({:image_lookup_failed, _reason}),
+    do: "Could not read the pod's image, so its application is unknown. Try again."
 
   def error({:distribution_failed, reason}),
     do:

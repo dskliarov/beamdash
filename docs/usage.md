@@ -264,10 +264,11 @@ Open **⚙ Settings → Plugins**, type the plugin as a Mix dependency and click
 ```elixir
 {:riak_core_plugin, "~> 0.1"}
 {:riak_core_plugin, git: "https://github.com/dskliarov/beamdash-riak-core-plugin", tag: "0.0.1"}
+{:bandit_plugin, git: "https://github.com/dskliarov/beamdash-plugins", sparse: "bandit_plugin"}
 {:riak_core_plugin, path: "~/src/beamdash-riak-core-plugin"}
 ```
 
-A Hex requirement resolves to the highest matching release that `mix hex.info` lists; Hex lists only recent releases, so give an exact version (`"== 0.1.0"`) for an older one. Hex plugins need Hex (`mix local.hex`). Git takes `tag:`, `branch:` or `ref:`. beamdash fetches only the plugin's own source, checks and compiles it, and loads it without a restart. Installed plugins are kept in the `plugins` folder of your user configuration directory; the card shows the path. A path plugin is compiled from its own folder, which must not be inside that `plugins` folder; after changing its code, click **Rebuild**. **Remove** unloads a plugin and deletes its installed files, never a path plugin's folder.
+A Hex requirement resolves to the highest matching release that `mix hex.info` lists; Hex lists only recent releases, so give an exact version (`"== 0.1.0"`) for an older one. Hex plugins need Hex (`mix local.hex`). Git takes `tag:`, `branch:` or `ref:`. To install one plugin from a repo that holds several, add `sparse:` with the plugin's folder inside the repo (it must contain a `mix.exs`; symlinks are refused). The whole repo is cloned; `sparse:` only picks the folder that is built. beamdash checks and compiles the plugin's source, and loads it without a restart. Installed plugins are kept in the `plugins` folder of your user configuration directory; the card shows the path. A path plugin is compiled from its own folder, which must not be inside that `plugins` folder; after changing its code, click **Rebuild**. **Remove** unloads a plugin and deletes its installed files, never a path plugin's folder.
 
 Each plugin shows its status: **active** when a supported application runs at a matching version, **waiting** when none runs, and **incompatible** when one runs at a version the plugin doesn't support. A plugin that fails to build shows the error and never stops beamdash.
 

@@ -6,7 +6,10 @@ defmodule Beamdash.ReportClientsUITest do
 
   setup do
     on_exit(fn -> :ok = Beamdash.Settings.update_report_clients(fn _ -> [] end) end)
-    {:ok, socket} = SettingsLive.mount(%{}, %{}, %Phoenix.LiveView.Socket{})
+
+    {:ok, socket} =
+      SettingsLive.mount(%{}, %{}, Beamdash.Test.Fixture.with_conn(%Phoenix.LiveView.Socket{}))
+
     %{socket: socket}
   end
 

@@ -2,17 +2,26 @@ defmodule BeamdashWeb.CrashLive do
   @moduledoc "Crash reports from the target, newest first, with details on click."
   use Phoenix.LiveView
 
-  alias Beamdash.{Crashes, Format, Target}
+  alias Beamdash.{Connections, Crashes, Format, Target}
 
   @impl true
   def mount(_params, _session, socket) do
-    %{status: status, node: node} = Target.status()
-    socket = assign(socket, status: status, node: node, reports: [], selected: nil)
+    server = socket.assigns.conn.server
+    %{status: status, node: node} = Target.status(server)
+
+    socket =
+      assign(socket,
+        server: server,
+        crashes: Connections.service(server, Crashes),
+        status: status,
+        node: node,
+        reports: [],
+        selected: nil
+      )
 
     if connected?(socket) do
-      :ok = Target.subscribe()
-      :ok = Crashes.subscribe()
-      {:ok, assign(socket, reports: Crashes.reports())}
+      :ok = Target.subscribe(server)
+      {:ok, watch(socket)}
     else
       {:ok, socket}
     end
@@ -25,8 +34,22 @@ defmodule BeamdashWeb.CrashLive do
   end
 
   def handle_event("clear", _params, socket) do
-    :ok = Crashes.clear()
+    if socket.assigns.crashes, do: :ok = Crashes.clear(socket.assigns.crashes)
     {:noreply, assign(socket, reports: [], selected: nil)}
+  end
+
+  def handle_event("stop_run", _params, socket) do
+    case Connections.stop_service(socket.assigns.server, Crashes) do
+      :ok -> {:noreply, assign(socket, crashes: nil, reports: [], selected: nil)}
+      {:error, _} -> {:noreply, socket}
+    end
+  end
+
+  def handle_event("start_run", _params, socket) do
+    case Connections.start_service(socket.assigns.server, Crashes) do
+      {:ok, pid} -> {:noreply, socket |> assign(crashes: pid) |> watch()}
+      {:error, _} -> {:noreply, socket}
+    end
   end
 
   @impl true
@@ -53,6 +76,14 @@ defmodule BeamdashWeb.CrashLive do
         ask={assigns[:ask]}
         ask_on={BeamdashWeb.JevSection.ask_on?(assigns[:jev_enabled])}
       />
+
+      <div :if={@server != Target and @status == :connected} id="crashes-run" class="active-traces">
+        <span>
+          Crash reports on <strong>{@node}</strong>: {if @crashes, do: "recording", else: "stopped"}
+        </span>
+        <button :if={@crashes} phx-click="stop_run" class="secondary">Stop on this node</button>
+        <button :if={!@crashes} phx-click="start_run">Start on this node</button>
+      </div>
 
       <p :if={@status != :connected and @reports == []} class="help">
         Not connected: enter a node above and click Connect.
@@ -113,6 +144,13 @@ defmodule BeamdashWeb.CrashLive do
       </table>
     </main>
     """
+  end
+
+  defp watch(%{assigns: %{crashes: nil}} = socket), do: assign(socket, reports: [])
+
+  defp watch(%{assigns: %{crashes: crashes}} = socket) do
+    :ok = Crashes.subscribe(crashes)
+    assign(socket, reports: Crashes.reports(crashes))
   end
 
   defp pid(pid, syntax) when is_pid(pid), do: Format.pid(pid, syntax)

@@ -5,7 +5,10 @@ defmodule Beamdash.Plugins.Fetch do
 
     * **Git:** `git clone` into `<dest>/src`. A tag or branch gets a shallow
       clone with `--branch`; a `ref:` gets a full clone and a checkout.
-      `resolved` is the commit (`git rev-parse HEAD`).
+      `resolved` is the commit (`git rev-parse HEAD`). With `sparse:` the
+      plugin is the folder of that name in the repo, which may hold several
+      plugins; it must be a real folder (not a symbolic link) with a `mix.exs`.
+      The whole repo is cloned; `sparse:` only picks the folder that is built.
     * **Hex:** the requirement is resolved to the highest matching release
       listed by `mix hex.info`, then `mix hex.package fetch --unpack` puts it
       in `<dest>/src`. `resolved` is the version. An exact requirement
@@ -36,12 +39,13 @@ defmodule Beamdash.Plugins.Fetch do
   @spec fetch(Spec.t(), Path.t()) ::
           {:ok, %{src: Path.t(), resolved: String.t()}} | {:error, String.t()}
   def fetch(%{source: :git} = spec, dest_dir) do
-    src = Path.join(dest_dir, "src")
+    repo = Path.join(dest_dir, "src")
 
     with :ok <- mkdir(dest_dir),
-         :ok <- clone(spec, src),
-         :ok <- checkout(spec, src),
-         {:ok, commit} <- rev_parse(src) do
+         :ok <- clone(spec, repo),
+         :ok <- checkout(spec, repo),
+         {:ok, commit} <- rev_parse(repo),
+         {:ok, src} <- plugin_root(repo, spec) do
       {:ok, %{src: src, resolved: commit}}
     end
   end
@@ -82,10 +86,44 @@ defmodule Beamdash.Plugins.Fetch do
     end
   end
 
+  @doc """
+  The folder of an installed git or Hex plugin: `<dest>/src`, or that folder's
+  `sparse:` subfolder.
+  """
+  @spec src_root(Path.t(), String.t() | nil) :: Path.t()
+  def src_root(dest_dir, sparse) do
+    Path.join([dest_dir, "src" | segments(sparse)])
+  end
+
+  defp segments(nil), do: []
+  defp segments(sparse), do: String.split(sparse, "/")
+
+  defp plugin_root(repo, %{sparse: nil}), do: {:ok, repo}
+
+  defp plugin_root(repo, %{sparse: sparse, url: url}) do
+    dir = Path.join([repo | segments(sparse)])
+
+    if real_folder?(repo, segments(sparse)),
+      do: with(:ok <- has_mix_exs(dir, "the folder #{sparse} in #{url}"), do: {:ok, dir}),
+      else: {:error, "#{url} has no folder #{sparse}"}
+  end
+
+  defp real_folder?(_dir, []), do: true
+
+  defp real_folder?(dir, [segment | rest]) do
+    path = Path.join(dir, segment)
+
+    case File.lstat(path) do
+      {:ok, %File.Stat{type: :directory}} -> real_folder?(path, rest)
+      _ -> false
+    end
+  end
+
   defp has_mix_exs(dir, what) do
-    if File.regular?(Path.join(dir, "mix.exs")),
-      do: :ok,
-      else: {:error, "#{what} has no mix.exs"}
+    case File.lstat(Path.join(dir, "mix.exs")) do
+      {:ok, %File.Stat{type: :regular}} -> :ok
+      _ -> {:error, "#{what} has no mix.exs"}
+    end
   end
 
   defp mkdir(dir) do

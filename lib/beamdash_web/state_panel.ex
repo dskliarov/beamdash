@@ -24,10 +24,11 @@ defmodule BeamdashWeb.StatePanel do
 
   defp fetch(socket) do
     pid = socket.assigns.pid
+    server = socket.assigns.server
 
     socket
     |> assign(loading: true)
-    |> start_async(:fetch, fn -> OtpProcess.state(pid) end)
+    |> start_async(:fetch, fn -> OtpProcess.state(server, pid) end)
   end
 
   @impl true

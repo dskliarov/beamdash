@@ -20,6 +20,10 @@ defmodule BeamdashWeb.SysDock do
   attr :pending, :any, default: nil, doc: "{pid, :enable | :disable} while sys:trace is switched"
   attr :syntax, :atom, required: true
 
+  attr :server, :any,
+    required: true,
+    doc: "the session's connection, read by the state and tree panels"
+
   def dock(assigns) do
     ~H"""
     <section
@@ -86,6 +90,7 @@ defmodule BeamdashWeb.SysDock do
             pid={p.pid}
             label={p.label}
             proc_kind={p.proc_kind}
+            server={@server}
             syntax={@syntax}
           />
           <.live_component
@@ -96,6 +101,7 @@ defmodule BeamdashWeb.SysDock do
             active={{p.kind, p.pid} == @active}
             pid={p.pid}
             label={p.label}
+            server={@server}
             syntax={@syntax}
           />
         <% end %>

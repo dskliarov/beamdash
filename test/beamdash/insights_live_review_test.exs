@@ -3,9 +3,10 @@ defmodule Beamdash.InsightsLiveReviewTest do
   alias BeamdashWeb.InsightsLive
 
   defp socket do
-    socket = %Phoenix.LiveView.Socket{
-      private: %{lifecycle: %Phoenix.LiveView.Lifecycle{}, live_temp: %{}}
-    }
+    socket =
+      Beamdash.Test.Fixture.with_conn(%Phoenix.LiveView.Socket{
+        private: %{lifecycle: %Phoenix.LiveView.Lifecycle{}, live_temp: %{}}
+      })
 
     {:ok, socket} = InsightsLive.mount(%{}, %{}, socket)
     Phoenix.Component.assign(socket, status: :connected, node: :old)
@@ -81,9 +82,10 @@ defmodule Beamdash.InsightsLiveReviewTest do
   end
 
   test "clearing a trace invalidates an in-flight sequence graph" do
-    socket = %Phoenix.LiveView.Socket{
-      private: %{lifecycle: %Phoenix.LiveView.Lifecycle{}, live_temp: %{}}
-    }
+    socket =
+      Beamdash.Test.Fixture.with_conn(%Phoenix.LiveView.Socket{
+        private: %{lifecycle: %Phoenix.LiveView.Lifecycle{}, live_temp: %{}}
+      })
 
     {:ok, socket} = BeamdashWeb.SeqLive.mount(%{}, %{}, socket)
     request = {:graph, make_ref()}

@@ -1,6 +1,6 @@
 defmodule Beamdash.AgentLoader do
   @moduledoc """
-  Loads helper modules (`:beamdash_agent`, `:erlyberly`) into a target node.
+  Loads helper modules (`:beamdash_agent`, `:beamdash_trace_agent`) into a target node.
 
   The agent is compiled on this machine. When the target runs an older
   Erlang/OTP, the module's abstract code is recompiled here for the target's

@@ -16,9 +16,10 @@ defmodule Beamdash.TracePickerTest do
   end
 
   defp seq_socket do
-    socket = %Phoenix.LiveView.Socket{
-      private: %{lifecycle: %Phoenix.LiveView.Lifecycle{}, live_temp: %{}}
-    }
+    socket =
+      Beamdash.Test.Fixture.with_conn(%Phoenix.LiveView.Socket{
+        private: %{lifecycle: %Phoenix.LiveView.Lifecycle{}, live_temp: %{}}
+      })
 
     {:ok, socket} = SeqLive.mount(%{}, %{}, socket)
 
@@ -36,9 +37,10 @@ defmodule Beamdash.TracePickerTest do
     do: event(socket, "select_function", %{"fun" => fun, "arity" => to_string(arity)})
 
   test "?mod= opens that module (a link from the Apps tab)" do
-    socket = %Phoenix.LiveView.Socket{
-      private: %{lifecycle: %Phoenix.LiveView.Lifecycle{}, live_temp: %{}}
-    }
+    socket =
+      Beamdash.Test.Fixture.with_conn(%Phoenix.LiveView.Socket{
+        private: %{lifecycle: %Phoenix.LiveView.Lifecycle{}, live_temp: %{}}
+      })
 
     {:ok, socket} = TraceLive.mount(%{}, %{}, socket)
     socket = Phoenix.Component.assign(socket, modules: [{:door, [open: 0], []}])
@@ -69,9 +71,10 @@ defmodule Beamdash.TracePickerTest do
         Fixture.stop_peer(peer)
       end)
 
-      socket = %Phoenix.LiveView.Socket{
-        private: %{lifecycle: %Phoenix.LiveView.Lifecycle{}, live_temp: %{}}
-      }
+      socket =
+        Beamdash.Test.Fixture.with_conn(%Phoenix.LiveView.Socket{
+          private: %{lifecycle: %Phoenix.LiveView.Lifecycle{}, live_temp: %{}}
+        })
 
       {:ok, socket} = TraceLive.mount(%{}, %{}, socket)
       {:ok, modules} = Tracer.module_functions()

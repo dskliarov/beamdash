@@ -166,6 +166,7 @@ defmodule Beamdash.McpTest do
       memories = Enum.map(procs, & &1.memory)
       assert memories == Enum.sort(memories, :desc)
       assert Enum.all?(procs, &(&1.pid =~ ~r/^<\d+\.\d+\.\d+>$/))
+      assert Enum.all?(procs, &(Map.has_key?(&1, :ets) and Map.has_key?(&1, :binary)))
     end
 
     test "process_details takes a pid as list_processes shows it", %{node: node, target: target} do

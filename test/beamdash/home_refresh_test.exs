@@ -4,7 +4,9 @@ defmodule Beamdash.HomeRefreshTest do
   alias BeamdashWeb.HomeLive
 
   defp connected_socket do
-    {:ok, socket} = HomeLive.mount(%{}, %{}, %Phoenix.LiveView.Socket{})
+    {:ok, socket} =
+      HomeLive.mount(%{}, %{}, Beamdash.Test.Fixture.with_conn(%Phoenix.LiveView.Socket{}))
+
     Phoenix.Component.assign(socket, status: :connected, node: :fake@host, syntax: :erlang)
   end
 

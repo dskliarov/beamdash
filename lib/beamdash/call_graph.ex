@@ -1,6 +1,6 @@
 defmodule Beamdash.CallGraph do
   @moduledoc """
-  Static call graphs from xref, through erlyberly.
+  Static call graphs from xref, through the trace agent.
 
   `index/2` builds an xref index of the target's code paths (OTP and Elixir
   standard libraries excluded); that can take a while on big systems, so it
@@ -20,8 +20,8 @@ defmodule Beamdash.CallGraph do
     if running? and not Keyword.get(opts, :force, false) do
       :ok
     else
-      case :erpc.call(node, :erlyberly, :ensure_xref_started, [], @index_timeout) do
-        {:ok, :erlyberly_xref_started} -> :ok
+      case :erpc.call(node, :beamdash_trace_agent, :ensure_xref_started, [], @index_timeout) do
+        {:ok, :beamdash_trace_agent_xref_started} -> :ok
         other -> {:error, other}
       end
     end
@@ -29,7 +29,7 @@ defmodule Beamdash.CallGraph do
     kind, reason -> {:error, {kind, reason}}
   end
 
-  defp whereis_xref(node), do: Target.rpc(node, :erlang, :whereis, [:erlyberly_xref])
+  defp whereis_xref(node), do: Target.rpc(node, :erlang, :whereis, [:beamdash_trace_agent_xref])
 
   @doc "The call tree of `mod:fun/arity`, `max_depth` levels deep."
   def analyse(node, mod, fun, arity, opts \\ []) do
@@ -38,7 +38,13 @@ defmodule Beamdash.CallGraph do
 
     with :ok <- index(node),
          {:ok, {:ok, tree}} <-
-           Target.rpc(node, :erlyberly, :xref_analysis, [ignore, mod, fun, arity, depth]) do
+           Target.rpc(node, :beamdash_trace_agent, :xref_analysis, [
+             ignore,
+             mod,
+             fun,
+             arity,
+             depth
+           ]) do
       {:ok, to_tree(tree)}
     else
       {:ok, other} -> {:error, other}

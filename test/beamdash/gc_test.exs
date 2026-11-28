@@ -105,7 +105,10 @@ defmodule Beamdash.GCTest do
   } do
     Fixture.put_jev_config(api_key: "test-key")
     view = BeamdashWeb.GCLive
-    {:ok, socket} = view.mount(%{}, %{}, %Phoenix.LiveView.Socket{})
+
+    {:ok, socket} =
+      view.mount(%{}, %{}, Beamdash.Test.Fixture.with_conn(%Phoenix.LiveView.Socket{}))
+
     {:ok, snap} = GC.snapshot(node)
 
     socket =
@@ -173,7 +176,10 @@ defmodule Beamdash.GCTest do
     pid: pid
   } do
     view = BeamdashWeb.GCLive
-    {:ok, socket} = view.mount(%{}, %{}, %Phoenix.LiveView.Socket{})
+
+    {:ok, socket} =
+      view.mount(%{}, %{}, Beamdash.Test.Fixture.with_conn(%Phoenix.LiveView.Socket{}))
+
     {:ok, detail} = Target.rpc(node, :beamdash_agent, :process_details, [pid, -1])
 
     socket =

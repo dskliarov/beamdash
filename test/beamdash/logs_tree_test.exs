@@ -70,14 +70,25 @@ defmodule Beamdash.LogsTreeTest do
 
     [_checkout, query] = repo.children
 
-    assert [%{label: "timeout after # ms", count: 1, problems: 1, kind: :template} = t] =
-             query.children
+    assert [%{label: "no node", kind: :node, children: [t]}] = query.children
+    assert %{label: "timeout after # ms", count: 1, problems: 1, kind: :template} = t
 
     assert t.sample.id == 7
     assert same_time?(t.first_at, 60) and same_time?(t.last_at, 60)
 
-    assert [%{label: "call/2", kind: :function, children: [%{label: "GET /users/# #", count: 2}]}] =
-             web.children
+    assert [
+             %{
+               label: "call/2",
+               kind: :function,
+               children: [
+                 %{
+                   label: "no node",
+                   kind: :node,
+                   children: [%{label: "GET /users/# #", count: 2}]
+                 }
+               ]
+             }
+           ] = web.children
 
     stdlib = Enum.find(tree.nodes, &(&1.label == "stdlib"))
     assert %{warnings: 1, problems: 0} = stdlib
@@ -121,7 +132,7 @@ defmodule Beamdash.LogsTreeTest do
              [{"my_app", 0}, {"MyApp.Repo", 1}, {"MyApp.Web", 1}]
 
     all = Tree.rows(tree.nodes, MapSet.new(Tree.parent_ids(tree.nodes)))
-    assert length(all) == 4 + 4 + 5 + 6
+    assert length(all) == 24
 
     repo = hd(my_app.children)
     assert Tree.find(tree.nodes, repo.id) == repo
@@ -139,15 +150,20 @@ defmodule Beamdash.LogsTreeTest do
     refute Tree.in_scope?({:function, "my_app", "MyApp.Repo", "query/2"}, e5, apps())
 
     assert Tree.in_scope?(
-             {:template, "my_app", "MyApp.Repo", "query/2", "timeout after # ms"},
+             {:template, "my_app", "MyApp.Repo", "query/2", nil, "timeout after # ms"},
              e7,
              apps()
            )
 
-    assert Tree.in_scope?({:template, "no source", nil, nil, "plain text line"}, e3, apps())
+    assert Tree.in_scope?({:node, "my_app", "MyApp.Repo", "query/2", nil}, e7, apps())
 
-    assert Tree.scope_label({:template, "no source", nil, nil, "plain text line"}) ==
+    assert Tree.in_scope?({:template, "no source", nil, nil, :any, "plain text line"}, e3, apps())
+
+    assert Tree.scope_label({:template, "no source", nil, nil, :any, "plain text line"}) ==
              "no source › plain text line"
+
+    assert Tree.scope_label({:node, "my_app", "MyApp.Repo", "query/2", nil}) ==
+             "my_app › MyApp.Repo › query/2 › no node"
 
     assert Tree.scope_label({:function, "my_app", "MyApp.Repo", "query/2"}) ==
              "my_app › MyApp.Repo › query/2"
@@ -165,17 +181,37 @@ defmodule Beamdash.LogsTreeTest do
     cache = Map.put(tree.template_cache, key, "cached kind")
     again = Tree.build(entries(), apps: apps(), template_cache: cache)
     [my_app | _] = again.nodes
-    templates = Enum.flat_map(hd(my_app.children).children, & &1.children)
-    assert "cached kind" in Enum.map(templates, & &1.label)
+    templates = for fun <- hd(my_app.children).children, node <- fun.children, do: node.children
+    assert "cached kind" in (templates |> List.flatten() |> Enum.map(& &1.label))
   end
 
-  test "a line with only an mfa gets its module and a function branch" do
+  test "a line with only an mfa gets its module, a function and a node branch" do
     tree = Tree.build([e(1, 0, :info, "Elixir.Foo.Bar:run/2", "x")], apps: apps())
 
     [unknown] = tree.nodes
     assert unknown.label == "application unknown"
     assert [%{label: "Foo.Bar", kind: :module, children: [fun]}] = unknown.children
-    assert %{label: "run/2", kind: :function, children: [%{label: "x", kind: :template}]} = fun
+
+    assert %{label: "run/2", kind: :function, children: [%{label: "no node", kind: :node} = host]} =
+             fun
+
+    assert [%{label: "x", kind: :template}] = host.children
+  end
+
+  test "each function branch splits by the node its lines came from" do
+    a = Map.put(e(1, 0, :info, "MyApp.Web:call/2", "GET /users/9 200"), :node, :a@h)
+    b = Map.put(e(2, 5, :info, "MyApp.Web:call/2", "GET /users/9 200"), :node, :b@h)
+    c = e(3, 6, :error, "MyApp.Web:call/2", "boom")
+
+    tree = Tree.build([c, b, a], apps: apps())
+    [my_app] = tree.nodes
+    [web] = my_app.children
+    [call] = web.children
+
+    assert labels(call.children) == ["no node", "a@h", "b@h"]
+    assert [%{label: "GET /users/# #", count: 1}] = Enum.at(call.children, 1).children
+    assert Tree.in_scope?({:node, "my_app", "MyApp.Web", "call/2", :a@h}, a, apps())
+    refute Tree.in_scope?({:node, "my_app", "MyApp.Web", "call/2", :a@h}, b, apps())
   end
 
   test "an empty buffer" do

@@ -79,7 +79,10 @@ defmodule Beamdash.GCAdvisorTest do
 
   test "the GC panel shows the answer, its ranking and what it was based on" do
     view = BeamdashWeb.GCLive
-    {:ok, socket} = view.mount(%{}, %{}, %Phoenix.LiveView.Socket{})
+
+    {:ok, socket} =
+      view.mount(%{}, %{}, Beamdash.Test.Fixture.with_conn(%Phoenix.LiveView.Socket{}))
+
     d = Fixture.gc_detail()
     evidence = GCAdvisor.evidence(d, samples(d, 20), [], 0, 0, nil)
 
@@ -115,7 +118,10 @@ defmodule Beamdash.GCAdvisorTest do
 
   test "the Analyze button waits for history" do
     view = BeamdashWeb.GCLive
-    {:ok, socket} = view.mount(%{}, %{}, %Phoenix.LiveView.Socket{})
+
+    {:ok, socket} =
+      view.mount(%{}, %{}, Beamdash.Test.Fixture.with_conn(%Phoenix.LiveView.Socket{}))
+
     d = Fixture.gc_detail()
 
     socket =
@@ -143,7 +149,10 @@ defmodule Beamdash.GCAdvisorTest do
 
   test "async results from a previously selected process are discarded" do
     view = BeamdashWeb.GCLive
-    {:ok, socket} = view.mount(%{}, %{}, %Phoenix.LiveView.Socket{})
+
+    {:ok, socket} =
+      view.mount(%{}, %{}, Beamdash.Test.Fixture.with_conn(%Phoenix.LiveView.Socket{}))
+
     active = {:gc_advisor, make_ref()}
     old = {:gc_advisor, make_ref()}
     socket = Phoenix.Component.assign(socket, advisor_request: active)

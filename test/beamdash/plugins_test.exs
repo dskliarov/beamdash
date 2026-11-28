@@ -91,6 +91,24 @@ defmodule Beamdash.PluginsTest do
     repo
   end
 
+  # A repo holding the hello plugin under plugins/, a folder with no mix.exs,
+  # a symbolic link to the plugin, and a folder whose mix.exs is a symbolic link.
+  defp make_monorepo(base) do
+    repo = Path.join(base, "monorepo")
+    File.mkdir_p!(Path.join(repo, "plugins"))
+    File.cp_r!(@fixture, Path.join(repo, "plugins/hello_plugin"))
+    File.mkdir_p!(Path.join(repo, "other"))
+    File.write!(Path.join(repo, "other/README.md"), "not a plugin\n")
+    File.ln_s!("plugins/hello_plugin", Path.join(repo, "link"))
+    File.mkdir_p!(Path.join(repo, "linked_mix"))
+    File.ln_s!("../plugins/hello_plugin/mix.exs", Path.join(repo, "linked_mix/mix.exs"))
+    git!(repo, ["init", "-q"])
+    git!(repo, ["add", "-A"])
+    git!(repo, ["commit", "-q", "-m", "init"])
+    git!(repo, ["tag", "0.1.0"])
+    repo
+  end
+
   defp install!(server, text) do
     {:ok, ref} = Plugins.install(server, text)
     assert_receive {:beamdash_plugins, {:installed, ^ref, _app}}, 30_000
@@ -244,6 +262,128 @@ defmodule Beamdash.PluginsTest do
       assert %{source: :git, resolved: ^commit} = entry(server, :hello_plugin)
       assert HelloPlugin.__beamdash_plugin__().name == "Hello"
       assert File.dir?(Path.join([dir, "hello_plugin", "src"]))
+    end
+
+    test "from a git repo with several plugins: sparse: picks the plugin's folder", %{
+      base: base,
+      dir: dir
+    } do
+      Application.put_env(:beamdash, :plugins_allow_local_git, true)
+      repo = make_monorepo(base)
+      server = start_plugins(dir)
+
+      install!(
+        server,
+        ~s|{:hello_plugin, git: "#{repo}", tag: "0.1.0", sparse: "plugins/hello_plugin"}|
+      )
+
+      assert %{source: :git, plugin: %{name: "Hello"}} = entry(server, :hello_plugin)
+      assert entry(server, :hello_plugin).spec_text =~ ~S|sparse: "plugins/hello_plugin"|
+    end
+
+    test "sparse: a folder with no mix.exs, or a symbolic link, is refused", %{
+      base: base,
+      dir: dir
+    } do
+      Application.put_env(:beamdash, :plugins_allow_local_git, true)
+      repo = make_monorepo(base)
+      server = start_plugins(dir)
+
+      assert install_error(server, ~s|{:hello_plugin, git: "#{repo}", sparse: "other"}|) =~
+               "has no mix.exs"
+
+      assert install_error(server, ~s|{:hello_plugin, git: "#{repo}", sparse: "link"}|) =~
+               "has no folder link"
+
+      assert install_error(server, ~s|{:hello_plugin, git: "#{repo}", sparse: "missing"}|) =~
+               "has no folder missing"
+
+      assert install_error(server, ~s|{:hello_plugin, git: "#{repo}", sparse: "linked_mix"}|) =~
+               "has no mix.exs"
+    end
+
+    test "sparse: the plugin's stylesheet is read from its folder", %{base: base, dir: dir} do
+      Application.put_env(:beamdash, :plugins_allow_local_git, true)
+      repo = make_monorepo(base)
+      server = start_plugins(dir)
+
+      install!(
+        server,
+        ~s|{:hello_plugin, git: "#{repo}", tag: "0.1.0", sparse: "plugins/hello_plugin"}|
+      )
+
+      css =
+        Path.join([
+          dir,
+          "hello_plugin",
+          "src",
+          "plugins",
+          "hello_plugin",
+          "priv/static/plugin.css"
+        ])
+
+      File.mkdir_p!(Path.dirname(css))
+      File.write!(css, "a {}")
+
+      assert Beamdash.Plugins.css_path(server, :hello_plugin) == {:ok, css}
+    end
+
+    test "a sparse git plugin without its ebin is rebuilt from its folder", %{
+      base: base,
+      dir: dir
+    } do
+      Application.put_env(:beamdash, :plugins_allow_local_git, true)
+      repo = make_monorepo(base)
+      server = start_plugins(dir)
+
+      install!(
+        server,
+        ~s|{:hello_plugin, git: "#{repo}", tag: "0.1.0", sparse: "plugins/hello_plugin"}|
+      )
+
+      stop!(server)
+      File.rm_rf!(Path.join([dir, "hello_plugin", "ebin"]))
+
+      server = start_plugins(dir)
+      eventually(fn -> entry(server, :hello_plugin).status == :waiting end)
+      assert %{plugin: %{name: "Hello"}, build_error: nil} = entry(server, :hello_plugin)
+    end
+
+    test "sparse: with ref:, the plugin is the folder at that commit", %{base: base, dir: dir} do
+      Application.put_env(:beamdash, :plugins_allow_local_git, true)
+      repo = make_monorepo(base)
+      commit = String.trim(git!(repo, ["rev-parse", "HEAD"]))
+      server = start_plugins(dir)
+
+      install!(
+        server,
+        ~s|{:hello_plugin, git: "#{repo}", ref: "#{commit}", sparse: "plugins/hello_plugin"}|
+      )
+
+      assert %{source: :git, resolved: ^commit, plugin: %{name: "Hello"}} =
+               entry(server, :hello_plugin)
+    end
+
+    test "a sparse git plugin whose saved dependency can't be read is not loaded", %{
+      base: base,
+      dir: dir
+    } do
+      Application.put_env(:beamdash, :plugins_allow_local_git, true)
+      repo = make_monorepo(base)
+      server = start_plugins(dir)
+
+      install!(
+        server,
+        ~s|{:hello_plugin, git: "#{repo}", tag: "0.1.0", sparse: "plugins/hello_plugin"}|
+      )
+
+      stop!(server)
+      [json] = saved(dir)
+      write_saved(dir, [%{json | "spec" => ~s|{:hello_plugin, git: "#{repo}", sparse: "../up"}|}])
+
+      server = start_plugins(dir)
+      assert %{modules: [], status: {:failed, msg}} = entry(server, :hello_plugin)
+      assert msg =~ "can't be read"
     end
 
     test "a failing install (namespace clash) leaves nothing behind", %{base: base, dir: dir} do

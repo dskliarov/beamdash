@@ -3,7 +3,7 @@ defmodule Beamdash.ConnectionBarTest do
   import Phoenix.ConnTest
   import Phoenix.LiveViewTest, only: [rendered_to_string: 1]
 
-  alias Beamdash.{LastConnection, Settings, Target}
+  alias Beamdash.{Connections, LastConnection, Settings, Target}
   alias BeamdashWeb.Connection
   alias Beamdash.Test.Fixture
 
@@ -36,8 +36,11 @@ defmodule Beamdash.ConnectionBarTest do
   end
 
   defp socket do
-    %Phoenix.LiveView.Socket{}
+    Beamdash.Test.Fixture.with_conn(%Phoenix.LiveView.Socket{})
     |> Phoenix.Component.assign(:conn, %{
+      server: Target,
+      selected_node: nil,
+      kube_clusters: [],
       status: :disconnected,
       node: nil,
       info: nil,
@@ -70,6 +73,372 @@ defmodule Beamdash.ConnectionBarTest do
     assert html =~ "<strong>shop</strong>"
     assert html =~ "<strong>app-1</strong>"
     assert :binary.match(html, "<strong>prod</strong>") < :binary.match(html, "app@app-1")
+  end
+
+  test "a connected bar opens the connect panel only on request, with multiple connections allowed" do
+    connected = fn multiple, panel ->
+      conn =
+        Map.merge(socket().assigns.conn, %{
+          status: :connected,
+          node: :"app@app-1",
+          multiple: multiple,
+          panel: panel
+        })
+
+      bar(%{assigns: %{conn: conn}})
+    end
+
+    html = connected.(true, false)
+    refute html =~ ~s(class="connect-panel")
+    assert html =~ "Add connection"
+
+    html = connected.(true, true)
+    assert html =~ ~s(class="connect-panel below")
+    assert html =~ "Hide connect"
+    assert html =~ ~s(aria-label="Close connect")
+
+    html = connected.(false, false)
+    refute html =~ ~s(class="connect-panel")
+    refute html =~ "Add connection"
+  end
+
+  test "toggle_panel opens and closes the connect panel" do
+    conn = Map.put(socket().assigns.conn, :panel, false)
+    socket = Phoenix.Component.assign(socket(), :conn, conn)
+    assert {:halt, socket} = Connection.handle_event("toggle_panel", %{}, socket)
+    assert socket.assigns.conn.panel == true
+    assert {:halt, socket} = Connection.handle_event("toggle_panel", %{}, socket)
+    assert socket.assigns.conn.panel == false
+  end
+
+  test "a kubeconfig or container the page did not list is ignored" do
+    conn =
+      Map.merge(socket().assigns.conn, %{
+        kube_clusters: [%{path: "/kube/prod", name: "prod"}],
+        kube_cluster: "/kube/prod",
+        kube_containers: ["app", "sidecar"],
+        kube_container: "app"
+      })
+
+    socket = Phoenix.Component.assign(socket(), :conn, conn)
+
+    assert {:halt, unchanged} =
+             Connection.handle_event("select_kube_cluster", %{"cluster" => "/etc/passwd"}, socket)
+
+    assert unchanged.assigns.conn.kube_cluster == "/kube/prod"
+
+    container = "x\")||(@.name!=\""
+
+    assert {:halt, unchanged} =
+             Connection.handle_event(
+               "select_kube_container",
+               %{"namespace" => "shop", "pod" => "app-1", "container" => container},
+               socket
+             )
+
+    assert unchanged.assigns.conn.kube_container == "app"
+  end
+
+  test "the filter hides the connections that are not selected, and Show all lifts it" do
+    connections = [
+      %{server: Target, node: :api@a, status: :connected, identity: nil},
+      %{server: :second, node: :db@b, status: :connected, identity: nil}
+    ]
+
+    conn =
+      Map.merge(socket().assigns.conn, %{
+        status: :connected,
+        node: :api@a,
+        multiple: true,
+        connections: connections
+      })
+
+    html = bar(%{assigns: %{conn: conn}})
+    assert html =~ "<strong>db@b</strong>"
+    assert html =~ "Show selected only"
+
+    html = bar(%{assigns: %{conn: Map.put(conn, :only_selected, true)}})
+    refute html =~ "<strong>db@b</strong>"
+    assert html =~ "<strong>api@a</strong>"
+    assert html =~ "Show all"
+
+    socket = Phoenix.Component.assign(socket(), :conn, Map.put(conn, :only_selected, true))
+    assert {:halt, socket} = Connection.handle_event("toggle_only_selected", %{}, socket)
+    assert socket.assigns.conn.only_selected == false
+  end
+
+  test "the filter choice is kept when another page mounts" do
+    on_exit(fn -> :persistent_term.erase({Connection, :only_selected}) end)
+
+    socket =
+      Phoenix.Component.assign(
+        socket(),
+        :conn,
+        Map.put(socket().assigns.conn, :only_selected, false)
+      )
+
+    assert {:halt, socket} = Connection.handle_event("toggle_only_selected", %{}, socket)
+    assert socket.assigns.conn.only_selected == true
+
+    mounted = %Phoenix.LiveView.Socket{
+      transport_pid: self(),
+      private: %{lifecycle: %Phoenix.LiveView.Lifecycle{}, live_temp: %{}}
+    }
+
+    {:cont, mounted} = Connection.on_mount(:default, %{}, %{}, Fixture.with_conn(mounted))
+    assert mounted.assigns.conn.only_selected == true
+  end
+
+  test "the connected nodes are links to select one, with this session's node marked" do
+    connected = %{status: :connected, node: :api@a, info: nil, node_input: "", error: nil}
+
+    html =
+      bar(%{
+        assigns: %{
+          conn:
+            Map.merge(connected, %{
+              server: :second,
+              connections: [
+                %{
+                  server: Target,
+                  node: :api@a,
+                  status: :connected,
+                  reconnecting: nil,
+                  identity: nil
+                },
+                %{
+                  server: :second,
+                  node: :worker@b,
+                  status: :connected,
+                  reconnecting: nil,
+                  identity: nil
+                }
+              ]
+            })
+        }
+      })
+
+    refute html =~ ~s(id="node-selector")
+    refute html =~ "<select"
+    assert html =~ ~s(href="/connections/select?node=worker%40b")
+    assert html =~ ~s(href="/connections/select?node=api%40a")
+    assert html =~ ~s(class="connected-node selected")
+    assert html =~ ~s(aria-current="true")
+  end
+
+  test "the connected node list stays when this session's own node is no longer connected" do
+    conn =
+      Map.merge(socket().assigns.conn, %{
+        server: :second,
+        connections: [
+          %{
+            server: Target,
+            node: :api@a,
+            status: :disconnected,
+            reconnecting: nil,
+            identity: nil
+          },
+          %{
+            server: :second,
+            node: :worker@b,
+            status: :connected,
+            reconnecting: nil,
+            identity: nil
+          }
+        ]
+      })
+
+    assert bar(%{assigns: %{conn: conn}}) =~ ~s(id="connected-nodes")
+  end
+
+  test "the connected node list is absent with one connection" do
+    html =
+      bar(%{
+        assigns: %{
+          conn: %{
+            status: :connected,
+            node: :api@a,
+            server: Target,
+            info: nil,
+            node_input: "",
+            error: nil,
+            connections: [%{server: Target, node: :api@a, status: :connected, reconnecting: nil}]
+          }
+        }
+      })
+
+    refute html =~ ~s(id="connected-nodes")
+  end
+
+  test "with several connections, each connected node has its own Disconnect" do
+    html =
+      bar(%{
+        assigns: %{
+          conn: %{
+            status: :connected,
+            node: :api@a,
+            server: :second,
+            info: nil,
+            node_input: "",
+            error: nil,
+            connections: [
+              %{
+                server: Target,
+                node: :api@a,
+                status: :connected,
+                reconnecting: nil,
+                identity: nil
+              },
+              %{
+                server: :second,
+                node: :worker@b,
+                status: :connected,
+                reconnecting: nil,
+                identity: {:direct, "worker"}
+              }
+            ]
+          }
+        }
+      })
+
+    assert html =~ ~s(id="connected-nodes")
+    assert html =~ ~s(phx-value-server="#{Connections.key(Target)}")
+    assert html =~ ~s(phx-value-server="#{Connections.key(:second)}")
+    refute html =~ ~s(phx-click="disconnect" class="secondary")
+  end
+
+  test "each connected node's cluster, namespace and pod are grouped with its own Disconnect" do
+    html =
+      bar(%{
+        assigns: %{
+          conn: %{
+            status: :connected,
+            node: :api@a,
+            server: :second,
+            info: nil,
+            node_input: "",
+            error: nil,
+            connections: [
+              %{
+                server: Target,
+                node: :api@a,
+                status: :connected,
+                reconnecting: nil,
+                identity: {:kubectl, "repo"},
+                kube_target: %{cluster: "prod", namespace: "shop", pod: "api-1"}
+              },
+              %{
+                server: :second,
+                node: :worker@b,
+                status: :connected,
+                reconnecting: nil,
+                identity: {:direct, "worker"},
+                kube_target: nil
+              }
+            ]
+          }
+        }
+      })
+
+    assert html =~
+             ~r/<a href="[^"]*" class="connected-label connected-select".*?<strong>prod<\/strong>.*?phx-value-server="#{Connections.key(Target)}".*?<\/li>/s
+
+    assert length(Regex.scan(~r/class="kube-target"/, html)) == 1
+    assert html =~ ~r/<span class="connected-name">\s*<span class="kube-target">/
+  end
+
+  describe "several connections, disconnected one by one" do
+    setup do
+      previous_method = Settings.connection_method()
+      :ok = Settings.put_connection_method(:direct)
+      :ok = Settings.put_multiple_connections(true)
+
+      on_exit(fn ->
+        for %{server: server} <- Connections.list(),
+            server != Target,
+            do: Connections.remove(server)
+
+        Target.disconnect()
+        Settings.put_multiple_connections(false)
+        Settings.put_connection_method(previous_method)
+      end)
+
+      :ok
+    end
+
+    test "a node's Disconnect ends only that node, and the page stays on the session's node" do
+      {_peer1, node1} = Fixture.start_peer()
+      {_peer2, node2} = Fixture.start_peer()
+      {:ok, _} = Target.connect(Atom.to_string(node1), Fixture.cookie())
+      extra = Connections.target_for_connect()
+      {:ok, _} = Target.connect(Atom.to_string(node2), Fixture.cookie(), extra)
+
+      conn =
+        Map.merge(socket().assigns.conn, %{
+          status: :connected,
+          node: node1,
+          connections: Connections.list()
+        })
+
+      s = Phoenix.Component.assign(socket(), :conn, conn)
+
+      assert {:halt, s} =
+               Connection.handle_event("disconnect", %{"node" => Atom.to_string(node2)}, s)
+
+      assert s.assigns.conn.status == :connected
+      assert Target.status().node == node1
+      assert Enum.map(Connections.connected(), & &1.node) == [node1]
+      refute bar(s) =~ "connected-nodes"
+      refute bar(s) =~ Atom.to_string(node2)
+    end
+
+    test "a row is disconnected by its key, the session's node stays" do
+      {_peer1, node1} = Fixture.start_peer()
+      {_peer2, node2} = Fixture.start_peer()
+      {:ok, _} = Target.connect(Atom.to_string(node1), Fixture.cookie())
+      extra = Connections.target_for_connect()
+      {:ok, _} = Target.connect(Atom.to_string(node2), Fixture.cookie(), extra)
+
+      conn =
+        Map.merge(socket().assigns.conn, %{
+          status: :connected,
+          node: node1,
+          connections: Connections.list()
+        })
+
+      s = Phoenix.Component.assign(socket(), :conn, conn)
+      assert {:halt, _} = Connection.handle_event("disconnect", %{"server" => "unknown"}, s)
+      assert Enum.any?(Connections.list(), &(&1.server == extra))
+
+      assert {:halt, _} =
+               Connection.handle_event(
+                 "disconnect",
+                 %{"server" => Connections.key(extra)},
+                 s
+               )
+
+      refute Enum.any?(Connections.list(), &(&1.server == extra))
+      assert Target.status().node == node1
+    end
+
+    test "a reconnecting row with no node keeps the application it was connected to" do
+      {_peer1, node1} = Fixture.start_peer()
+      {peer2, node2} = Fixture.start_peer()
+      {:ok, _} = Target.connect(Atom.to_string(node1), Fixture.cookie())
+      extra = Connections.target_for_connect()
+      {:ok, _} = Target.connect(Atom.to_string(node2), Fixture.cookie(), extra)
+      identity = {:direct, Connections.node_app(Atom.to_string(node2))}
+      Connections.record_application(extra, identity)
+
+      Settings.put_auto_reconnect(true)
+      on_exit(fn -> Settings.put_auto_reconnect(false) end)
+      Fixture.stop_peer(peer2)
+
+      eventually(fn -> Target.reconnecting(extra) != nil end)
+
+      assert %{node: nil, status: :disconnected, identity: ^identity} =
+               Enum.find(Connections.list(), &(&1.server == extra))
+    end
   end
 
   test "a Kubernetes source gives its cluster name, namespace and pod" do
@@ -120,17 +489,20 @@ defmodule Beamdash.ConnectionBarTest do
     refute html =~ "Disconnect"
   end
 
-  test "connecting from the bar moves to the System tab, unless already there", %{node: node} do
+  test "connecting from the bar selects the node and returns to the System tab", %{node: node} do
     params = %{"node" => Atom.to_string(node), "cookie" => Fixture.cookie()}
 
     {:halt, s} = Connection.handle_event("connect", params, socket())
-    assert s.redirected == {:live, :redirect, %{kind: :push, to: "/system"}}
+    assert s.assigns.conn.status == :connected
+    assert {:redirect, %{to: to}} = s.redirected
+    assert %URI{path: "/connections/select", query: query} = URI.parse(to)
+    assert URI.decode_query(query) == %{"node" => Atom.to_string(node), "return_to" => "/system"}
 
     :ok = Target.disconnect()
     on_system = %{socket() | view: BeamdashWeb.SystemLive}
     {:halt, s} = Connection.handle_event("connect", params, on_system)
     assert s.assigns.conn.status == :connected
-    assert s.redirected == nil
+    assert {:redirect, %{to: _}} = s.redirected
 
     # a failed connect stays put
     {:halt, s} =
@@ -145,6 +517,8 @@ defmodule Beamdash.ConnectionBarTest do
     s =
       socket()
       |> Phoenix.Component.assign(:conn, %{socket().assigns.conn | status: :connected, node: node})
+
+    :ok = Target.disconnect()
 
     assert {:cont, s2} = Connection.handle_info({:beamdash_target, {:disconnected, :user}}, s)
     assert s2.assigns.conn.status == :disconnected
@@ -207,10 +581,40 @@ defmodule Beamdash.ConnectionBarTest do
     assert html =~ ~s(value="nobody@nowhere")
   end
 
+  test "a connect on another server fills its own bar line and leaves the session's slot alone" do
+    s = mounted_bar()
+    other = self()
+    step = %{label: "Reading the node name and cookie from the pod", command: "kubectl get pod"}
+
+    {:halt, s} = Connection.handle_info({:beamdash_connecting, other, step}, s)
+    assert s.assigns.conn.connecting == nil
+
+    assert %{^other => %{label: "Reading the node name and cookie from the pod"}} =
+             s.assigns.conn.connecting_others
+
+    {:halt, s} = Connection.handle_info({:beamdash_connecting, other, nil}, s)
+    assert s.assigns.conn.connecting_others == %{}
+  end
+
+  defp eventually(fun, tries \\ 100) do
+    cond do
+      fun.() ->
+        :ok
+
+      tries == 0 ->
+        flunk("condition not met in time")
+
+      true ->
+        Process.sleep(20)
+        eventually(fun, tries - 1)
+    end
+  end
+
   defp mounted_bar do
-    socket = %Phoenix.LiveView.Socket{
-      private: %{lifecycle: %Phoenix.LiveView.Lifecycle{}, live_temp: %{}}
-    }
+    socket =
+      Beamdash.Test.Fixture.with_conn(%Phoenix.LiveView.Socket{
+        private: %{lifecycle: %Phoenix.LiveView.Lifecycle{}, live_temp: %{}}
+      })
 
     {:cont, s} = Connection.on_mount(:default, %{}, %{}, socket)
     s
@@ -331,6 +735,28 @@ defmodule Beamdash.ConnectionBarTest do
     assert bar(after_delete) =~ "No saved connections yet"
   end
 
+  test "a saved connection that is already connected is not offered again", %{node: node} do
+    :ok = LastConnection.forget()
+    :ok = LastConnection.put(%{"kind" => "node", "node" => "spare@elsewhere", "cookie" => ""})
+    :ok = LastConnection.put(%{"kind" => "node", "node" => Atom.to_string(node), "cookie" => ""})
+
+    s = on_saved_tab(socket())
+
+    s =
+      Phoenix.Component.assign(
+        s,
+        :conn,
+        Map.put(s.assigns.conn, :connections, [%{node: node, status: :connected}])
+      )
+
+    html = bar(s)
+    assert html =~ ~s(<span class="saved-name">spare@elsewhere</span>)
+    refute html =~ ~s(<span class="saved-name">#{node}</span>)
+
+    s = Phoenix.Component.assign(s, :conn, Map.put(s.assigns.conn, :connections, []))
+    assert bar(s) =~ ~s(<span class="saved-name">#{node}</span>)
+  end
+
   test "a saved Kubernetes connection shows its pod with the cluster, namespace and container" do
     :ok = LastConnection.forget()
 
@@ -350,6 +776,35 @@ defmodule Beamdash.ConnectionBarTest do
     assert html =~ ~s(<span class="saved-name">app-1</span>)
     assert html =~ ~s(<span class="saved-meta">prod · shop · app</span>)
     assert html =~ ~s[aria-label="Delete app-1 (prod · shop · app)"]
+  end
+
+  test "saved connections are grouped by application, the most recent group first" do
+    :ok = LastConnection.forget()
+    :ok = LastConnection.put(%{"kind" => "node", "node" => "api@a", "cookie" => ""})
+
+    :ok =
+      LastConnection.put(%{
+        "kind" => "kubectl",
+        "node" => "worker@w-1",
+        "cookie" => "",
+        "kubeconfig" => "/kube/prod.yaml",
+        "namespace" => "shop",
+        "pod" => "w-1",
+        "container" => "",
+        "binary" => "",
+        "app" => "worker"
+      })
+
+    :ok = LastConnection.put(%{"kind" => "node", "node" => "api@b", "cookie" => ""})
+
+    html = bar(on_saved_tab(socket()))
+
+    assert length(Regex.scan(~r/class="saved-app muted small"/, html)) == 2
+    assert length(Regex.scan(~r/class="saved-group-list"/, html)) == 2
+    assert [{api_at, _}] = Regex.run(~r/>\s*api\s*<\/h3>/, html, return: :index)
+    assert [{worker_at, _}] = Regex.run(~r/>\s*worker\s*<\/h3>/, html, return: :index)
+    assert api_at < worker_at
+    assert length(Regex.scan(~r/class="saved-connection"/, html)) == 3
   end
 
   test "the Saved tab is chosen like Direct and Kubernetes, and kept for the next page", %{
@@ -456,13 +911,13 @@ defmodule Beamdash.ConnectionBarTest do
     previous = Application.get_env(:beamdash, :has_k8s)
     on_exit(fn -> Application.put_env(:beamdash, :has_k8s, previous) end)
 
+    kubectl_button = ~r/phx-value-method="kubectl"\s*>\s*(\w+)\s*</
+
     Application.put_env(:beamdash, :has_k8s, true)
-    assert bar(socket()) =~ ~r/>\s*Kubernetes\s*</
-    refute bar(socket()) =~ ~r/>\s*kubectl\s*</
+    assert [_, "Kubernetes"] = Regex.run(kubectl_button, bar(socket()))
 
     Application.put_env(:beamdash, :has_k8s, false)
-    assert bar(socket()) =~ ~r/>\s*kubectl\s*</
-    refute bar(socket()) =~ ~r/>\s*Kubernetes\s*</
+    assert [_, "kubectl"] = Regex.run(kubectl_button, bar(socket()))
   end
 
   test "the namespace field suggests the namespaces found in the cluster" do
@@ -583,6 +1038,31 @@ defmodule Beamdash.ConnectionBarTest do
     assert failed.assigns.conn.error == nil
   end
 
+  test "connect_kubectl with a container the page did not list does not connect" do
+    conn =
+      Map.merge(socket().assigns.conn, %{
+        method: :kubectl,
+        connecting: false,
+        kube_cluster: "/tmp/prod.yaml",
+        kube_namespace: "shop",
+        kube_pod: "app-1",
+        kube_containers: ["app", "sidecar"],
+        kube_container: "app"
+      })
+
+    s = Phoenix.Component.assign(socket(), :conn, conn)
+    container = "x\")||(@.name!=\""
+
+    assert {:halt, unchanged} =
+             Connection.handle_event(
+               "connect_kubectl",
+               %{"namespace" => "shop", "container" => container, "binary" => "/app/bin/a"},
+               s
+             )
+
+    refute unchanged.assigns.conn.connecting
+  end
+
   test "a namespace listing for another cluster is ignored" do
     s = on_cluster("/k/prod.yaml", %{method: :kubectl, kube_namespaces: ["default"]})
 
@@ -599,7 +1079,8 @@ defmodule Beamdash.ConnectionBarTest do
     fake_kubectl()
     old = empty_kubeconfig()
     new = empty_kubeconfig()
-    s = on_cluster(old, %{method: :kubectl, kube_namespaces: ["default"]})
+    listed = [%{name: "old", path: old}, %{name: "new", path: new}]
+    s = on_cluster(old, %{method: :kubectl, kube_namespaces: ["default"], kube_clusters: listed})
 
     {:halt, s} = Connection.handle_event("select_kube_cluster", %{"cluster" => new}, s)
     assert s.assigns.conn.kube_cluster == new
@@ -615,8 +1096,15 @@ defmodule Beamdash.ConnectionBarTest do
 
     progress = %{label: "Listing pods…", command: "kubectl get pods", since: 0, elapsed: 1}
 
+    listed = [%{name: "old", path: old}, %{name: "new", path: new}]
+
     s =
-      on_cluster(old, %{method: :kubectl, kube_progress: progress, kube_restore_ref: make_ref()})
+      on_cluster(old, %{
+        method: :kubectl,
+        kube_progress: progress,
+        kube_restore_ref: make_ref(),
+        kube_clusters: listed
+      })
 
     {:halt, s} = Connection.handle_event("select_kube_cluster", %{"cluster" => new}, s)
     assert s.assigns.conn.kube_progress == nil
@@ -734,10 +1222,11 @@ defmodule Beamdash.ConnectionBarTest do
     :ok = Settings.put_connection_method(:kubectl)
     :ok = Settings.reload()
 
-    socket = %Phoenix.LiveView.Socket{
-      transport_pid: self(),
-      private: %{lifecycle: %Phoenix.LiveView.Lifecycle{}, live_temp: %{}}
-    }
+    socket =
+      Beamdash.Test.Fixture.with_conn(%Phoenix.LiveView.Socket{
+        transport_pid: self(),
+        private: %{lifecycle: %Phoenix.LiveView.Lifecycle{}, live_temp: %{}}
+      })
 
     {:cont, s} = Connection.on_mount(:default, %{}, %{}, socket)
     assert s.assigns.conn.method == :kubectl
@@ -879,8 +1368,7 @@ defmodule Beamdash.ConnectionBarTest do
     assert s.assigns.conn.kube_pods == ["app-1"]
     assert s.assigns.conn.kube_restore_ref == nil
 
-    :ok = Target.disconnect()
-    assert_receive {:beamdash_connecting, nil}, 10_000
+    assert_receive {:beamdash_kube_connected, _ctx, _result}, 10_000
   end
 
   test "List pods fills the pod dropdown in the bar" do
@@ -1041,5 +1529,133 @@ defmodule Beamdash.ConnectionBarTest do
     assert html =~ ~r/>\s*Node\s*</
     assert html =~ ~r/>\s*Cookie\s*</
     assert html =~ ~s(class="seg method-switch")
+  end
+
+  test "saved connections get a checkbox and Connect selected only with multiple connections on" do
+    :ok = LastConnection.forget()
+    :ok = LastConnection.put(%{"kind" => "node", "node" => "api@a", "cookie" => ""})
+    s = on_saved_tab(socket())
+    s = Phoenix.Component.assign(s, :conn, Map.put(s.assigns.conn, :connecting, nil))
+
+    on = Phoenix.Component.assign(s, :conn, Map.put(s.assigns.conn, :multiple, true))
+    html = bar(on)
+    assert html =~ ~s(name="ids[]")
+    refute html =~ ~s(id="connect-selected")
+
+    {:halt, selected} =
+      Connection.handle_event(
+        "saved_selection",
+        %{"ids" => [hd(LastConnection.list())["id"]]},
+        on
+      )
+
+    assert bar(selected) =~ ~s(id="connect-selected")
+    assert bar(selected) =~ ~r/type="checkbox"[^>]*checked/
+
+    off = Phoenix.Component.assign(s, :conn, Map.put(s.assigns.conn, :multiple, false))
+    html = bar(off)
+    refute html =~ ~s(name="ids[]")
+    refute html =~ ~s(id="connect-selected")
+
+    {:halt, refused} =
+      Connection.handle_event(
+        "connect_saved_many",
+        %{"ids" => [hd(LastConnection.list())["id"]]},
+        off
+      )
+
+    assert refused.assigns.conn.error =~ "Allow multiple connections"
+  end
+
+  describe "connecting several saved connections at once" do
+    setup do
+      previous_method = Settings.connection_method()
+      :ok = Settings.put_connection_method(:direct)
+      :ok = Settings.put_multiple_connections(true)
+
+      on_exit(fn ->
+        for %{server: server} <- Connections.list(),
+            server != Target,
+            do: Connections.remove(server)
+
+        Target.disconnect()
+        Settings.put_multiple_connections(false)
+        Settings.put_connection_method(previous_method)
+      end)
+
+      :ok
+    end
+
+    test "a checked saved connection goes through the batch and is connected and kept" do
+      {_peer, node} = Fixture.start_peer()
+      :ok = LastConnection.forget()
+
+      :ok =
+        LastConnection.put(%{
+          "kind" => "node",
+          "node" => Atom.to_string(node),
+          "cookie" => Fixture.cookie()
+        })
+
+      ids = Enum.map(LastConnection.list(), & &1["id"])
+      s = mounted_bar()
+      s = Phoenix.Component.assign(s, :conn, Map.put(s.assigns.conn, :multiple, true))
+
+      {:halt, started} = Connection.handle_event("connect_saved_many", %{"ids" => ids}, s)
+      assert started.assigns.conn.connecting
+
+      assert_receive {:beamdash_saved_many, results}, 30_000
+      {:halt, _} = Connection.handle_info({:beamdash_saved_many, results}, started)
+
+      assert %{status: :connected, node: ^node} = Target.status()
+      assert [%{"node" => saved}] = LastConnection.list()
+      assert saved == Atom.to_string(node)
+    end
+
+    test "checked connections of different applications are refused before anything connects" do
+      {_peer1, node1} = Fixture.start_peer()
+      {_peer2, node2} = Fixture.start_peer()
+      :ok = LastConnection.forget()
+
+      for node <- [node1, node2] do
+        :ok =
+          LastConnection.put(%{
+            "kind" => "node",
+            "node" => Atom.to_string(node),
+            "cookie" => Fixture.cookie()
+          })
+      end
+
+      ids = Enum.map(LastConnection.list(), & &1["id"])
+      s = mounted_bar()
+      s = Phoenix.Component.assign(s, :conn, Map.put(s.assigns.conn, :multiple, true))
+
+      {:halt, refused} = Connection.handle_event("connect_saved_many", %{"ids" => ids}, s)
+      assert refused.assigns.conn.error =~ "different applications"
+      refute refused.assigns.conn.connecting
+      refute_received {:beamdash_saved_many, _}
+      assert Connections.list() == []
+    end
+
+    test "Disconnect all ends every connection, next to Add connection and Show all" do
+      {_peer1, node1} = Fixture.start_peer()
+      {_peer2, node2} = Fixture.start_peer()
+      {:ok, _} = Target.connect(Atom.to_string(node1), Fixture.cookie())
+
+      {:ok, _} =
+        Target.connect(Atom.to_string(node2), Fixture.cookie(), Connections.target_for_connect())
+
+      assert length(Connections.list()) == 2
+
+      s = mounted_bar()
+      s = Phoenix.Component.assign(s, :conn, Map.put(s.assigns.conn, :multiple, true))
+      html = bar(s)
+      assert html =~ ~s(phx-click="disconnect_all")
+      assert html =~ "Disconnect all"
+
+      {:halt, _} = Connection.handle_event("disconnect_all", %{}, s)
+      assert Connections.list() == []
+      assert Target.status().status == :disconnected
+    end
   end
 end

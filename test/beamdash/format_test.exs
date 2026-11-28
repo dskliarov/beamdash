@@ -21,14 +21,20 @@ defmodule Beamdash.FormatTest do
   end
 
   test "records in each syntax, nested" do
-    inner = Record.decode({:erlyberly_record, :item, [{:erlyberly_record_field, :sku, :a1}]})
+    inner =
+      Record.decode(
+        {:beamdash_trace_agent_record, :item, [{:beamdash_trace_agent_record_field, :sku, :a1}]}
+      )
 
     outer =
       Record.decode(
-        {:erlyberly_record, :cart,
+        {:beamdash_trace_agent_record, :cart,
          [
-           {:erlyberly_record_field, :items,
-            [{:erlyberly_record, :item, [{:erlyberly_record_field, :sku, :a1}]}]}
+           {:beamdash_trace_agent_record_field, :items,
+            [
+              {:beamdash_trace_agent_record, :item,
+               [{:beamdash_trace_agent_record_field, :sku, :a1}]}
+            ]}
          ]}
       )
 

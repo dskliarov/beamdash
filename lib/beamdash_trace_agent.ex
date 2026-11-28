@@ -1,4 +1,4 @@
-# erlyberly, erlang trace debugger
+# Erlang trace agent, loaded into the node being inspected
 # Copyright (C) 2016 Andy Till
 #
 # This program is free software: you can redistribute it and/or modify
@@ -14,9 +14,9 @@
 # You should have received a copy of the GNU General Public License
 # along with this program. If not, see <http://www.gnu.org/licenses/>.
 
-defmodule :erlyberly do
+defmodule :beamdash_trace_agent do
   @moduledoc """
-  erlyberly's agent, ported from `erlyberly.erl` to Elixir.
+  The trace agent, written in Elixir.
 
   This module is loaded into the node being inspected, and that node may be
   a pure Erlang node with no Elixir installed. So the code below may only
@@ -26,13 +26,13 @@ defmodule :erlyberly do
   with `catch kind, reason`. `Beamdash.AgentTest` checks the compiled BEAM
   imports nothing from Elixir.
 
-  The module keeps its Erlang name, `erlyberly`, and the same functions and
-  return values as the Erlang original, so the beamdash side is unchanged.
+  The module is `beamdash_trace_agent`, with the functions and
+  return values the beamdash side calls.
 
   Tracing calls the trace BIFs (`erlang:trace/3`, `erlang:trace_pattern/3`)
   directly instead of `dbg`, which is in `runtime_tools`: releases often
   leave that application out. As with `dbg`, a small tracer process
-  (`erlyberly_tracer`) receives the trace messages and passes them to the
+  (`beamdash_trace_agent_tracer`) receives the trace messages and passes them to the
   collector.
   """
 
@@ -42,10 +42,10 @@ defmodule :erlyberly do
   # syntax_tools applications; beamdash itself does not need them.
   @compile {:no_warn_undefined, [:xref, :erl_syntax, :erl_prettypr]}
 
-  @tcollector :erlyberly_tcollector
-  @tracer :erlyberly_tracer
-  @seq_tracer :erlyberly_seq_trace
-  @xref :erlyberly_xref
+  @tcollector :beamdash_trace_agent_tcollector
+  @tracer :beamdash_trace_agent_tracer
+  @seq_tracer :beamdash_trace_agent_seq_trace
+  @xref :beamdash_trace_agent_xref
 
   ## ===========================================================================
   ## process info
@@ -160,12 +160,12 @@ defmodule :erlyberly do
 
       fields_as_tuples =
         :lists.zipwith(
-          fn k, v -> {:erlyberly_record_field, k, v} end,
+          fn k, v -> {:beamdash_trace_agent_record_field, k, v} end,
           field_names,
           :lists.map(&format_record(&1, mod), rec_values)
         )
 
-      {:erlyberly_record, name, fields_as_tuples}
+      {:beamdash_trace_agent_record, name, fields_as_tuples}
     catch
       # The module might not contain abstract_code (compiled without
       # debug_info) or we are treating a normal tuple as a record.
@@ -229,7 +229,7 @@ defmodule :erlyberly do
   @doc """
   The records of a module.
 
-      (derp@mac)4> erlyberly:load_module_records(gen_event).
+      (derp@mac)4> beamdash_trace_agent:load_module_records(gen_event).
       {ok,[{handler,[module,id,state,supervised]}]}
   """
   def load_module_records(mod) do
@@ -301,11 +301,17 @@ defmodule :erlyberly do
 
   def ensure_tracer_started({eb_node, eb_pid}, max_queue_len) do
     when_process_is_unregistered(@tracer, fn ->
-      :erlang.register(@tracer, :proc_lib.spawn(__MODULE__, :erlyberly_tracer, []))
+      :erlang.register(@tracer, :proc_lib.spawn(__MODULE__, :beamdash_trace_agent_tracer, []))
     end)
 
     when_process_is_unregistered(@tcollector, fn ->
-      pid = :proc_lib.spawn(__MODULE__, :erlyberly_tcollector, [eb_node, eb_pid, max_queue_len])
+      pid =
+        :proc_lib.spawn(__MODULE__, :beamdash_trace_agent_tcollector, [
+          eb_node,
+          eb_pid,
+          max_queue_len
+        ])
+
       :erlang.register(@tcollector, pid)
     end)
   end
@@ -313,7 +319,7 @@ defmodule :erlyberly do
   @doc false
   # The tracer: passes every trace message to the collector (dropped while
   # there is none, as for a seq trace's own call patterns).
-  def erlyberly_tracer do
+  def beamdash_trace_agent_tracer do
     receive do
       trace ->
         case :erlang.whereis(@tcollector) do
@@ -321,7 +327,7 @@ defmodule :erlyberly do
           collector -> send(collector, trace)
         end
 
-        erlyberly_tracer()
+        beamdash_trace_agent_tracer()
     end
   end
 
@@ -391,7 +397,7 @@ defmodule :erlyberly do
   # Collector state: ui_pid receives the logs; traces are the {M, F, A}
   # being traced; tracing is suspended when the collector's message queue
   # grows past max_queue_len.
-  def erlyberly_tcollector(node, pid, max_queue_len) when is_integer(max_queue_len) do
+  def beamdash_trace_agent_tcollector(node, pid, max_queue_len) when is_integer(max_queue_len) do
     # throws a badarg if the node has already closed down
     :erlang.monitor_node(node, true)
 
@@ -408,7 +414,7 @@ defmodule :erlyberly do
     case :erlang.process_info(self(), :message_queue_len) do
       {:message_queue_len, queue_len} when queue_len > max_queue_len ->
         :ok = stop_clear()
-        send(ui_pid, {:erlyberly_trace_overload, queue_len})
+        send(ui_pid, {:beamdash_trace_agent_trace_overload, queue_len})
         collect_overloading_logs(max_queue_len, tc)
 
       _ ->
@@ -425,7 +431,7 @@ defmodule :erlyberly do
       log ->
         case collect_log(log) do
           :skip -> :ok
-          {:erlyberly_module_loaded, _} -> :ok
+          {:beamdash_trace_agent_module_loaded, _} -> :ok
           trace_log -> notify_trace_log(trace_log, tc)
         end
 
@@ -458,7 +464,7 @@ defmodule :erlyberly do
           :skip ->
             :ok
 
-          {:erlyberly_module_loaded, loaded_module} ->
+          {:beamdash_trace_agent_module_loaded, loaded_module} ->
             :ok = reapply_traces(loaded_module, traces)
             :ok = notify_module_loaded(loaded_module, tc)
 
@@ -482,7 +488,7 @@ defmodule :erlyberly do
 
   # a module was (re)loaded: its traces must be re-applied
   defp collect_log({:trace_ts, _, :return_from, {:code, _, _}, {:module, loaded_module}, _}),
-    do: {:erlyberly_module_loaded, loaded_module}
+    do: {:beamdash_trace_agent_module_loaded, loaded_module}
 
   defp collect_log({:trace_ts, _, _, {:code, _, _}, _}), do: :skip
   # any other return/exception from the code module (purge, delete, ...) is
@@ -498,12 +504,16 @@ defmodule :erlyberly do
   end
 
   defp notify_module_loaded(loaded_module, %{ui_pid: pid}) do
-    send(pid, {:erlyberly_module_loaded, loaded_module, module_functions2(loaded_module)})
+    send(
+      pid,
+      {:beamdash_trace_agent_module_loaded, loaded_module, module_functions2(loaded_module)}
+    )
+
     :ok
   end
 
   defp notify_trace_log(trace_log, %{ui_pid: pid}) do
-    send(pid, {:erlyberly_trace_log, trace_log})
+    send(pid, {:beamdash_trace_agent_trace_log, trace_log})
     :ok
   end
 
@@ -760,7 +770,7 @@ defmodule :erlyberly do
         seq_trace_collector([])
 
       other ->
-        :io.format(~c"Erlyberly seq_trace, unexpected message: ~s ~p~n", [
+        :io.format(~c"Beamdash trace agent seq_trace, unexpected message: ~s ~p~n", [
           format_utc_timestamp(),
           other
         ])
@@ -967,7 +977,7 @@ defmodule :erlyberly do
       :lists.filter(&(not dir_contains(&1, @xref_excluded)), :lists.sort(:code.get_path()))
 
     :lists.foreach(&:xref.add_directory(@xref, &1, [{:warnings, false}]), code_paths)
-    {:ok, :erlyberly_xref_started}
+    {:ok, :beamdash_trace_agent_xref_started}
   end
 
   defp dir_contains(_, []), do: false
@@ -1076,7 +1086,7 @@ defmodule :erlyberly do
 
   @impl :gen_event
   def handle_event({:error_report, _, {_, :crash_report, crash_props}}, %{node: node} = state) do
-    send(node, {:erlyberly_error_report, :lists.flatten(crash_props)})
+    send(node, {:beamdash_trace_agent_error_report, :lists.flatten(crash_props)})
     {:ok, state}
   end
 

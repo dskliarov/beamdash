@@ -10,7 +10,7 @@ defmodule Beamdash.Target do
     3. connects as a *hidden* node, so we never show up in the target's
        `nodes()` or join its cluster,
     4. loads the helper modules (`:beamdash_agent` for process info,
-       `:erlyberly` for tracing) and reads basic node info.
+       `:beamdash_trace_agent` for tracing) and reads basic node info.
 
   `connect_via_kubectl/5` reaches a node in a Kubernetes pod the same way,
   but first opens a `kubectl port-forward` tunnel to it (see
@@ -22,8 +22,9 @@ defmodule Beamdash.Target do
   Subscribers receive `{:beamdash_target, {:connected, node}}` and
   `{:beamdash_target, {:disconnected, reason}}`. A kubectl connection runs
   in the background: its steps go to the `subscribe_connecting/0` topic as
-  `{:beamdash_connecting, %{label: label, command: command | nil}}`, and
-  `{:beamdash_connecting, nil}` once it ends. Only the connection bar listens
+  `{:beamdash_connecting, server, %{label: label, command: command | nil}}`
+  (`server` is this process's pid), and `{:beamdash_connecting, server, nil}`
+  once it ends. Only the connection bar listens
   there, so the pages and processes subscribed above never see them.
 
   With auto-reconnect on (`Beamdash.Settings.auto_reconnect?/0`), a
@@ -49,6 +50,10 @@ defmodule Beamdash.Target do
   @connecting_topic "target:connecting"
 
   @reconnect_delays [1_000, 2_000, 5_000, 10_000, 15_000]
+  # The VM does not run while the machine sleeps, so a wall clock that moved
+  # on much further than the monotonic one is a sleep that just ended.
+  @wake_check_ms 5_000
+  @wake_gap_ms 30_000
 
   defstruct node: nil,
             subscribers: %{},
@@ -59,7 +64,10 @@ defmodule Beamdash.Target do
             reconnect: nil,
             pending: nil,
             auto_reconnect: nil,
-            reconnect_delays: @reconnect_delays
+            reconnect_delays: @reconnect_delays,
+            clock: nil,
+            last_clock: nil,
+            wake_check_ms: @wake_check_ms
 
   ## API
 
@@ -71,7 +79,7 @@ defmodule Beamdash.Target do
   """
   def start_link(opts \\ []) do
     {name, opts} = Keyword.pop(opts, :name, __MODULE__)
-    GenServer.start_link(__MODULE__, opts, name: name)
+    GenServer.start_link(__MODULE__, opts, if(name, do: [name: name], else: []))
   end
 
   @doc "Connects to `node` (a string like `\"foo@host\"` or just `\"foo\"`)."
@@ -121,6 +129,14 @@ defmodule Beamdash.Target do
   """
   def switch(node, server \\ __MODULE__) when is_atom(node),
     do: GenServer.call(server, {:switch, node}, @kubectl_connect_timeout + Settings.rpc_timeout())
+
+  @doc """
+  How the attached node reaches `node`, for a connection of its own:
+  `{:direct, cookie}`, or `{:kubectl, kubeconfig, namespace, container, binary}`
+  (the pod of `node` is then found with `Beamdash.Kubectl.find_pod/3`).
+  """
+  def route_to(node, server \\ __MODULE__) when is_atom(node),
+    do: GenServer.call(server, {:route_to, node})
 
   @doc """
   `nil`, or while a lost connection is being tried again
@@ -173,13 +189,21 @@ defmodule Beamdash.Target do
   @doc "Subscribes the calling process to connection events (again: no-op)."
   def subscribe(server \\ __MODULE__), do: GenServer.call(server, {:subscribe, self()})
 
+  @doc "Stops the calling process receiving connection events from `server`."
+  def unsubscribe(server \\ __MODULE__), do: GenServer.call(server, {:unsubscribe, self()})
+
   @doc "Subscribes the calling process to the steps of a kubectl connect (see the moduledoc)."
   def subscribe_connecting, do: Phoenix.PubSub.subscribe(Beamdash.PubSub, @connecting_topic)
 
   def processes(server \\ __MODULE__), do: call_agent(server, :processes, [])
 
-  @doc "The process list and the node's info in one call: `{:ok, {procs, info}}`."
-  def process_list(server \\ __MODULE__), do: call_agent(server, :process_list, [])
+  @doc """
+  The process list and the node's info in one call: `{:ok, {procs, info}}`.
+  With `bytes?`, each process also has its `ets` and `binary` bytes (see
+  `beamdash_agent:processes/1`), which cost more to read.
+  """
+  def process_list(server \\ __MODULE__, bytes? \\ false),
+    do: call_agent(server, :process_list, [bytes?])
 
   def node_info(server \\ __MODULE__), do: call_agent(server, :node_info, [])
 
@@ -255,10 +279,17 @@ defmodule Beamdash.Target do
 
   @impl true
   def init(opts) do
+    clock = Keyword.get(opts, :clock, &clock/0)
+    interval = Keyword.get(opts, :wake_check_ms, @wake_check_ms)
+    Process.send_after(self(), :wake_check, interval)
+
     {:ok,
      %__MODULE__{
        auto_reconnect: Keyword.get(opts, :auto_reconnect, &Beamdash.Settings.auto_reconnect?/0),
-       reconnect_delays: Keyword.get(opts, :reconnect_delays, @reconnect_delays)
+       reconnect_delays: Keyword.get(opts, :reconnect_delays, @reconnect_delays),
+       clock: clock,
+       last_clock: clock.(),
+       wake_check_ms: interval
      }}
   end
 
@@ -333,16 +364,21 @@ defmodule Beamdash.Target do
   end
 
   def handle_call({:switch, node}, from, %{params: {:direct, _, current_cookie}} = state) do
-    # the cookie the attached node talks to `node` with (its own, unless
-    # set per node), read before the connection to it is dropped
-    cookie =
-      case rpc(state.node, :erlang, :get_cookie, [node]) do
-        {:ok, cookie} when is_atom(cookie) and cookie != :nocookie -> cookie
-        _ -> current_cookie
-      end
-
-    handle_call({:connect, node, cookie}, from, state)
+    handle_call({:connect, node, cookie_to(state, node, current_cookie)}, from, state)
   end
+
+  def handle_call({:route_to, _node}, _from, %{node: nil} = state),
+    do: {:reply, {:error, :not_connected}, state}
+
+  def handle_call({:route_to, node}, _from, %{params: {:direct, _, current_cookie}} = state),
+    do: {:reply, {:direct, cookie_to(state, node, current_cookie)}, state}
+
+  def handle_call(
+        {:route_to, _node},
+        _from,
+        %{params: {:kubectl, kubeconfig, namespace, _pod, container, binary}} = state
+      ),
+      do: {:reply, {:kubectl, kubeconfig, namespace, container, binary}, state}
 
   def handle_call(:disconnect, _from, %{pending: %{} = pending} = state) do
     publish_connecting(nil)
@@ -381,7 +417,38 @@ defmodule Beamdash.Target do
     end
   end
 
+  def handle_call({:unsubscribe, pid}, _from, state) do
+    case Enum.find(state.subscribers, fn {_ref, subscriber} -> subscriber == pid end) do
+      {ref, _pid} ->
+        Process.demonitor(ref, [:flush])
+        {:reply, :ok, %{state | subscribers: Map.delete(state.subscribers, ref)}}
+
+      nil ->
+        {:reply, :ok, state}
+    end
+  end
+
+  # the cookie the attached node talks to `node` with (its own, unless set
+  # per node), read before the connection to it is dropped
+  defp cookie_to(state, node, current_cookie) do
+    case rpc(state.node, :erlang, :get_cookie, [node]) do
+      {:ok, cookie} when is_atom(cookie) and cookie != :nocookie -> cookie
+      _ -> current_cookie
+    end
+  end
+
   @impl true
+  def handle_info(:wake_check, state) do
+    Process.send_after(self(), :wake_check, state.wake_check_ms)
+    {mono, os} = now = state.clock.()
+    {last_mono, last_os} = state.last_clock
+    state = %{state | last_clock: now}
+
+    if os - last_os - (mono - last_mono) > @wake_gap_ms,
+      do: {:noreply, state |> cancel_reconnect() |> drop_current(:sleep)},
+      else: {:noreply, state}
+  end
+
   def handle_info({:nodedown, node}, %{node: node} = state) do
     Logger.info("beamdash: lost connection to #{node}")
     Kubectl.close(state.tunnel)
@@ -542,10 +609,13 @@ defmodule Beamdash.Target do
          progress,
          known
        ) do
-    case Kubectl.connect(kubeconfig, namespace, pod, container, binary,
-           progress: progress,
-           known: known
-         ) do
+    kubectl =
+      Kubectl.connect(kubeconfig, namespace, pod, container, binary,
+        progress: progress,
+        known: known
+      )
+
+    case refuse_connected(kubectl) do
       {:ok, %{node: node, cookie: cookie, tunnel: tunnel}} ->
         if owner != self() do
           for port <- [tunnel.epmd_port, tunnel.dist_port] do
@@ -587,6 +657,9 @@ defmodule Beamdash.Target do
             error
         end
 
+      {:error, {:already_connected, _node}} = error ->
+        error
+
       {:error, reason} when known != nil ->
         {:error, {:saved_pod_unavailable, reason}}
 
@@ -597,6 +670,18 @@ defmodule Beamdash.Target do
 
   defp saved_pod_unavailable({:error, reason}), do: {:error, {:saved_pod_unavailable, reason}}
   defp saved_pod_unavailable(ok), do: ok
+
+  # a second tunnel to a node already connected here would share its link, so refuse it
+  defp refuse_connected({:ok, %{node: node, tunnel: tunnel}} = found) do
+    if node in Node.list(:connected) do
+      Kubectl.close(tunnel)
+      {:error, {:already_connected, node}}
+    else
+      found
+    end
+  end
+
+  defp refuse_connected(other), do: other
 
   # the ports now belong to the GenServer, so a crash here must still close them
   defp attach_safely(node, cookie) do
@@ -667,20 +752,14 @@ defmodule Beamdash.Target do
   # a try still running reports with the old ref and is undone
   defp cancel_reconnect(state), do: %{state | reconnect: nil}
 
+  defp clock, do: {System.monotonic_time(:millisecond), System.os_time(:millisecond)}
+
   defp drop_current(%{node: nil} = state, _reason), do: state
 
   defp drop_current(%{node: node} = state, reason) do
-    # Remove erlyberly's crash-report handler (installed by
-    # Beamdash.Crashes) while we can still reach the node; left behind, it
-    # would keep sending to our pid and make the target try to reconnect.
-    rpc(node, :error_logger, :delete_report_handler, [:erlyberly])
-    # Likewise switch off sys:trace on every process Beamdash.SysTracer
-    # traced (the collector there would do it anyway once we are gone).
-    rpc(node, :beamdash_agent, :sys_trace_stop_all, [])
-    # and remove the log handler Beamdash.Logs streams from
-    rpc(node, :beamdash_agent, :log_detach, [])
-    # and stop a profile that is running
-    rpc(node, :beamdash_agent, :tprof_stop, [])
+    # After a sleep the node is unreachable, and each rpc would wait out its
+    # timeout here, blocking every call to this process.
+    if reason != :sleep, do: clean_node(node)
     Node.monitor(node, false)
     Node.disconnect(node)
     Kubectl.close(state.tunnel)
@@ -688,16 +767,35 @@ defmodule Beamdash.Target do
     %{state | node: nil, tunnel: nil, source: nil, params: nil, cookie: nil}
   end
 
+  defp clean_node(node) do
+    # Remove the trace agent's crash-report handler (installed by
+    # Beamdash.Crashes) while we can still reach the node; left behind, it
+    # would keep sending to our pid and make the target try to reconnect.
+    rpc(node, :error_logger, :delete_report_handler, [:beamdash_trace_agent])
+    # Likewise switch off sys:trace on every process Beamdash.SysTracer
+    # traced (the collector there would do it anyway once we are gone).
+    rpc(node, :beamdash_agent, :sys_trace_stop_all, [])
+    # and remove the log handler Beamdash.Logs streams from
+    rpc(node, :beamdash_agent, :log_detach, [])
+    # and stop a profile that is running
+    rpc(node, :beamdash_agent, :tprof_stop, [])
+  end
+
   defp notify(state, event) do
     Enum.each(state.subscribers, fn {_ref, pid} -> send(pid, {:beamdash_target, event}) end)
   end
 
   defp publish_connecting(step),
-    do: Phoenix.PubSub.broadcast(Beamdash.PubSub, @connecting_topic, {:beamdash_connecting, step})
+    do:
+      Phoenix.PubSub.broadcast(
+        Beamdash.PubSub,
+        @connecting_topic,
+        {:beamdash_connecting, self(), step}
+      )
 
   @doc """
   Rewrites a pid string as printed *on the target* (`"<0.86.0>"`, what
-  erlyberly sends) into the form pids from that node take here
+  the trace agent sends) into the form pids from that node take here
   (`"<25516.86.0>"`), so the same process reads the same everywhere in
   the UI.
   """
@@ -850,7 +948,7 @@ defmodule Beamdash.Target do
     end
   end
 
-  @agent_modules [:beamdash_agent, :erlyberly]
+  @agent_modules [:beamdash_agent, :beamdash_trace_agent]
 
   defp load_agent(node) do
     result =

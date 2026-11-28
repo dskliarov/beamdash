@@ -86,14 +86,14 @@ defmodule Beamdash.TargetTest do
         )
       end)
 
-    assert_receive {:beamdash_connecting,
+    assert_receive {:beamdash_connecting, _server,
                     %{label: "Reading the node name and cookie from the pod", command: command}},
                    5_000
 
     assert command =~ "kubectl"
     assert %{status: :disconnected} = Target.status(ctx.server)
     assert {:error, _} = Task.await(caller, 10_000)
-    assert_receive {:beamdash_connecting, nil}
+    assert_receive {:beamdash_connecting, _server, nil}
     refute_received {:beamdash_target, {:connecting, _}}
     refute_received {:beamdash_target, _}
   end
@@ -133,9 +133,9 @@ defmodule Beamdash.TargetTest do
         )
       end)
 
-    assert_receive {:beamdash_connecting, %{}}, 5_000
+    assert_receive {:beamdash_connecting, _server, %{}}, 5_000
     assert :ok = Target.disconnect(ctx.server)
-    assert_receive {:beamdash_connecting, nil}, 500
+    assert_receive {:beamdash_connecting, _server, nil}, 500
     assert {:error, _} = Task.await(caller, 10_000)
   end
 
@@ -401,6 +401,40 @@ defmodule Beamdash.TargetTest do
       assert_receive {:beamdash_target, {:disconnected, :nodedown}}, 5_000
       assert %{} = Target.reconnecting(server)
       assert :ok = Target.disconnect(server)
+      assert Target.reconnecting(server) == nil
+    end
+  end
+
+  describe "sleep" do
+    test "a jump of the wall clock past the monotonic one drops the connection, without reconnecting",
+         ctx do
+      {:ok, clock} = Agent.start_link(fn -> {0, 0} end)
+
+      server =
+        start_supervised!(
+          Supervisor.child_spec(
+            {Target,
+             name: :"target_sleep_#{System.unique_integer([:positive])}",
+             clock: fn -> Agent.get(clock, & &1) end,
+             wake_check_ms: 60_000,
+             auto_reconnect: fn -> true end},
+            id: :sleep_target
+          )
+        )
+
+      :ok = Target.subscribe(server)
+      assert {:ok, _} = Target.connect(Atom.to_string(ctx.node), @cookie, server)
+
+      Agent.update(clock, fn {mono, os} -> {mono + 5_000, os + 5_000} end)
+      send(server, :wake_check)
+      refute_receive {:beamdash_target, {:disconnected, _}}, 100
+      assert %{status: :connected} = Target.status(server)
+
+      Agent.update(clock, fn {mono, os} -> {mono + 1_000, os + 600_000} end)
+      send(server, :wake_check)
+
+      assert_receive {:beamdash_target, {:disconnected, :sleep}}
+      assert %{status: :disconnected} = Target.status(server)
       assert Target.reconnecting(server) == nil
     end
   end

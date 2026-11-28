@@ -74,10 +74,11 @@ defmodule Beamdash.LogsLiveTest do
   end
 
   defp mount(ctx) do
-    socket = %Socket{
-      transport_pid: self(),
-      private: %{lifecycle: %Lifecycle{}, live_temp: %{}}
-    }
+    socket =
+      Beamdash.Test.Fixture.with_conn(%Socket{
+        transport_pid: self(),
+        private: %{lifecycle: %Lifecycle{}, live_temp: %{}}
+      })
 
     session = %{"logs_server" => ctx.logs, "target" => ctx.target}
     {:ok, socket} = LogsLive.mount(%{}, session, socket)
@@ -151,11 +152,10 @@ defmodule Beamdash.LogsLiveTest do
   test "source snapshot and subsequent batches retain their order", ctx do
     ref = make_ref()
     socket = ctx |> mount() |> Phoenix.Component.assign(source_loading?: true, source_ref: ref)
-    initial = [new_entry(8, "first")]
 
     {:noreply, socket} =
       LogsLive.handle_info(
-        {:beamdash_logs, {:snapshot, ref, socket.assigns.info, initial}},
+        {:beamdash_logs, {:snapshot, ref, socket.assigns.info, Logs.entries(ctx.logs)}},
         socket
       )
 
@@ -163,7 +163,9 @@ defmodule Beamdash.LogsLiveTest do
       LogsLive.handle_info({:beamdash_logs, {:entries, [new_entry(9, "second")]}}, socket)
 
     {:noreply, socket} = LogsLive.handle_async({:set_source, ref}, {:ok, :ok}, socket)
-    assert Enum.map(socket.assigns.entries, & &1.message) == ["second", "first"]
+
+    assert Enum.map(socket.assigns.entries, & &1.message) ==
+             ["second" | Enum.map(Logs.entries(ctx.logs), & &1.message)]
   end
 
   test "selecting a Kubernetes log source restarts the shared stream", ctx do
@@ -282,9 +284,83 @@ defmodule Beamdash.LogsLiveTest do
     refute html =~ ~s(class="var")
   end
 
+  test "an expanded group stays open when a re-sent line rebuilds the rows", ctx do
+    {_, socket} = ctx |> mount() |> render()
+    {html, socket} = socket |> event("toggle_row", %{"id" => "g-1"}) |> render()
+    assert html =~ ~s(aria-expanded="true")
+
+    socket =
+      info(socket, {:beamdash_logs, {:entries, [%{new_entry(3, "again") | node: ctx.node}]}})
+
+    {html, _} = render(socket)
+    assert html =~ ~s(aria-expanded="true")
+    assert html =~ ~s(user:<span class="var">3</span>)
+  end
+
+  test "an open group stays open when its newest line gets a continuation", ctx do
+    script =
+      "printf '2026-10-23T12:00:01Z [info] cache miss for key user:1\\n'; " <>
+        "printf '2026-10-23T12:00:01Z [info] cache miss for key user:2\\n'; " <>
+        "sleep 1; printf '2026-10-23T12:00:01Z     at line 1\\n'; sleep 3"
+
+    logs =
+      start_supervised!(
+        {Logs,
+         name: :"lv_cont_#{System.unique_integer([:positive])}",
+         target: ctx.target,
+         source_fun: fn _ -> @kubectl end,
+         logs_cmd: fn _args -> {System.find_executable("sh"), ["-c", script]} end,
+         kubectl_logger: false},
+        id: :cont_logs
+      )
+
+    ctx = %{ctx | logs: logs}
+    socket = mount(ctx)
+    eventually(fn -> length(Logs.entries(logs)) == 2 end)
+
+    {html, socket} = socket |> pump() |> render()
+    [group] = row_ids(html)
+    {html, socket} = socket |> event("toggle_row", %{"id" => group}) |> render()
+    assert html =~ ~s(aria-expanded="true")
+
+    eventually(fn -> Enum.any?(Logs.entries(logs), &(&1.message =~ "at line 1")) end)
+    {html, _} = socket |> pump() |> render()
+    assert html =~ ~s(aria-expanded="true")
+  end
+
+  test "an expanded group stays open when eviction trims its oldest line", ctx do
+    {_, socket} = ctx |> empty_logs() |> mount() |> render()
+    socket = info(socket, {:beamdash_logs, {:entries, [new_entry(1, "alpha")]}})
+    socket = info(socket, {:beamdash_logs, {:entries, Enum.map(4..2//-1, &similar/1)}})
+
+    socket =
+      info(socket, {:beamdash_logs, {:entries, Enum.map(2000..5//-1, &new_entry(&1, "idle"))}})
+
+    {html, socket} = render(socket)
+    [_alpha, group, _idle] = row_ids(html)
+    {html, socket} = socket |> event("toggle_row", %{"id" => group}) |> render()
+    assert html =~ ~s(aria-expanded="true")
+
+    socket =
+      info(
+        socket,
+        {:beamdash_logs, {:entries, [new_entry(2002, "idle"), new_entry(2001, "idle")]}}
+      )
+
+    {html, _} = render(socket)
+    assert html =~ ~s(aria-expanded="true")
+  end
+
   test "a single line opens its full message and metadata", ctx do
     {_, socket} = ctx |> mount() |> render()
-    {html, _} = socket |> event("toggle_entry", %{"id" => "4", "row" => "g-4"}) |> render()
+
+    {html, _} =
+      socket
+      |> event("toggle_entry", %{
+        "id" => "#{page_id(socket, 4)}",
+        "row" => "g-#{page_id(socket, 4)}"
+      })
+      |> render()
 
     assert row_ids(html) == ["g-4"]
     assert "boom" in pre_texts(html)
@@ -293,7 +369,15 @@ defmodule Beamdash.LogsLiveTest do
 
   test "switching the output format re-renders an open line", ctx do
     {_, socket} = ctx |> mount() |> render()
-    {_, socket} = socket |> event("toggle_entry", %{"id" => "4", "row" => "g-4"}) |> render()
+
+    {_, socket} =
+      socket
+      |> event("toggle_entry", %{
+        "id" => "#{page_id(socket, 4)}",
+        "row" => "g-#{page_id(socket, 4)}"
+      })
+      |> render()
+
     {html, _} = socket |> event("term_view", %{"view" => "raw"}) |> render()
 
     assert html =~ ~r/aria-selected="true"[^>]*phx-value-view="raw"/
@@ -306,7 +390,15 @@ defmodule Beamdash.LogsLiveTest do
 
     socket = info(socket, {:beamdash_logs, {:entries, [new_entry(8, message)]}})
     {_, socket} = render(socket)
-    {_, socket} = socket |> event("toggle_entry", %{"id" => "8", "row" => "g-8"}) |> render()
+
+    {_, socket} =
+      socket
+      |> event("toggle_entry", %{
+        "id" => "#{page_id(socket, 8)}",
+        "row" => "g-#{page_id(socket, 8)}"
+      })
+      |> render()
+
     {html, _} = socket |> event("term_view", %{"view" => "tree"}) |> render()
 
     assert html =~ ~r/aria-selected="true"[^>]*phx-value-view="tree"/
@@ -316,7 +408,15 @@ defmodule Beamdash.LogsLiveTest do
 
   test "Tree view on a plain-text line falls back to Pretty with a note", ctx do
     {_, socket} = ctx |> mount() |> render()
-    {_, socket} = socket |> event("toggle_entry", %{"id" => "4", "row" => "g-4"}) |> render()
+
+    {_, socket} =
+      socket
+      |> event("toggle_entry", %{
+        "id" => "#{page_id(socket, 4)}",
+        "row" => "g-#{page_id(socket, 4)}"
+      })
+      |> render()
+
     {html, _} = socket |> event("term_view", %{"view" => "tree"}) |> render()
 
     assert html =~ "Tree needs a JSON message. Showing Pretty."
@@ -331,7 +431,15 @@ defmodule Beamdash.LogsLiveTest do
 
     socket = info(socket, {:beamdash_logs, {:entries, [new_entry(8, message)]}})
     {_, socket} = render(socket)
-    {html, _} = socket |> event("toggle_entry", %{"id" => "8", "row" => "g-8"}) |> render()
+
+    {html, _} =
+      socket
+      |> event("toggle_entry", %{
+        "id" => "#{page_id(socket, 8)}",
+        "row" => "g-#{page_id(socket, 8)}"
+      })
+      |> render()
+
     assert html =~ ~s(class="logs-json")
     assert html =~ "event"
     assert html =~ "&lt;script&gt;alert(1)&lt;/script&gt;"
@@ -346,7 +454,14 @@ defmodule Beamdash.LogsLiveTest do
 
     socket = info(socket, {:beamdash_logs, {:entries, [entry]}})
     {_, socket} = render(socket)
-    {html, _} = socket |> event("toggle_entry", %{"id" => "14", "row" => "g-14"}) |> render()
+
+    {html, _} =
+      socket
+      |> event("toggle_entry", %{
+        "id" => "#{page_id(socket, 14)}",
+        "row" => "g-#{page_id(socket, 14)}"
+      })
+      |> render()
 
     assert html =~ "mod=Elixir.Beamdash.Worker"
     refute html =~ "Elixir.Elixir"
@@ -358,7 +473,14 @@ defmodule Beamdash.LogsLiveTest do
 
     socket = info(socket, {:beamdash_logs, {:entries, [entry]}})
     {_, socket} = render(socket)
-    {html, _} = socket |> event("toggle_entry", %{"id" => "15", "row" => "g-15"}) |> render()
+
+    {html, _} =
+      socket
+      |> event("toggle_entry", %{
+        "id" => "#{page_id(socket, 15)}",
+        "row" => "g-#{page_id(socket, 15)}"
+      })
+      |> render()
 
     assert html =~ "/modules?module=Elixir.Beamdash.Worker"
   end
@@ -370,7 +492,14 @@ defmodule Beamdash.LogsLiveTest do
 
     socket = info(socket, {:beamdash_logs, {:entries, [entry]}})
     {_, socket} = render(socket)
-    {html, _} = socket |> event("toggle_entry", %{"id" => "16", "row" => "g-16"}) |> render()
+
+    {html, _} =
+      socket
+      |> event("toggle_entry", %{
+        "id" => "#{page_id(socket, 16)}",
+        "row" => "g-#{page_id(socket, 16)}"
+      })
+      |> render()
 
     assert html =~ ~s(<span class="lvl lvl-error">error</span>)
     assert html =~ "mod=Elixir.Beamdash.Worker"
@@ -385,7 +514,14 @@ defmodule Beamdash.LogsLiveTest do
 
     socket = info(socket, {:beamdash_logs, {:entries, [entry]}})
     {_, socket} = render(socket)
-    {html, _} = socket |> event("toggle_entry", %{"id" => "17", "row" => "g-17"}) |> render()
+
+    {html, _} =
+      socket
+      |> event("toggle_entry", %{
+        "id" => "#{page_id(socket, 17)}",
+        "row" => "g-#{page_id(socket, 17)}"
+      })
+      |> render()
 
     assert html =~ ~s(<span class="lvl lvl-warning">warning</span>)
     assert html =~ "mod=Elixir.Beamdash.Worker"
@@ -397,7 +533,14 @@ defmodule Beamdash.LogsLiveTest do
 
     socket = info(socket, {:beamdash_logs, {:entries, [entry]}})
     {_, socket} = render(socket)
-    {html, _} = socket |> event("toggle_entry", %{"id" => "18", "row" => "g-18"}) |> render()
+
+    {html, _} =
+      socket
+      |> event("toggle_entry", %{
+        "id" => "#{page_id(socket, 18)}",
+        "row" => "g-#{page_id(socket, 18)}"
+      })
+      |> render()
 
     assert html =~ ~s(class="proc-link")
   end
@@ -409,7 +552,14 @@ defmodule Beamdash.LogsLiveTest do
 
     socket = info(socket, {:beamdash_logs, {:entries, [entry]}})
     {_, socket} = render(socket)
-    {html, _} = socket |> event("toggle_entry", %{"id" => "19", "row" => "g-19"}) |> render()
+
+    {html, _} =
+      socket
+      |> event("toggle_entry", %{
+        "id" => "#{page_id(socket, 19)}",
+        "row" => "g-#{page_id(socket, 19)}"
+      })
+      |> render()
 
     refute html =~ "mod=null"
     refute html =~ "proc-link"
@@ -433,7 +583,15 @@ defmodule Beamdash.LogsLiveTest do
       )
 
     {_, socket} = render(socket)
-    {html, socket} = socket |> event("toggle_entry", %{"id" => "30", "row" => "g-30"}) |> render()
+
+    {html, socket} =
+      socket
+      |> event("toggle_entry", %{
+        "id" => "#{page_id(socket, 30)}",
+        "row" => "g-#{page_id(socket, 30)}"
+      })
+      |> render()
+
     assert html =~ ~s(name="pairs[]" value="count=3")
 
     {html, socket} =
@@ -482,7 +640,15 @@ defmodule Beamdash.LogsLiveTest do
       )
 
     {_, socket} = render(socket)
-    {html, socket} = socket |> event("toggle_entry", %{"id" => "32", "row" => "g-32"}) |> render()
+
+    {html, socket} =
+      socket
+      |> event("toggle_entry", %{
+        "id" => "#{page_id(socket, 32)}",
+        "row" => "g-#{page_id(socket, 32)}"
+      })
+      |> render()
+
     assert html =~ ~s(name="pairs[]" value="count=3")
 
     {html, _} = socket |> event("field_filter", %{"pairs" => ["count=3"]}) |> render()
@@ -501,7 +667,14 @@ defmodule Beamdash.LogsLiveTest do
       info(socket, {:beamdash_logs, {:entries, [%{new_entry(40, message) | json_line?: true}]}})
 
     {_, socket} = render(socket)
-    {html, socket} = socket |> event("toggle_entry", %{"id" => "40", "row" => "g-40"}) |> render()
+
+    {html, socket} =
+      socket
+      |> event("toggle_entry", %{
+        "id" => "#{page_id(socket, 40)}",
+        "row" => "g-#{page_id(socket, 40)}"
+      })
+      |> render()
 
     assert html =~ ~s(aria-label="Fields in text")
     assert html =~ ~s(name="pairs[]" value="campaign_id=298821")
@@ -515,7 +688,14 @@ defmodule Beamdash.LogsLiveTest do
     {_, socket} = ctx |> mount() |> render()
     socket = info(socket, {:beamdash_logs, {:entries, [new_entry(13, "got {ok,[1,2]}")]}})
     {_, socket} = render(socket)
-    {html, _} = socket |> event("toggle_entry", %{"id" => "13", "row" => "g-13"}) |> render()
+
+    {html, _} =
+      socket
+      |> event("toggle_entry", %{
+        "id" => "#{page_id(socket, 13)}",
+        "row" => "g-#{page_id(socket, 13)}"
+      })
+      |> render()
 
     assert "got {ok, [1, 2]}" in pre_texts(html)
   end
@@ -526,7 +706,14 @@ defmodule Beamdash.LogsLiveTest do
 
     socket = info(socket, {:beamdash_logs, {:entries, [entry]}})
     {_, socket} = render(socket)
-    {html, _} = socket |> event("toggle_entry", %{"id" => "9", "row" => "g-9"}) |> render()
+
+    {html, _} =
+      socket
+      |> event("toggle_entry", %{
+        "id" => "#{page_id(socket, 9)}",
+        "row" => "g-#{page_id(socket, 9)}"
+      })
+      |> render()
 
     assert html =~ ~s(class="logs-json")
     assert html =~ ~s(class="props")
@@ -540,7 +727,14 @@ defmodule Beamdash.LogsLiveTest do
 
     socket = info(socket, {:beamdash_logs, {:entries, [entry]}})
     {_, socket} = render(socket)
-    {html, _} = socket |> event("toggle_entry", %{"id" => "12", "row" => "g-12"}) |> render()
+
+    {html, _} =
+      socket
+      |> event("toggle_entry", %{
+        "id" => "#{page_id(socket, 12)}",
+        "row" => "g-#{page_id(socket, 12)}"
+      })
+      |> render()
 
     assert html =~ ~s(<span class="lvl lvl-error">error</span>)
     assert html =~ "/modules?module=Elixir.Beamdash.Worker"
@@ -564,7 +758,14 @@ defmodule Beamdash.LogsLiveTest do
 
     socket = info(socket, {:beamdash_logs, {:entries, [entry]}})
     {_, socket} = render(socket)
-    {html, _} = socket |> event("toggle_entry", %{"id" => "9", "row" => "g-9"}) |> render()
+
+    {html, _} =
+      socket
+      |> event("toggle_entry", %{
+        "id" => "#{page_id(socket, 9)}",
+        "row" => "g-#{page_id(socket, 9)}"
+      })
+      |> render()
 
     for key <- ~w(level module count) do
       assert length(Regex.scan(th_key(key), html)) == 1
@@ -578,7 +779,14 @@ defmodule Beamdash.LogsLiveTest do
     entry = %{new_entry(10, message) | json_line?: true}
     socket = info(socket, {:beamdash_logs, {:entries, [entry]}})
     {_, socket} = render(socket)
-    {html, _} = socket |> event("toggle_entry", %{"id" => "10", "row" => "g-10"}) |> render()
+
+    {html, _} =
+      socket
+      |> event("toggle_entry", %{
+        "id" => "#{page_id(socket, 10)}",
+        "row" => "g-#{page_id(socket, 10)}"
+      })
+      |> render()
 
     assert length(Regex.scan(th_key("time"), html)) == 1
   end
@@ -587,7 +795,15 @@ defmodule Beamdash.LogsLiveTest do
     {_, socket} = ctx |> mount() |> render()
     socket = info(socket, {:beamdash_logs, {:entries, [new_entry(8, "{not json}")]}})
     {_, socket} = render(socket)
-    {html, _} = socket |> event("toggle_entry", %{"id" => "8", "row" => "g-8"}) |> render()
+
+    {html, _} =
+      socket
+      |> event("toggle_entry", %{
+        "id" => "#{page_id(socket, 8)}",
+        "row" => "g-#{page_id(socket, 8)}"
+      })
+      |> render()
+
     assert html =~ "{not json}"
     refute html =~ ~s(class="logs-json")
   end
@@ -599,7 +815,12 @@ defmodule Beamdash.LogsLiveTest do
       {_, socket} = render(socket)
 
       {html, _} =
-        socket |> event("toggle_entry", %{"id" => "#{id}", "row" => "g-#{id}"}) |> render()
+        socket
+        |> event("toggle_entry", %{
+          "id" => "#{page_id(socket, id)}",
+          "row" => "g-#{page_id(socket, id)}"
+        })
+        |> render()
 
       refute html =~ ~s(class="logs-json"), message
       assert html =~ ~s(<pre class="term-text">), message
@@ -655,9 +876,48 @@ defmodule Beamdash.LogsLiveTest do
     assert List.last(lines) =~ "user:5"
   end
 
+  describe "lines from several nodes" do
+    test "the node checkboxes show and hide each node's lines", ctx do
+      {_, socket} = ctx |> mount() |> render()
+      {html, socket} = render(socket)
+      refute html =~ ~s(id="logs-nodes")
+
+      other = %{
+        new_entry(20, "from another node")
+        | node: :other@host,
+          at: ~U[2026-10-23 12:00:10Z]
+      }
+
+      socket = info(socket, {:beamdash_logs, {:entries, [other]}})
+      {html, socket} = render(socket)
+
+      assert html =~ ~s(id="logs-nodes")
+      assert html =~ "other@host"
+      assert html =~ "(disconnected)"
+      assert html =~ "from another node"
+
+      {html, socket} = socket |> event("node_check", %{"node" => "other@host"}) |> render()
+      refute html =~ "from another node"
+      refute html =~ "No nodes selected"
+
+      {html, _} =
+        socket |> event("node_check", %{"node" => Atom.to_string(ctx.node)}) |> render()
+
+      assert html =~ "No nodes selected"
+      refute html =~ "from another node"
+    end
+  end
+
+  # the page's id for the entry Logs numbered `logs_id`
+  defp page_id(socket, logs_id) do
+    %{id: id} = Enum.find(socket.assigns.entries, &(&1.logs_id == logs_id))
+    id
+  end
+
   defp new_entry(id, message) do
     %{
       id: id,
+      node: nil,
       at: ~U[2026-10-23 12:00:09.123456Z],
       level: :info,
       pid: nil,
@@ -673,7 +933,9 @@ defmodule Beamdash.LogsLiveTest do
     {_, socket} = ctx |> mount() |> render()
 
     {html, socket} =
-      socket |> info({:beamdash_logs, {:entries, [new_entry(8, "hello")]}}) |> render()
+      socket
+      |> info({:beamdash_logs, {:entries, [%{new_entry(8, "hello") | node: ctx.node}]}})
+      |> render()
 
     assert row_ids(html) == ["g-7"]
     assert html =~ ~r/class="count-badge"[^>]*>\s*×2/
@@ -750,6 +1012,15 @@ defmodule Beamdash.LogsLiveTest do
       batch = ids |> Enum.reverse() |> Enum.map(&similar/1)
       socket |> info({:beamdash_logs, {:entries, batch}}) |> render()
     end)
+  end
+
+  # applies the Logs messages already sent, until none arrive for 200 ms
+  defp pump(socket) do
+    receive do
+      {:beamdash_logs, _} = message -> socket |> info(message) |> pump()
+    after
+      200 -> socket
+    end
   end
 
   defp stream_ops(socket), do: socket.assigns.streams.rows
@@ -1006,7 +1277,7 @@ defmodule Beamdash.LogsLiveTest do
 
   test "an entry sent again (a continuation) resets the rows", ctx do
     {_, socket} = ctx |> mount() |> render()
-    again = %{new_entry(4, "boom\n  at line 1") | level: :error}
+    again = %{new_entry(4, "boom\n  at line 1") | level: :error, node: ctx.node}
     {html, _} = socket |> info({:beamdash_logs, {:entries, [again]}}) |> render()
 
     # every row is sent again, from Logs.entries
@@ -1227,6 +1498,7 @@ defmodule Beamdash.LogsLiveTest do
     # a line from a module of the node's stdlib, as the logger handler sends it
     line = %{
       id: 100,
+      node: nil,
       at: ~U[2026-10-23 12:00:09Z],
       level: :error,
       pid: nil,
@@ -1252,7 +1524,7 @@ defmodule Beamdash.LogsLiveTest do
            ]
 
     {html, socket} = socket |> event("tree_expand_all") |> render()
-    assert Enum.take(tree_labels(html), -3) == ["lists", "seq/2", "bad range #"]
+    assert Enum.take(tree_labels(html), -4) == ["lists", "seq/2", "no node", "bad range #"]
 
     {html, socket} = socket |> event("tree_collapse_all") |> render()
     assert tree_labels(html) == ["no source", "stdlib"]
@@ -1287,7 +1559,7 @@ defmodule Beamdash.LogsLiveTest do
     assert html =~ "<pre>3</pre>"
     assert html =~ ~s(phx-value-key="name")
 
-    json_node = template_for(socket.assigns.tree.nodes, 61)
+    json_node = template_for(socket.assigns.tree.nodes, page_id(socket, 61))
     {html, _} = socket |> event("tree_detail", %{"id" => json_node.id}) |> render()
     assert html =~ ~s(phx-value-key="campaign_id")
     assert html =~ "298821"
@@ -1482,6 +1754,7 @@ defmodule Beamdash.LogsLiveTest do
     crash = fn id, pid ->
       %{
         id: id,
+        node: nil,
         at: ~U[2026-10-23 12:00:09Z],
         level: :error,
         pid: pid,
@@ -1556,6 +1829,7 @@ defmodule Beamdash.LogsLiveTest do
 
     line = %{
       id: 100,
+      node: nil,
       at: ~U[2026-10-23 12:00:09Z],
       level: :info,
       pid: nil,

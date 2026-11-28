@@ -1,9 +1,8 @@
 defmodule BeamdashWeb.SystemLive do
   @moduledoc """
-  The node at a glance, as Observer's System tab shows it: system and
-  architecture, memory usage, CPUs and threads, statistics, and system
-  counts against their limits. Refreshed every 10 s (Observer's default)
-  or on demand.
+  The node at a glance: system and architecture, memory usage, CPUs and
+  threads, statistics, and system counts against their limits. Refreshed
+  every 10 s or on demand.
   """
   use Phoenix.LiveView
 
@@ -13,11 +12,11 @@ defmodule BeamdashWeb.SystemLive do
 
   @impl true
   def mount(_params, _session, socket) do
-    %{status: status, node: node} = Target.status()
+    %{status: status, node: node} = Target.status(socket.assigns.conn.server)
     socket = assign(socket, status: status, node: node, info: nil, at: nil, error: nil)
 
     if connected?(socket) do
-      :ok = Target.subscribe()
+      :ok = Target.subscribe(socket.assigns.conn.server)
       Process.send_after(self(), :refresh, @refresh_ms)
       {:ok, load(socket)}
     else
@@ -26,7 +25,7 @@ defmodule BeamdashWeb.SystemLive do
   end
 
   defp load(%{assigns: %{status: :connected}} = socket) do
-    case Target.system_info() do
+    case Target.system_info(socket.assigns.conn.server) do
       {:ok, info} -> assign(socket, info: info, at: DateTime.utc_now(), error: nil)
       {:error, reason} -> assign(socket, error: Format.error(reason))
     end
@@ -73,7 +72,7 @@ defmodule BeamdashWeb.SystemLive do
       <%= if @status == :connected and @info do %>
         <div class="sys-head">
           <span class="muted small">
-            As Observer's System tab · updated {Calendar.strftime(@at, "%H:%M:%S")} UTC, every 10 s
+            Updated {Calendar.strftime(@at, "%H:%M:%S")} UTC, every 10 s
           </span>
           <button class="secondary small-btn" phx-click="refresh">Refresh</button>
         </div>
@@ -133,8 +132,6 @@ defmodule BeamdashWeb.SystemLive do
     </section>
     """
   end
-
-  # Observer's labels and order (observer_sys_wx:info_fields/0)
 
   @doc false
   def system_rows(i) do
@@ -197,7 +194,7 @@ defmodule BeamdashWeb.SystemLive do
   end
 
   @doc false
-  # "count / limit (n % used)", as Observer writes it
+  # "count / limit (n % used)"
   def limit_text(count, limit) do
     used = if pct = used_pct(count, limit), do: " (#{pct} % used)", else: ""
     "#{text(count)} / #{text(limit)}#{used}"
@@ -221,7 +218,7 @@ defmodule BeamdashWeb.SystemLive do
   defp wordsize(other), do: text(other)
 
   @doc false
-  # Observer: "1 Days 2:03:04"
+  # e.g. "1 Days 2:03:04"
   def uptime(ms) when is_integer(ms) do
     s = div(ms, 1000)
     {days, s} = {div(s, 86_400), rem(s, 86_400)}

@@ -16,9 +16,10 @@ defmodule Beamdash.ModuleEditorTest do
   end
 
   test "the Modules page warns that source and BEAM can differ from running code" do
-    socket = %Phoenix.LiveView.Socket{
-      private: %{lifecycle: %Phoenix.LiveView.Lifecycle{}, live_temp: %{}}
-    }
+    socket =
+      Beamdash.Test.Fixture.with_conn(%Phoenix.LiveView.Socket{
+        private: %{lifecycle: %Phoenix.LiveView.Lifecycle{}, live_temp: %{}}
+      })
 
     {:ok, socket} = BeamdashWeb.ModulesLive.mount(%{}, %{}, socket)
 
@@ -146,9 +147,10 @@ defmodule Beamdash.ModuleEditorTest do
     {:ok, ^mod, beam, _} =
       Beamdash.ModuleEditor.compile(String.replace(source, "original", "changed"))
 
-    socket = %Phoenix.LiveView.Socket{
-      private: %{lifecycle: %Phoenix.LiveView.Lifecycle{}, live_temp: %{}}
-    }
+    socket =
+      Beamdash.Test.Fixture.with_conn(%Phoenix.LiveView.Socket{
+        private: %{lifecycle: %Phoenix.LiveView.Lifecycle{}, live_temp: %{}}
+      })
 
     {:ok, socket} = BeamdashWeb.ModulesLive.mount(%{}, %{}, socket)
     socket = Phoenix.Component.assign(socket, selected: mod, compiled: beam)
@@ -242,9 +244,10 @@ defmodule Beamdash.ModuleEditorTest do
     source = "-module(beamdash_candidate_fixture).\n-export([value/0]).\nvalue() -> staged.\n"
     {:ok, mod, beam, _} = Beamdash.ModuleEditor.compile(source)
 
-    socket = %Phoenix.LiveView.Socket{
-      private: %{lifecycle: %Phoenix.LiveView.Lifecycle{}, live_temp: %{}}
-    }
+    socket =
+      Beamdash.Test.Fixture.with_conn(%Phoenix.LiveView.Socket{
+        private: %{lifecycle: %Phoenix.LiveView.Lifecycle{}, live_temp: %{}}
+      })
 
     {:ok, socket} = BeamdashWeb.ModulesLive.mount(%{}, %{}, socket)
 
@@ -277,9 +280,10 @@ defmodule Beamdash.ModuleEditorTest do
   end
 
   test "module list filters names without changing the staged editor" do
-    socket = %Phoenix.LiveView.Socket{
-      private: %{lifecycle: %Phoenix.LiveView.Lifecycle{}, live_temp: %{}}
-    }
+    socket =
+      Beamdash.Test.Fixture.with_conn(%Phoenix.LiveView.Socket{
+        private: %{lifecycle: %Phoenix.LiveView.Lifecycle{}, live_temp: %{}}
+      })
 
     {:ok, socket} = BeamdashWeb.ModulesLive.mount(%{}, %{}, socket)
 
@@ -313,9 +317,10 @@ defmodule Beamdash.ModuleEditorTest do
   end
 
   test "module list shows an empty result and keeps selection locked during rollback" do
-    socket = %Phoenix.LiveView.Socket{
-      private: %{lifecycle: %Phoenix.LiveView.Lifecycle{}, live_temp: %{}}
-    }
+    socket =
+      Beamdash.Test.Fixture.with_conn(%Phoenix.LiveView.Socket{
+        private: %{lifecycle: %Phoenix.LiveView.Lifecycle{}, live_temp: %{}}
+      })
 
     {:ok, socket} = BeamdashWeb.ModulesLive.mount(%{}, %{}, socket)
 
@@ -344,9 +349,10 @@ defmodule Beamdash.ModuleEditorTest do
   end
 
   test "clear and discard invalidate the candidate and preserve rollback" do
-    socket = %Phoenix.LiveView.Socket{
-      private: %{lifecycle: %Phoenix.LiveView.Lifecycle{}, live_temp: %{}}
-    }
+    socket =
+      Beamdash.Test.Fixture.with_conn(%Phoenix.LiveView.Socket{
+        private: %{lifecycle: %Phoenix.LiveView.Lifecycle{}, live_temp: %{}}
+      })
 
     {:ok, socket} = BeamdashWeb.ModulesLive.mount(%{}, %{}, socket)
     original = %{source: "original code", language: "elixir", project: "/project"}

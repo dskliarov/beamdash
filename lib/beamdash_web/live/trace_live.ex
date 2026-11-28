@@ -27,7 +27,7 @@ defmodule BeamdashWeb.TraceLive do
 
   @impl true
   def mount(_params, _session, socket) do
-    %{status: status, node: node} = Target.status()
+    %{status: status, node: node} = Target.status(socket.assigns.conn.server)
 
     socket =
       socket
@@ -64,7 +64,7 @@ defmodule BeamdashWeb.TraceLive do
       |> stream(:entries, [])
 
     if connected?(socket) do
-      :ok = Target.subscribe()
+      :ok = Target.subscribe(socket.assigns.conn.server)
       :ok = Tracer.subscribe()
       :ok = SeqTracer.subscribe()
       :timer.send_interval(1_000, :tree_tick)

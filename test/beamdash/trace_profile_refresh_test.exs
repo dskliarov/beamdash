@@ -6,7 +6,11 @@ defmodule Beamdash.TraceProfileRefreshTest do
   @modules [{:lists, [{:seq, 2}], []}]
 
   defp connected(view) do
-    socket = %Phoenix.LiveView.Socket{private: %{lifecycle: %Phoenix.LiveView.Lifecycle{}}}
+    socket =
+      Beamdash.Test.Fixture.with_conn(%Phoenix.LiveView.Socket{
+        private: %{lifecycle: %Phoenix.LiveView.Lifecycle{}}
+      })
+
     {:ok, socket} = view.mount(%{}, %{}, socket)
     Phoenix.Component.assign(socket, status: :connected, node: :fake@host)
   end

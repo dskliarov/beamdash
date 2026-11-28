@@ -13,7 +13,7 @@ defmodule BeamdashWeb.InsightsLive do
   """
   use Phoenix.LiveView
 
-  alias Beamdash.{AnomalyMonitor, Format, ProcessStats, Settings, Store, Target}
+  alias Beamdash.{AnomalyMonitor, Connections, Format, ProcessStats, Settings, Store, Target}
   alias Beamdash.Insights.{Anomaly, Groups}
 
   @refresh_ms 2_000
@@ -24,7 +24,7 @@ defmodule BeamdashWeb.InsightsLive do
 
   @impl true
   def mount(_params, _session, socket) do
-    %{status: status, node: node} = Target.status()
+    %{status: status, node: node} = Target.status(socket.assigns.conn.server)
 
     socket =
       assign(socket,
@@ -46,11 +46,13 @@ defmodule BeamdashWeb.InsightsLive do
         tab: :current,
         episodes: [],
         episodes_at: nil,
+        episode_nodes: nil,
+        episode_node_choices: [],
         episodes_enabled: Process.whereis(Store) != nil
       )
 
     if connected?(socket) do
-      :ok = Target.subscribe()
+      :ok = Target.subscribe(socket.assigns.conn.server)
       :ok = AnomalyMonitor.watch()
       send(self(), :tick)
     end
@@ -87,6 +89,12 @@ defmodule BeamdashWeb.InsightsLive do
     do: {:noreply, socket |> assign(tab: :history) |> load_episodes()}
 
   def handle_event("tab", _, socket), do: {:noreply, assign(socket, tab: :current)}
+
+  def handle_event("episode_node_toggle", %{"node" => name}, socket) do
+    shown = episode_nodes(socket.assigns)
+    shown = if name in shown, do: List.delete(shown, name), else: shown ++ [name]
+    {:noreply, socket |> assign(episode_nodes: shown) |> load_episodes()}
+  end
 
   @impl true
   def handle_info(:tick, socket) do
@@ -166,7 +174,7 @@ defmodule BeamdashWeb.InsightsLive do
   end
 
   defp refresh(socket) do
-    case Target.processes() do
+    case Target.processes(socket.assigns.conn.server) do
       {:ok, procs} ->
         now = System.monotonic_time(:microsecond)
         prev_at = socket.assigns.prev_at
@@ -315,6 +323,18 @@ defmodule BeamdashWeb.InsightsLive do
           <p :if={@episodes_enabled and @episodes == []} class="muted">
             No anomalies in the last hour.
           </p>
+          <fieldset :if={length(@episode_node_choices) > 1} class="snap-nodes">
+            <legend class="small muted">Nodes shown</legend>
+            <label :for={node <- @episode_node_choices} class="snap-node">
+              <input
+                type="checkbox"
+                checked={node in episode_nodes(assigns)}
+                phx-click="episode_node_toggle"
+                phx-value-node={node}
+              />
+              <span class="mono">{node}</span>
+            </label>
+          </fieldset>
           <table :if={@episodes != []} class="insights-table anomaly-table">
             <colgroup>
               <col style="width: 20%" />
@@ -339,7 +359,14 @@ defmodule BeamdashWeb.InsightsLive do
             <tbody>
               <tr :for={e <- Enum.take(@episodes, @shown)}>
                 <td class="mono small">
-                  <.process pid={e.pid} by_pid={@episode_procs} syntax={@syntax} />
+                  <span :if={length(@episode_node_choices) > 1} class="badge mono">{e.node}</span>
+                  <.process
+                    :if={e.node == to_string(@node)}
+                    pid={e.pid}
+                    by_pid={@episode_procs}
+                    syntax={@syntax}
+                  />
+                  <span :if={e.node != to_string(@node)}>{e.pid}</span>
                 </td>
                 <td>{measure_label(e.measure)}</td>
                 <td>
@@ -508,25 +535,36 @@ defmodule BeamdashWeb.InsightsLive do
 
   defp refresh_episodes(socket), do: socket
 
-  defp load_episodes(
-         %{assigns: %{episodes_enabled: true, status: :connected, node: node}} = socket
-       ) do
+  defp load_episodes(%{assigns: %{episodes_enabled: true, status: :connected} = assigns} = socket) do
     now = System.system_time(:millisecond)
 
     rows =
       Store.query(:anomalies,
         from: now - @episode_window_ms,
-        node: to_string(node),
+        node: episode_nodes(assigns),
         limit: @episode_limit
       )
 
-    assign(socket, episodes: Enum.map(rows, &episode/1), episodes_at: now)
+    assign(socket,
+      episodes: Enum.map(rows, &episode/1),
+      episodes_at: now,
+      episode_node_choices: episode_node_choices(assigns)
+    )
   end
 
   defp load_episodes(socket), do: assign(socket, episodes: [], episodes_at: nil)
 
+  defp episode_nodes(%{episode_nodes: nodes}) when is_list(nodes), do: nodes
+  defp episode_nodes(%{node: node}), do: [to_string(node)]
+
+  defp episode_node_choices(assigns) do
+    connected = for %{node: node} when not is_nil(node) <- Connections.list(), do: to_string(node)
+    Enum.uniq(connected ++ episode_nodes(assigns))
+  end
+
   defp episode(row) do
     %{
+      node: row.node,
       pid: row.pid,
       measure: String.to_existing_atom(row.measure),
       kind: String.to_existing_atom(row.data["kind"]),

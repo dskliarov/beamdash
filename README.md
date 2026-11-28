@@ -201,7 +201,7 @@ happening inside it.
   `dbg:tpl({Mod, '_', '_'}, ...)`); its call limit counts calls of any of
   them. It is offered only while none of the module's functions is traced
   on its own (the two would clear each other), and not for the modules the
-  tracing itself runs in (`erlyberly`, `dbg`, `erlang` and other preloaded
+  tracing itself runs in (`beamdash_trace_agent`, `dbg`, `erlang` and other preloaded
   runtime modules).
   A module's functions are listed in a grid, exported and not exported
   apart, with a search box (a name, or `name/arity`; Enter picks the first
@@ -481,6 +481,7 @@ menu, shown while that application runs on the attached node. Add one in
 ```elixir
 {:riak_core_plugin, "~> 0.1"}                                 # Hex (needs `mix local.hex`)
 {:riak_core_plugin, git: "https://github.com/…", tag: "0.0.1"} # Git: tag:, branch: or ref:
+{:bandit_plugin, git: "https://github.com/…/plugins", sparse: "bandit_plugin"} # one plugin in a multi-plugin repo
 {:riak_core_plugin, path: "~/src/beamdash-riak-core-plugin"}  # a local folder
 ```
 

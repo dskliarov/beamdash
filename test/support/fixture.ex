@@ -1,7 +1,7 @@
 defmodule Beamdash.Test.Fixture do
   @moduledoc false
   # Starts a peer node, connects beamdash's processes to it, and loads a
-  # small gen_server module compiled with debug_info (so erlyberly can find
+  # small gen_server module compiled with debug_info (so the trace agent can find
   # its records and xref can index it).
 
   @cookie "beamdash_test_cookie"
@@ -43,6 +43,20 @@ defmodule Beamdash.Test.Fixture do
   """
 
   def cookie, do: @cookie
+
+  @doc "A socket with the `:conn` the `Connection` on_mount hook assigns, for a direct `mount/3`."
+  def with_conn(socket) do
+    Phoenix.Component.assign(socket, :conn, %{
+      server: Beamdash.Target,
+      selected_node: nil,
+      kube_clusters: [],
+      status: :disconnected,
+      node: nil,
+      info: nil,
+      node_input: "",
+      error: nil
+    })
+  end
 
   @doc "Starts a peer node; `extra_args` are added to its command line."
   def start_peer(extra_args \\ []) do

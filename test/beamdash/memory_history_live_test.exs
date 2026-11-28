@@ -79,7 +79,11 @@ defmodule Beamdash.MemoryHistoryLiveTest do
   end
 
   defp connected_socket do
-    socket = %Socket{private: %{lifecycle: %Lifecycle{}, live_temp: %{}}}
+    socket =
+      Beamdash.Test.Fixture.with_conn(%Socket{
+        private: %{lifecycle: %Lifecycle{}, live_temp: %{}}
+      })
+
     {:ok, socket} = MemoryLive.mount(%{}, %{}, socket)
 
     Component.assign(socket,

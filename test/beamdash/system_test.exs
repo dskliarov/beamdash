@@ -35,9 +35,10 @@ defmodule Beamdash.SystemTest do
   test "the page shows Observer's five panels with its labels", %{target: target} do
     {:ok, info} = Target.system_info(target)
 
-    socket = %Phoenix.LiveView.Socket{
-      private: %{lifecycle: %Phoenix.LiveView.Lifecycle{}, live_temp: %{}}
-    }
+    socket =
+      Beamdash.Test.Fixture.with_conn(%Phoenix.LiveView.Socket{
+        private: %{lifecycle: %Phoenix.LiveView.Lifecycle{}, live_temp: %{}}
+      })
 
     {:ok, socket} = SystemLive.mount(%{}, %{}, socket)
 
