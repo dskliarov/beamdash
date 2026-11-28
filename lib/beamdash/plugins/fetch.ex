@@ -8,6 +8,7 @@ defmodule Beamdash.Plugins.Fetch do
       `resolved` is the commit (`git rev-parse HEAD`). With `sparse:` the
       plugin is the folder of that name in the repo, which may hold several
       plugins; it must be a real folder (not a symbolic link) with a `mix.exs`.
+      The whole repo is cloned; `sparse:` only picks the folder that is built.
     * **Hex:** the requirement is resolved to the highest matching release
       listed by `mix hex.info`, then `mix hex.package fetch --unpack` puts it
       in `<dest>/src`. `resolved` is the version. An exact requirement
@@ -119,9 +120,10 @@ defmodule Beamdash.Plugins.Fetch do
   end
 
   defp has_mix_exs(dir, what) do
-    if File.regular?(Path.join(dir, "mix.exs")),
-      do: :ok,
-      else: {:error, "#{what} has no mix.exs"}
+    case File.lstat(Path.join(dir, "mix.exs")) do
+      {:ok, %File.Stat{type: :regular}} -> :ok
+      _ -> {:error, "#{what} has no mix.exs"}
+    end
   end
 
   defp mkdir(dir) do

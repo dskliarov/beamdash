@@ -231,7 +231,7 @@ defmodule Beamdash.Plugins do
   def handle_call({:css_path, app}, _from, state) do
     reply =
       with %{} = entry <- find(state, app),
-           src = source_dir(entry, install_dir(state, entry.app)),
+           {:ok, src} <- source_dir(entry, install_dir(state, entry.app)),
            true <- no_links?(src, ["priv", "static", "plugin.css"]) do
         {:ok, Path.join(src, "priv/static/plugin.css")}
       else
@@ -743,26 +743,33 @@ defmodule Beamdash.Plugins do
     ebin = Path.join(install_dir, "ebin")
     tidy(install_dir)
 
-    src = source_dir(saved, install_dir)
-
     entry =
       Map.merge(saved, %{modules: [], plugin: nil, failed: nil, building: false, build_error: nil})
 
-    if guarded(fn -> needs_build?(saved.source, src, ebin) end) == true do
-      job = %{app: saved.app, src: src, ebin_new: Path.join(install_dir, "ebin.new")}
-      {:build, %{entry | building: true}, job}
-    else
-      {:loaded,
-       loaded(%{entry | building: false}, guarded(fn -> load_ebin(ebin, saved.prefix) end))}
+    case source_dir(saved, install_dir) do
+      {:error, msg} ->
+        {:loaded, loaded(entry, {:error, msg})}
+
+      {:ok, src} ->
+        if guarded(fn -> needs_build?(saved.source, src, ebin) end) == true do
+          job = %{app: saved.app, src: src, ebin_new: Path.join(install_dir, "ebin.new")}
+          {:build, %{entry | building: true}, job}
+        else
+          {:loaded,
+           loaded(%{entry | building: false}, guarded(fn -> load_ebin(ebin, saved.prefix) end))}
+        end
     end
   end
 
-  defp source_dir(%{source: :path, resolved: path}, _install_dir), do: path
+  defp source_dir(%{source: :path, resolved: path}, _install_dir), do: {:ok, path}
 
   defp source_dir(saved, install_dir) do
     case Spec.parse(saved.spec_text) do
-      {:ok, spec} -> Fetch.src_root(install_dir, spec.sparse)
-      {:error, _} -> Fetch.src_root(install_dir, nil)
+      {:ok, spec} ->
+        {:ok, Fetch.src_root(install_dir, spec.sparse)}
+
+      {:error, msg} ->
+        {:error, "the saved dependency of #{saved.app} can't be read, reinstall it: #{msg}"}
     end
   end
 

@@ -47,7 +47,8 @@ code. Accepted shapes (as in Mix):
   (URLs, folders), unique among installed plugins.
 - Git may also take `sparse: "folder"`: the plugin's folder inside the repo
   (a relative path, no `..`, must be a real folder with a `mix.exs`; symlinks
-  are refused). Other sources reject it.
+  are refused). The whole repo is cloned; `sparse:` only picks the folder that
+  is built. Other sources reject it.
 - Any other option (`override`, `only`, `runtime`, `compile`, `manager`,
   `app`, …) is refused with a message naming it.
 - Common mistakes get a specific hint instead of a raw parse error, e.g.
